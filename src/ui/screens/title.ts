@@ -75,7 +75,7 @@ export class TitleScreen implements Scene {
   }
 
   private menuRect(): Rect {
-    return this.portrait ? { x: 20, y: 150, w: 140, h: 120 } : { x: 178, y: 44, w: 128, h: 112 };
+    return this.portrait ? { x: 16, y: 148, w: 148, h: 118 } : { x: 170, y: 40, w: 142, h: 114 };
   }
 
   private buildButtons(): void {
@@ -101,7 +101,7 @@ export class TitleScreen implements Scene {
       this.app.sfx('ui_confirm');
       this.app.toSettings(() => this.app.toTitle());
     }, 14);
-    add('exit', 'EXIT', false, () => this.exitGame(), 31);
+    add('exit', 'EXIT', false, () => this.exitGame());
     b.focusFirst();
   }
 
@@ -313,7 +313,9 @@ export class TitleScreen implements Scene {
   }
 
   private boardRect(): Rect {
-    return this.portrait ? { x: 42, y: 50, w: 96, h: 96 } : { x: 22, y: 30, w: 128, h: 128 };
+    // 96 in both orientations: the word-mark band owns the top 34px, so a
+    // 128px board would hang below the floor line.
+    return this.portrait ? { x: 42, y: 44, w: 96, h: 96 } : { x: 34, y: 36, w: 96, h: 96 };
   }
 
   draw(r: Renderer): void {
@@ -329,7 +331,7 @@ export class TitleScreen implements Scene {
     const b = this.boardRect();
     r.sprite('light_cone', b.x + b.w / 2 - 32, b.y - 24);
     r.dither(b.x + 3, b.y + 4, b.w, b.h, P.INK, 8);
-    r.sprite(this.portrait ? 'board_96' : 'board_128', b.x, b.y);
+    r.sprite('board_96', b.x, b.y);
     for (const s of this.stuck) r.sprite('dart_stuck', s.x - 2, s.y - 2, s.f);
     // crowd
     for (const c of this.crowd) {
@@ -346,12 +348,13 @@ export class TitleScreen implements Scene {
       r.sprite('dart', Math.round(x) - 4, Math.round(y) - 4, 0);
     }
     for (const p of this.particles.list) r.sprite(p.sprite, Math.round(p.x), Math.round(p.y), p.frame);
-    // logo
-    const logoX = this.portrait ? Math.floor((this.w - 160) / 2) : 156;
-    const logoY = this.portrait ? 8 : 4;
+    // word mark across the top, with a dark band so it reads over the wall
+    const logoW = 180;
+    const logoX = Math.floor((this.w - logoW) / 2);
+    const logoY = this.portrait ? 6 : 2;
     const bob = Math.round(Math.sin(this.time * 1.5) * 1);
+    r.dither(0, logoY - 2, this.w, 34, P.INK, 12);
     r.sprite('logo', logoX, logoY + bob);
-    if (!this.portrait) r.text('A DARTS ROGUELITE · 501 · DOUBLE OUT', 242, 46 - 12 + bob + 12, { color: P.PEWTER, align: 'center' });
     // menu
     this.buttons.draw(r, this.keyboardFocus);
     // lifetime stats

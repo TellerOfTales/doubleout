@@ -901,14 +901,16 @@ export class GameScreen implements Scene {
     const hintOn = this.app.save.data.settings.checkoutHint;
     const cl = l.checkoutLine;
     if (hintOn && this.hints && leg.status === 'ACTIVE') {
-      r.text('OUT', cl.x, cl.y, { color: P.PEWTER });
       if (this.hints.best) {
         const route = this.hints.best.defIds.map((d) => targetNotation(this.night.library.find((c) => c.defId === d)?.target ?? { region: 'S', bed: 20 })).join(' ');
+        r.text('OUT', cl.x, cl.y, { color: P.PEWTER });
         r.text(route, cl.x + 22, cl.y, { color: P.BRASS_LIT });
       } else if (this.hints.inRange) {
+        r.text('OUT', cl.x, cl.y, { color: P.PEWTER });
         r.text('NO ROUTE IN THIS DECK', cl.x + 22, cl.y, { color: P.EMBER });
       } else {
-        r.text('FINISH ON A DOUBLE', cl.x + 22, cl.y, { color: P.STONE });
+        // Too far out for a route: just the standing reminder.
+        r.text('FINISH ON A DOUBLE', cl.x, cl.y, { color: P.STONE });
       }
     }
     // visit line

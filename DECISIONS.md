@@ -80,8 +80,9 @@ tests and the code can refer to them. Per-area worker notes live in `docs/decisi
     `tools/genart.ts` uses to write the PNGs. The game never loads a file, which is what makes
     the single-file build and offline play trivial; the PNGs in `assets/generated/` exist for
     inspection and the byte-identical build test.
-34. **Board on screen is 96 px** with a numbers ring; the 128 px board is the title-screen hero.
-    A 128 px board plus a 56 px card row plus chrome and commentary does not fit in 180 px.
+34. **Board on screen is 96 px** with a numbers ring, on every screen. A 128 px board plus a
+    56 px card row plus chrome and commentary does not fit in 180 px, and on the title screen
+    the word-mark band owns the top 34 px. The 128 px generator is kept for the asset manifest.
 35. **Chalk chips in play are 20×20** (9-slice of the 32×32 frame with a 12×12 icon); the shop
     shows the full 32×32 frame.
 36. **Fades and flashes are ordered dithers**, not alpha blends, so every pixel on screen stays

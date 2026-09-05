@@ -126,6 +126,12 @@ class Tutorial {
 
   private say(p: Prompt): void {
     this.prompt = p;
+    // While a prompt waits on a button the hand is not the subject: lock it,
+    // but drop the card restriction so nothing is drawn as disabled.
+    if (p.button && this.game) {
+      this.game.hand.locked = true;
+      this.game.hand.allowed = null;
+    }
     this.buildButtons();
   }
 
@@ -133,10 +139,17 @@ class Tutorial {
     const b = this.buttons;
     b.clear();
     const panel = this.panelRect();
+    // Lay the buttons out right-to-left inside the panel, so a narrow panel
+    // never pushes one off the edge.
+    const by = panel.y + panel.h - 20;
+    const avail = panel.w - 10;
+    const count = (this.prompt?.button ? 1 : 0) + (this.prompt?.second ? 1 : 0);
+    const bw = count === 2 ? Math.min(60, Math.floor((avail - 6) / 2)) : Math.min(64, avail);
+    const rightX = panel.x + panel.w - 5 - bw;
     if (this.prompt?.button) {
       b.add({
         id: 'next',
-        rect: { x: panel.x + panel.w - 62, y: panel.y + panel.h - 20, w: 56, h: 16 },
+        rect: { x: rightX, y: by, w: bw, h: 16 },
         label: this.prompt.button,
         primary: true,
         onPress: () => {
@@ -148,7 +161,7 @@ class Tutorial {
     if (this.prompt?.second) {
       b.add({
         id: 'second',
-        rect: { x: panel.x + panel.w - 128, y: panel.y + panel.h - 20, w: 60, h: 16 },
+        rect: { x: rightX - bw - 6, y: by, w: bw, h: 16 },
         label: this.prompt.second.label,
         onPress: this.prompt.second.onPress,
       });
@@ -519,7 +532,7 @@ class Tutorial {
         this.say({
           place: 'bottom',
           text: 'Cards join your deck for every leg. Chalk bends the rules. Buy HOT TWENTY, then head TO THE OCHE.',
-          target: () => (s.portrait ? { x: 92, y: 16, w: 82, h: 88 } : { x: 162, y: 16, w: 74, h: 90 }),
+          target: () => (s.portrait ? { x: 6, y: 102, w: 82, h: 84 } : { x: 162, y: 16, w: 74, h: 90 }),
         });
       },
       onBuy: (slot) => {
@@ -527,7 +540,7 @@ class Tutorial {
           this.say({
             place: 'bottom',
             text: 'That chalk now sits in a slot. It fires on every throw it applies to, in the order you bought it.',
-            target: () => (this.shop?.portrait ? { x: 6, y: 224, w: 168, h: 18 } : { x: 210, y: 112, w: 104, h: 16 }),
+            target: () => (this.shop?.portrait ? { x: 6, y: 226, w: 168, h: 18 } : { x: 210, y: 112, w: 104, h: 16 }),
           });
         }
       },

@@ -2,7 +2,7 @@
  * Interface chrome: panel frame, button, the 8×8 icon set, the scoreboard
  * slate, the decorative pint and the title logo.
  */
-import { P, createPixmap, px, type Pixmap } from '../palette.ts';
+import { P, TRANSPARENT, createPixmap, px, type Pixmap } from '../palette.ts';
 import { blit, drawGlyph, drawText, fillRect, flipH, flipV, fontDims, fromAscii, glyphRows, hLine, hash2, rectOutline, roundedRect, sheet, vLine } from './draw.ts';
 import { dartFrame0 } from './darts.ts';
 import { rotateDeg } from './draw.ts';
@@ -178,61 +178,54 @@ export { ICON_NAMES };
  * pixel (2px) and the word gap is 8px. See docs/decisions/art.md.
  */
 export function genLogo(): Pixmap {
-  const W = 160;
-  const H = 40;
+  // "DOUBLE OUT" set once in the 9x12 face at 2x, with room to breathe: the
+  // word mark is the only place the two headline colours meet.
+  const W = 180;
+  const H = 30;
   const p = createPixmap(W, H);
   const text = 'DOUBLE OUT';
   const scale = 2;
   const { w: gw, h: gh } = fontDims(9);
   const letterW = gw * scale; // 18
   const letterH = gh * scale; // 24
-  const letters = [...text].filter((c) => c !== ' ').length;
+  const gap = 0;
   const wordGap = 8;
-  let gap = 2;
-  const widthFor = (g: number) => letters * letterW + (letters - 2) * g + wordGap;
-  while (widthFor(gap) + 2 > W - 4 && gap > -4) gap--;
-  const total = widthFor(gap) + 2;
+  const glyphs = [...text];
+  const letters = glyphs.filter((c) => c !== ' ').length;
+  const total = letters * letterW + (letters - 2) * gap + wordGap;
   const x0 = Math.floor((W - total) / 2);
-  const y0 = Math.floor((H - letterH - 2) / 2);
+  const y0 = Math.floor((H - letterH) / 2);
 
-  // Rasterise each letter into its own pixmap so the bevel can find "top edges".
-  const positions: { ch: string; x: number }[] = [];
+  // Rasterise into a mask so the drop shadow and the top bevel can be derived.
+  const mask = createPixmap(W, H);
   let cx = x0;
-  for (const ch of text) {
+  let seenSpace = false;
+  for (const ch of glyphs) {
     if (ch === ' ') {
-      cx += wordGap - gap;
+      cx += wordGap;
+      seenSpace = true;
       continue;
     }
-    positions.push({ ch, x: cx });
-    cx += letterW + gap;
-  }
-  const mask = createPixmap(W, H);
-  for (const { ch, x } of positions) {
     const rows = glyphRows(9, ch);
+    // DOUBLE in chalk, OUT in brass.
+    const face = seenSpace ? P.BRASS_LIT : P.CHALK;
     for (let gy = 0; gy < gh; gy++) {
       for (let gx = 0; gx < gw; gx++) {
-        if ((rows[gy] >> (gw - 1 - gx)) & 1) fillRect(mask, x + gx * scale, y0 + gy * scale, scale, scale, P.CHALK);
+        if ((rows[gy] >> (gw - 1 - gx)) & 1) fillRect(mask, cx + gx * scale, y0 + gy * scale, scale, scale, face);
       }
     }
+    cx += letterW + gap;
   }
-  // shadow, then face, then bevel
-  blit(p, mask, 2, 2, { remap: () => P.INK });
+  blit(p, mask, 2, 2, { remap: (v) => (v === TRANSPARENT ? TRANSPARENT : P.INK) });
   blit(p, mask, 0, 0);
+  // 1px darker underline along every bottom edge, so the letters sit on the board
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      if (mask.data[y * W + x] !== P.CHALK) continue;
-      const above = y === 0 ? 255 : mask.data[(y - 1) * W + x];
-      if (above !== P.CHALK) px(p, x, y, P.BRASS_LIT);
+      const v = mask.data[y * W + x];
+      if (v === TRANSPARENT) continue;
+      const below = y === H - 1 ? TRANSPARENT : mask.data[(y + 1) * W + x];
+      if (below === TRANSPARENT) px(p, x, y, v === P.CHALK ? P.MIST : P.BRASS);
     }
-  }
-  // a dart through the last O (frame 0 rotated 135°: tip down-right), drawn at 2×
-  const lastO = positions.filter((q) => q.ch === 'O').pop();
-  if (lastO) {
-    const dart = rotateDeg(dartFrame0(), 135);
-    const dx = lastO.x + Math.floor(letterW / 2) - 9;
-    const dy = y0 + Math.floor(letterH / 2) - 9;
-    blit(p, dart, dx + 2, dy + 2, { scale: 2, remap: () => P.INK });
-    blit(p, dart, dx, dy, { scale: 2 });
   }
   return p;
 }

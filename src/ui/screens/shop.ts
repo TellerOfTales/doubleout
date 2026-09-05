@@ -106,7 +106,7 @@ export class ShopScreen implements Scene {
       for (let i = 0; i < 4; i++) {
         const col = i % 2;
         const row = Math.floor(i / 2);
-        this.slotRects.push({ x: 6 + col * 86, y: 16 + row * 92, w: 82, h: 88 });
+        this.slotRects.push({ x: 6 + col * 86, y: 14 + row * 88, w: 82, h: 84 });
       }
     } else {
       for (let i = 0; i < 4; i++) this.slotRects.push({ x: 6 + i * 78, y: 16, w: 74, h: 90 });
@@ -132,7 +132,7 @@ export class ShopScreen implements Scene {
         onPress: () => this.buy(i),
       });
     });
-    const by = this.portrait ? 204 : 112;
+    const by = this.portrait ? 206 : 112;
     const refreshAllowed = this.hooks.allowRefresh !== false;
     b.add({
       id: 'refresh',
@@ -313,8 +313,8 @@ export class ShopScreen implements Scene {
 
   private chipRects(): Rect[] {
     const out: Rect[] = [];
-    const y = this.portrait ? 246 : 132;
-    const x0 = this.portrait ? 6 : 6;
+    const y = this.portrait ? 248 : 132;
+    const x0 = 6;
     for (let i = 0; i < this.night.chalkSlots; i++) out.push({ x: x0 + i * 24, y, w: 22, h: 22 });
     return out;
   }
@@ -429,8 +429,7 @@ export class ShopScreen implements Scene {
     if (shop) shop.slots.forEach((slot, i) => this.drawSlot(r, slot, i));
     // held chalk
     const chips = this.chipRects();
-    const label = this.portrait ? 'CHALK' : 'YOUR CHALK';
-    r.text(label, chips[0].x, chips[0].y - 9, { color: P.PEWTER });
+    if (!this.portrait) r.text('YOUR CHALK', chips[0].x, chips[0].y - 9, { color: P.PEWTER });
     chips.forEach((c, i) => {
       const held = this.night.chalk[i];
       if (!held) {
@@ -449,14 +448,19 @@ export class ShopScreen implements Scene {
     const trebles = lib.filter((c) => c.target.region === 'T').length;
     const infoX = this.portrait ? 6 : chips[chips.length - 1].x + 30;
     const infoY = this.portrait ? 272 : 132;
-    r.dither(infoX - 3, infoY - 2, 130, 21, P.INK, 11);
-    r.text(`${lib.length} CARDS · AVG ${mean}`, infoX, infoY, { color: P.MIST });
-    r.text(`${trebles} TREBLES · ${doubles} DOUBLES`, infoX, infoY + 9, { color: P.PEWTER });
+    if (this.portrait) {
+      r.dither(infoX - 3, infoY - 2, this.w - 6, 12, P.INK, 11);
+      r.text(`${lib.length} CARDS · AVG ${mean} · ${trebles}T ${doubles}D`, infoX, infoY, { color: P.MIST });
+    } else {
+      r.dither(infoX - 3, infoY - 2, 130, 21, P.INK, 11);
+      r.text(`${lib.length} CARDS · AVG ${mean}`, infoX, infoY, { color: P.MIST });
+      r.text(`${trebles} TREBLES · ${doubles} DOUBLES`, infoX, infoY + 9, { color: P.PEWTER });
+    }
     // detail strip: selected slot blurb or chalk tip
     const detailY = this.portrait ? 282 - 40 : 156 - 12;
     const detail = this.detailText();
     if (detail) {
-      const dy = this.portrait ? 226 : detailY + 2;
+      const dy = this.portrait ? 188 : detailY + 2;
       r.dither(3, dy - 2, this.w - 6, 20, P.INK, 11);
       r.textWrap(detail.text, 6, dy, this.w - 12, { color: detail.color });
     }
@@ -495,6 +499,9 @@ export class ShopScreen implements Scene {
     drawPanel(r, rect, undefined, sel);
     if (flash?.active) r.dither(rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, P.BRASS_LIT, flash.value * 8);
     const cx = rect.x + Math.floor(rect.w / 2);
+    // Lay the captions out from the buy button upward so they fit any slot height.
+    const buttonTop = rect.y + rect.h - 22;
+    const stageY = buttonTop - 9;
     if (slot.kind === 'CARD') {
       const d = cardDef(slot.defId);
       const cxw = cx - 20;
@@ -514,15 +521,15 @@ export class ShopScreen implements Scene {
       const idx = CHALK_DEFS.findIndex((x) => x.id === d.id);
       r.sprite('chalk_icons', cx - 6, rect.y + 16, Math.max(0, idx));
       const stageColor = d.stage === 'VALUE' ? P.BRASS_LIT : d.stage === 'BOARD' ? P.CLARET_LIT : d.stage === 'RULE' ? P.SKY_LIT : P.BAIZE_LIT;
-      const lines = r.wrap(d.name.toUpperCase(), rect.w - 8);
-      lines.slice(0, 2).forEach((l, k) => r.text(l, cx, rect.y + 41 + k * 8, { color: slot.sold ? P.PEWTER : P.CHALK, align: 'center' }));
-      r.text(d.stage, cx, rect.y + 58, { color: stageColor, align: 'center' });
+      const lines = r.wrap(d.name.toUpperCase(), rect.w - 8).slice(0, 2);
+      lines.forEach((l, k) => r.text(l, cx, stageY - lines.length * 8 + k * 8, { color: slot.sold ? P.PEWTER : P.CHALK, align: 'center' }));
+      r.text(d.stage, cx, stageY, { color: stageColor, align: 'center' });
     } else {
       const s = SERVICE_TEXT[slot.service];
       r.spriteScaled('icons', cx - 12, rect.y + 8, 3, s.icon);
-      const lines = r.wrap(s.name, rect.w - 8);
-      lines.slice(0, 2).forEach((l, k) => r.text(l, cx, rect.y + 41 + k * 8, { color: slot.sold ? P.PEWTER : P.CHALK, align: 'center' }));
-      r.text('SERVICE', cx, rect.y + 58, { color: P.MIST, align: 'center' });
+      const lines = r.wrap(s.name, rect.w - 8).slice(0, 2);
+      lines.forEach((l, k) => r.text(l, cx, stageY - lines.length * 8 + k * 8, { color: slot.sold ? P.PEWTER : P.CHALK, align: 'center' }));
+      r.text('SERVICE', cx, stageY, { color: P.MIST, align: 'center' });
     }
   }
 

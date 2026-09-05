@@ -61,6 +61,18 @@ export class ResultsScreen implements Scene {
         { speaker: 'BARREL', text: "That's the night! That's the actual night! I need to sit down.", triggerId: 'win', priority: 100 },
         { speaker: 'NOCK', text: 'Eight legs. Fewer visits each time. It is finished, and it was done properly.', triggerId: 'win', priority: 100 },
       ]);
+    } else {
+      // Never mock the player on the loss screen (TDD §10.3).
+      const legsWon = n.stats.legsWon;
+      this.bar.say([
+        {
+          speaker: 'NOCK',
+          text: legsWon > 0 ? `${legsWon} leg${legsWon === 1 ? '' : 's'} won tonight. The board keeps no grudge, and neither do I.` : 'The board held. It does that. The seed is written down if you want it again.',
+          triggerId: 'loss',
+          priority: 100,
+        },
+        { speaker: 'BARREL', text: 'Same time tomorrow! Gerald is buying! Gerald does not know this yet!', triggerId: 'loss', priority: 100 },
+      ]);
     }
   }
 
@@ -78,33 +90,29 @@ export class ResultsScreen implements Scene {
   private buildButtons(): void {
     const b = this.buttons;
     b.clear();
-    const bw = 96;
-    const y = this.portrait ? 250 : 136;
-    const x0 = this.portrait ? Math.floor((this.w - bw) / 2) : Math.floor(this.w / 2) - bw - 6;
-    b.add({
-      id: 'again',
-      rect: { x: x0, y, w: bw, h: 18 },
-      label: 'AGAIN',
-      icon: 15,
-      primary: true,
-      onPress: () => {
-        this.app.sfx('ui_confirm');
-        this.app.startNight(this.app.chosenSeed, this.night.oche);
+    const actions: { id: string; label: string; icon?: number; primary?: boolean; onPress: () => void }[] = [
+      {
+        id: 'again',
+        label: 'AGAIN',
+        icon: 15,
+        primary: true,
+        onPress: () => {
+          this.app.sfx('ui_confirm');
+          this.app.startNight(this.app.chosenSeed, this.night.oche);
+        },
       },
-    });
-    b.add({
-      id: 'menu',
-      rect: this.portrait ? { x: x0, y: y + 22, w: bw, h: 18 } : { x: x0 + bw + 12, y, w: bw, h: 18 },
-      label: 'MENU',
-      onPress: () => {
-        this.app.sfx('ui_back');
-        this.app.toTitle();
+      {
+        id: 'menu',
+        label: 'MENU',
+        onPress: () => {
+          this.app.sfx('ui_back');
+          this.app.toTitle();
+        },
       },
-    });
+    ];
     if (this.won) {
-      b.add({
+      actions.push({
         id: 'credits',
-        rect: this.portrait ? { x: x0, y: y + 44, w: bw, h: 18 } : { x: Math.floor(this.w / 2) - 48, y: y + 22, w: 96, h: 16 },
         label: 'CREDITS',
         onPress: () => {
           this.app.sfx('ui_confirm');
@@ -112,6 +120,14 @@ export class ResultsScreen implements Scene {
         },
       });
     }
+    // One row that always fits: AGAIN must be reachable in a single input.
+    const gap = 6;
+    const total = this.w - 12;
+    const bw = Math.min(96, Math.floor((total - gap * (actions.length - 1)) / actions.length));
+    const rowW = bw * actions.length + gap * (actions.length - 1);
+    const x0 = Math.floor((this.w - rowW) / 2);
+    const y = this.portrait ? 254 : 138;
+    actions.forEach((a, i) => b.add({ ...a, rect: { x: x0 + i * (bw + gap), y, w: bw, h: 18 } }));
     b.focusFirst();
   }
 
@@ -156,24 +172,27 @@ export class ResultsScreen implements Scene {
       r.sprite('oche_floor', 0, 132);
     }
     const n = this.night;
-    const pw = this.portrait ? 168 : 232;
+    const pw = this.portrait ? 172 : 268;
     const px = Math.floor((this.w - pw) / 2);
-    const py = this.portrait ? 24 : 14;
-    const ph = this.portrait ? 214 : 116;
+    const py = this.portrait ? 20 : 10;
+    const ph = this.portrait ? 202 : 106;
     drawPanel(r, { x: px, y: py, w: pw, h: ph }, this.won ? 'THE NIGHT IS YOURS' : 'TIMED OUT');
     const cx = px + Math.floor(pw / 2);
     let y = py + 12;
-    if (this.won) {
-      r.text('EIGHT LEGS. CHECKED OUT. FINISHED.', cx, y, { color: P.BRASS_LIT, align: 'center' });
+    const blurb = (head: string, headColor: number, sub: string) => {
+      r.text(head, cx, y, { color: headColor, align: 'center' });
       y += 9;
-      r.text("That's the game. There is no endless mode. Go outside.", cx, y, { color: P.MIST, align: 'center' });
-      y += 12;
+      for (const line of r.wrap(sub, pw - 12)) {
+        r.text(line, cx, y, { color: P.MIST, align: 'center' });
+        y += 8;
+      }
+      y += 4;
+    };
+    if (this.won) {
+      blurb('EIGHT LEGS. CHECKED OUT. FINISHED.', P.BRASS_LIT, "That's the game. There is no endless mode. Go outside.");
     } else {
       const leg = n.legs[n.legs.length - 1];
-      r.text(`${legName(leg.index).toUpperCase()} · ${leg.score} LEFT AFTER ${leg.visitLimit} VISITS`, cx, y, { color: P.EMBER, align: 'center' });
-      y += 9;
-      r.text('Nothing is lost. Nothing decays. Have another go.', cx, y, { color: P.MIST, align: 'center' });
-      y += 12;
+      blurb(`${legName(leg.index).toUpperCase()} · ${leg.score} LEFT AFTER ${leg.visitLimit} VISITS`, P.EMBER, 'Nothing is lost. Nothing decays. Have another go.');
     }
     drawRule(r, px + 8, y, pw - 16);
     y += 4;
