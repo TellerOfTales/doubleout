@@ -7,7 +7,7 @@ import { P } from '../../art/palette';
 import { measureText } from '../../art/sprites';
 import { cardDef } from '../../content/cards';
 import { CHALK_DEFS, chalkDef } from '../../content/chalkdefs';
-import { SHOP_REFRESH_COST } from '../../content/legs';
+import { LIBRARY_FLOOR, SHOP_REFRESH_COST } from '../../content/legs';
 import { targetNotation } from '../../core/board';
 import { buildBarkContext } from '../../core/commentary';
 import { legName, shopBuy, shopLeave, shopRefresh } from '../../core/state';
@@ -123,7 +123,7 @@ export class ShopScreen implements Scene {
       const allowed = !this.hooks.allowedSlots || this.hooks.allowedSlots.includes(i);
       const canAfford = this.night.pot >= slot.cost;
       // The bin never sells out, but it stops at the smallest playable library.
-      const emptied = slot.kind === 'SERVICE' && slot.service === 'REMOVE' && this.night.library.length <= 6;
+      const emptied = slot.kind === 'SERVICE' && slot.service === 'REMOVE' && this.night.library.length <= LIBRARY_FLOOR;
       const spent = slot.sold || emptied;
       b.add({
         id: `buy${i}`,
@@ -495,7 +495,9 @@ export class ShopScreen implements Scene {
     if (slot.kind === 'CARD') {
       const d = cardDef(slot.defId);
       const region = d.target.region === 'T' ? 'A treble: three times the bed.' : d.target.region === 'D' ? 'A double: finishes a leg.' : d.target.region === 'IB' ? 'The bull: 50, and it counts as a double.' : d.target.region === 'OB' ? 'Outer bull: 25.' : 'A single.';
-      return { text: `${targetNotation(d.target)} - worth ${d.value}. ${region} Added to your library for every leg.`, color: P.CHALK };
+      const next = this.night.shanghaiNumbers[this.night.legIndex + 1];
+      const piece = next !== undefined && d.target.bed === next && (d.target.region === 'S' || d.target.region === 'D' || d.target.region === 'T');
+      return { text: `${targetNotation(d.target)} - worth ${d.value}. ${region}${piece ? ` A piece of next leg's Shanghai on the ${next}s.` : ''} Added to your library for every leg.`, color: piece ? P.CLARET_LIT : P.CHALK };
     }
     if (slot.kind === 'CHALK') {
       const d = chalkDef(slot.chalkId);

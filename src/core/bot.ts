@@ -16,10 +16,10 @@
  */
 import { cardDef, makeCard, sharpenedDefId } from '../content/cards';
 import { chalkDef } from '../content/chalkdefs';
-import { LEG_COUNT, SHOP_REFRESH_COST } from '../content/legs';
+import { LEG_COUNT, SHANGHAI_RANGE, SHOP_REFRESH_COST } from '../content/legs';
 import { computeCheckoutHints } from './checkout';
 import { resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
-import { addChalk, beginLeg, cashHeat, commitCard, commitMiss, createNight, currentLeg, currentVisit, hasChalk, newCard, pocketCard, shanghaiProgress, shopBuy, shopLeave, shopRefresh, type BuyOptions, visitTotal } from './state';
+import { addChalk, beginLeg, commitCard, commitMiss, completesShanghai, createNight, currentLeg, currentVisit, hasChalk, newCard, pocketCard, shanghaiProgress, shopBuy, shopLeave, shopRefresh, type BuyOptions, visitTotal } from './state';
 import type { Chalk, DartCard, LegState, NightState, OcheId, ThrowResult, VisitState } from './types';
 
 export type Policy = 'greedy' | 'checkout' | 'optimal';
@@ -44,7 +44,6 @@ export interface NightOutcome {
   misses: number;
   shanghais: number;
   bestStreak: number;
-  heatCashed: number;
   chalkHeld: string[];
   seed: number;
   throws: number;
@@ -464,7 +463,7 @@ function chooseOptimal(n: NightState, leg: LegState): DartCard {
       const head = first ?? card;
       const piece = pieceOf(r);
       const withPiece = piece && !pieces.has(piece) ? new Set(pieces).add(piece) : pieces;
-      if (withPiece.size === 3 || r.outcome === 'CHECKOUT') {
+      if ((withPiece.size === 3 && visit.scoreAtVisitStart <= SHANGHAI_RANGE) || r.outcome === 'CHECKOUT') {
         // Nothing beats finishing the leg.
         consider(head, 1e9 - dartsGone);
         continue;
@@ -537,6 +536,21 @@ export function considerPocket(n: NightState, leg: LegState): void {
     }
   }
   if (best) pocketCard(n, best.id);
+}
+
+/** True if this card would complete a Shanghai that wins the leg (the visit began in range). */
+export function completesInRange(n: NightState, leg: LegState, card: DartCard): boolean {
+  const visit = leg.visits[leg.visits.length - 1];
+  if (!visit || visit.scoreAtVisitStart > SHANGHAI_RANGE) return false;
+  const r = resolveThrow(card, {
+    chalk: n.chalk,
+    rng: null,
+    scoreBefore: leg.score,
+    scoreAtVisitStart: visit.scoreAtVisitStart,
+    visitThrowIndex: visit.throws.length as 0 | 1 | 2 | 3,
+    forgivenessUsed: leg.forgivenessUsed,
+  }).result;
+  return completesShanghai(visit.throws, r, leg.shanghai);
 }
 
 /** True if committing this card resolves to a bust from the current position. */
@@ -948,18 +962,6 @@ function legOutcome(leg: LegState): LegOutcome {
   };
 }
 
-/**
- * Cash the crowd when riding it is worth less than banking it: the wall is
- * about to wipe it anyway, or the leg is on its last visit and a finish now
- * is unlikely to be clean.
- */
-export function considerCash(n: NightState, leg: LegState, aboutToWalk: boolean): void {
-  const visit = currentVisit(leg);
-  if (!visit || visit.throws.length > 0 || leg.heat <= 0) return;
-  const visitsLeft = leg.visitLimit - leg.visits.length;
-  if (aboutToWalk || visitsLeft <= 0) cashHeat(n);
-}
-
 export function playNight(seed: number, policy: Policy, opts: PlayOptions = {}): NightOutcome {
   const n = createNight(seed, opts.oche ?? 'local');
   if (opts.startLeg !== undefined) n.legIndex = Math.max(0, Math.min(LEG_COUNT - 1, opts.startLeg));
@@ -972,9 +974,9 @@ export function playNight(seed: number, policy: Policy, opts: PlayOptions = {}):
       const leg = currentLeg(n);
       if (policy !== 'greedy') considerPocket(n, leg);
       const card = chooseCard(n, leg, policy);
-      // Every card would bust: throw at the wall instead of wrecking the visit.
-      const walk = policy !== 'greedy' && wouldBust(n, leg, card);
-      if (policy !== 'greedy') considerCash(n, leg, walk);
+      // Every card would bust: throw at the wall instead of wrecking the visit —
+      // unless the "bust" is the third piece of an in-range Shanghai.
+      const walk = policy !== 'greedy' && wouldBust(n, leg, card) && !completesInRange(n, leg, card);
       if (walk) commitMiss(n);
       else commitCard(n, card.id);
       throws++;
@@ -994,7 +996,6 @@ export function playNight(seed: number, policy: Policy, opts: PlayOptions = {}):
     misses: n.stats.misses,
     shanghais: n.stats.shanghais,
     bestStreak: n.stats.bestStreak,
-    heatCashed: n.stats.heatCashed,
     chalkHeld: n.chalk.map((c) => c.def.id),
     seed,
     throws,

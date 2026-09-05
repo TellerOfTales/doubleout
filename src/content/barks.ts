@@ -20,6 +20,7 @@
  *
  * Character set: ASCII printable plus '…' (the 5x7 font has no em-dash).
  */
+import { SHANGHAI_RANGE } from './legs';
 import { shanghaiProgress } from '../core/state';
 import type { BarkContext, BarkTrigger, ThrowResult } from '../core/types';
 
@@ -1130,7 +1131,7 @@ export const BARKS: BarkTrigger[] = [
       'THE CROWD IS UP! They are ON THEIR FEET! Gerald is on a CHAIR!',
       "That is the room at full volume and the Pot has DOUBLED! Do not bust! DO NOT BUST!",
       'Four clean visits! The place has gone! I can hear my own heartbeat and I like it!',
-      'Double money on this leg! Somebody hold my clipboard! I do not have a clipboard!',
+      'Double the Pot on this leg! Somebody hold my clipboard! I do not have a clipboard!',
     ],
     reply: {
       speaker: 'NOCK',
@@ -1221,11 +1222,11 @@ const PACKAGE_BARKS: BarkTrigger[] = [
     speaker: 'BARREL',
     priority: 108,
     cooldown: 6,
-    when: (ctx) => ctx.event.type === 'SHANGHAI',
+    when: (ctx) => ctx.event.type === 'SHANGHAI' && ctx.event.won,
     lines: [
       "SHANGHAI! SINGLE, DOUBLE, TREBLE! THE LEG IS OVER! Nock, the leg is OVER!",
       "SHANGHAI! Whatever was left, it's gone! GONE! The scoreboard's been made redundant!",
-      "SHANGHAI ON THE {card}S! Gerald's up! Gerald's on a CHAIR! That chair has a history!",
+      "SHANGHAI ON THE {number}S! Gerald's up! Gerald's on a CHAIR! That chair has a history!",
       "THE SHANGHAI! The pub rule! The ONE! Three darts, one number, and the leg just… ENDS!",
       "SHANGHAI! I've never seen one! I've seen one NOW! I'll be seeing it for WEEKS!",
       "ONE NUMBER, THREE WAYS, AND GOODNIGHT! That is a SHANGHAI and I need a sit down!",
@@ -1241,6 +1242,25 @@ const PACKAGE_BARKS: BarkTrigger[] = [
     },
   },
   {
+    id: 'shanghai_scoring',
+    speaker: 'NOCK',
+    priority: 90,
+    cooldown: 6,
+    when: (ctx) => ctx.event.type === 'SHANGHAI' && !ctx.event.won,
+    lines: [
+      'Single, double, treble of the {number}s, from up here. The Pot pays; the board plays on.',
+      'A Shanghai in the scoring. Inside 170 it ends the leg. Up here it pays the crowd.',
+      'Three rings of the called number. Out of range, so not the leg. Still the loudest thing.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        "A SHANGHAI! Doesn't count! Counts a BIT! The crowd's paying! The BOARD isn't!",
+        "Three rings! From all the way up there! Do it again LOWER DOWN and we go HOME!",
+      ],
+    },
+  },
+  {
     id: 'shanghai_two',
     speaker: 'NOCK',
     priority: 48,
@@ -1248,13 +1268,17 @@ const PACKAGE_BARKS: BarkTrigger[] = [
     when: (ctx) => {
       if (ctx.event.type !== 'THROW' || ctx.event.result.outcome !== 'CONTINUE') return false;
       const v = ctx.leg.visits[ctx.leg.visits.length - 1];
-      return !!v && v.throws.length < 3 && shanghaiProgress(ctx.leg).size === 2;
+      if (!v || v.scoreAtVisitStart > SHANGHAI_RANGE) return false;
+      const got = shanghaiProgress(ctx.leg);
+      if (got.size !== 2) return false;
+      // Only when the third piece is actually in hand: Nock does not cry wolf.
+      return ctx.leg.hand.some((c) => c.target.bed === ctx.leg.shanghai && (c.target.region === 'S' || c.target.region === 'D' || c.target.region === 'T') && !got.has(c.target.region));
     },
     lines: [
-      'Two of the three. One dart, one ring, and the leg ends where it stands.',
-      'That is two pieces of the Shanghai in one visit. The room has noticed. So has the board.',
-      'Two down. The third would finish the leg from anywhere. I will not say more. Barrel will.',
-      'Single and double, or double and treble, it does not matter. One more of the {card}s.',
+      'Two of the three, and the third is in hand. One dart, and the leg ends where it stands.',
+      'Two pieces of the Shanghai down, the last one dealt. The room has noticed. So has the.',
+      'Two down, one in hand. It finishes the leg whatever the score says. Barrel says the rest.',
+      'Single and double, or double and treble, it does not matter. One more of the {number}s.',
     ],
     reply: {
       speaker: 'BARREL',
@@ -1268,13 +1292,13 @@ const PACKAGE_BARKS: BarkTrigger[] = [
   {
     id: 'shanghai_called',
     speaker: 'NOCK',
-    priority: 28,
-    cooldown: 12,
-    when: (ctx) => ctx.event.type === 'LEG_START' && ctx.leg.visits.length <= 1,
+    priority: 46,
+    cooldown: 3,
+    when: (ctx) => ctx.event.type === 'LEG_START' && ctx.event.legIndex >= 1 && ctx.leg.visits.length <= 1,
     lines: [
-      'Shanghai stands tonight. Single, double and treble of one number in a visit wins the leg.',
-      'House rule on the board: three rings of the called number in a visit and the leg is yours.',
-      'The Shanghai number is called. Most nights nobody hits it. Everyone talks about it anyway.',
+      'Shanghai on the {number}s. Single, double, treble in a visit, inside 170, and the leg is.',
+      'The {number}s are called. Three rings in one visit, in checkout range, and the board can.',
+      'Shanghai number: {number}. Most nights nobody hits it. Everyone talks about it anyway.',
     ],
   },
   {
@@ -1287,35 +1311,14 @@ const PACKAGE_BARKS: BarkTrigger[] = [
       "Into the WALL! Score's safe! Crowd's gone COLD! You can't have both, apparently! Who KNEW!",
       "The wall! Safe as houses! Cold as houses! Houses are cold, Nock! Mine is!",
       "Walked away from it! Sensible! The crowd HATES sensible! Listen to them! NOTHING!",
-      "That's the wall, and the warmth's gone with it! You could have banked that! I WOULD have!",
+      "That's the wall, and the warmth's gone with it! Safe as houses! COLD as houses!",
     ],
     reply: {
       speaker: 'NOCK',
       lines: [
-        'The wall keeps the score and spends the crowd. It was on offer to bank before the throw.',
+        'The wall keeps the score and spends the crowd. Those were the terms. They are on the door.',
         'A cold room and an intact score. That is the trade. It is not a bad trade. It is a trade.',
         'Nothing lost on the board. Everything lost on the gauge. Two different ledgers.',
-      ],
-    },
-  },
-  {
-    id: 'heat_cashed',
-    speaker: 'NOCK',
-    priority: 58,
-    cooldown: 6,
-    when: (ctx) => ctx.event.type === 'HEAT_CASHED',
-    lines: [
-      'Banked. The sure thing, taken. The gauge starts again from nothing, where it started.',
-      'The crowd is paid off and sits down. {pot} to the Pot. Could have been more, or nothing.',
-      'Banked before the throw. The wall can do what it likes now. So can the board.',
-      'That is the ride declined. Sensible people decline rides. Barrel never has.',
-    ],
-    reply: {
-      speaker: 'BARREL',
-      lines: [
-        "BANKED IT! Coins in the tin! The crowd's confused but they've been PAID!",
-        "Took the coins and ran! Well, stood! Took the coins and STOOD!",
-        "That's a pint's worth right there! Not a real pint! A METAPHORICAL pint! Gerald, DOWN!",
       ],
     },
   },
@@ -1362,8 +1365,8 @@ const PACKAGE_BARKS: BarkTrigger[] = [
   {
     id: 'leg_301',
     speaker: 'NOCK',
-    priority: 26,
-    cooldown: 20,
+    priority: 46,
+    cooldown: 40,
     when: (ctx) => ctx.event.type === 'LEG_START' && ctx.event.legIndex <= 1 && ctx.leg.score === 301,
     lines: [
       'Three hundred and one to start. The short game. Ten visits, and a double at the end of it.',

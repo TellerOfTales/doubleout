@@ -401,3 +401,73 @@ clean sheet's ×3 is its default and the busts-per-night line stays at 0.0; a hu
 who busts twice a night feels the sheet break, which is the design. The bot also
 never hunts the Shanghai and never rides the crowd on purpose, so its Shanghai and
 cash numbers are floors.
+
+
+---
+
+# Fifth pass: what the critics found, and what the fixes measure
+
+Three agents read the fourth-pass package against the code and the simulator: a
+degeneracy skeptic, a player-feel skeptic and a rules-text auditor. Their findings
+are recorded in DECISIONS.md #67; these are the measurements that decided the fixes.
+
+## The Shanghai engine
+
+The called number was drawn only from what the starting library could complete, so
+The Local called 20 or 16 and The Thin and The Sharp called 20 on every leg of every
+night. With a repeatable bin down to six cards and a win "whatever the score", a
+two-line shop rule (bin anything that is not a piece of the number, buy pieces,
+pocket the double) solved the oche:
+
+| oche | shipped bot | hunter, before the fix | hunter, after |
+|---|---|---|---|
+| The Thin | 13.7% | **73.0%** (5.5 Shanghais a night, legs 4–8 at 97–99%, 821 of 1102 on visit one) | **1.0%** |
+| The Sharp | 8.7% | **57.0%** | **0.0%** |
+| The Local | 13.3% | (a 12-card 20/16 deck took the Decider from 15% to 59–67%) | **1.5%** |
+
+Three levers, all used: the win is gated to a visit that began inside checkout range
+(a trio above 170 pays the bonus to the Pot and the leg goes on), the number is drawn
+from all five so no deck can be tuned to one, and the bin stops at fourteen cards. The
+shop's second card is now always a piece of the next leg's number, so the hunt has
+something to buy toward instead of something to thin toward.
+
+## The Pot flood
+
+The sheet's ×3 sat on top of heat and on top of the visits a fast leg left unused: 218
+Pot a night, of which 120 was the sheet and 198 went unspent against a shop whose
+whole inventory costs 30–40. The sheet now multiplies the leg's base reward and its
+finish bonuses only. Optimal bot, 300 nights:
+
+| | fourth pass | fifth pass |
+|---|---|---|
+| Pot earned a night | 218 | **121** |
+| Pot spent | 20 | 17 |
+| night win rate | 13.3% | 9.7% |
+| mean legs won | 2.88 | 2.87 |
+| best clean sheet | 2.88 | 2.87 |
+
+The night rate gives back two points because the extra Pot was buying chalk; that is
+the intended cost of a working economy. A human who busts twice a night feels the
+sheet break, which the bot (0.0 busts) never does; its ×3 is a default.
+
+## Banking the crowd
+
+It never moved: never cashing earned 211 Pot a night, "cash only before a walk" 218,
+the shipped rule 218, cashing every visit 185. Every one of the bot's 1.85 cashes a
+night came before a forced walk. With the hand fully visible before the choice there
+was nothing to wager on, so it is retired (DECISIONS #65). The wall still costs the
+crowd.
+
+## Shanghai frequency, honestly
+
+With all five numbers called and the range gate on, the bot — which never hunts and
+never buys the piece on offer — hits a Shanghai in 2% of nights. The critics'
+hunter policy on the old rules found a trio in hand at a throwable score about once
+in twenty legs; under the gate that is the ceiling for an in-range win, so a player
+who buys the piece each shop and pockets the double should see one every few nights,
+the scoring-phase bonus a few times a night, and the two-of-three tease more often
+than that. It is a jackpot, and it is priced like one.
+
+## Where it lands (1000 nights)
+
+FIFTH_PASS_TABLE

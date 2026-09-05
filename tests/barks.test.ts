@@ -165,7 +165,7 @@ describe('bark safety scan (TDD §17.10)', () => {
   });
 
   it('every placeholder in the pool is one the engine fills', () => {
-    const known = new Set(['score', 'total', 'value', 'chalk', 'leg', 'pot', 'card', 'n180']);
+    const known = new Set(['score', 'total', 'value', 'chalk', 'leg', 'pot', 'card', 'n180', 'number']);
     const unknown: string[] = [];
     for (const l of LINES) for (const m of l.matchAll(/\{(\w+)\}/g)) if (!known.has(m[1])) unknown.push(`${m[1]} in "${l}"`);
     expect(unknown).toEqual([]);

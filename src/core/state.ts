@@ -5,7 +5,7 @@
  */
 import { CHALK_DEFS, chalkDef } from '../content/chalkdefs';
 import { SHOP_CARD_POOL, cardCost, cardDef, libraryFor, makeCard, sharpenedDefId } from '../content/cards';
-import { DEFAULT_CHALK_SLOTS, HEAT_CAP, HEAT_CASH, LEGS, LEG_COUNT, SERVICE_COST, SETUP_BONUS, SETUP_BONUS_CAP, SHANGHAI_NUMBERS, SHOP_REFRESH_COST } from '../content/legs';
+import { DEFAULT_CHALK_SLOTS, HEAT_CAP, LEGS, LEG_COUNT, LIBRARY_FLOOR, SERVICE_COST, SETUP_BONUS, SETUP_BONUS_CAP, SHANGHAI_BONUS, SHANGHAI_NUMBERS, SHANGHAI_RANGE, SHOP_REFRESH_COST } from '../content/legs';
 import { computeCheckoutHints } from './checkout';
 import { discardHand, drawHand, takeFromHand } from './deck';
 import { WALL_CARD_ID } from './board';
@@ -63,7 +63,6 @@ export function createNight(seed: number, oche: OcheId = 'local'): NightState {
       setups: 0,
       bestHeat: 0,
       shanghais: 0,
-      heatCashed: 0,
       bestStreak: 0,
     },
     achievements: [],
@@ -75,12 +74,9 @@ export function createNight(seed: number, oche: OcheId = 'local'): NightState {
     for (let i = 0; i < copies; i++) n.library.push(newCard(n, defId));
   }
   // Every leg's Shanghai number is called up front, in a fixed place in the
-  // RNG order, so the shop can name the next one and a player can build for
-  // it. Only numbers the starting library can actually complete are called,
-  // so the hunt is always on.
-  const callable = SHANGHAI_NUMBERS.filter((num) => (['S', 'D', 'T'] as const).every((reg) => n.library.some((c) => c.target.bed === num && c.target.region === reg)));
-  const pool = callable.length ? callable : SHANGHAI_NUMBERS;
-  for (let i = 0; i < LEG_COUNT; i++) n.shanghaiNumbers.push(pool[nextInt(n.rng, pool.length)]);
+  // RNG order, from all five numbers, so no library can be tuned to one of
+  // them. The shop before each leg sells a piece of the next number.
+  for (let i = 0; i < LEG_COUNT; i++) n.shanghaiNumbers.push(SHANGHAI_NUMBERS[nextInt(n.rng, SHANGHAI_NUMBERS.length)]);
   if (oche === 'steady') addChalk(n, 'forgiving_oche');
   return n;
 }
@@ -232,10 +228,13 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
   });
   if (forgivenessConsumed) leg.forgivenessUsed = true;
 
-  // Shanghai: single, double and treble of the called number in one visit
-  // wins the leg outright, whatever the score — even off a dart that would
-  // otherwise have bust. Checked before the outcome so it takes precedence.
-  if (!missed && completesShanghai(visit.throws, result, leg.shanghai)) {
+  // Shanghai: single, double and treble of the called number in one visit.
+  // Inside checkout range it wins the leg outright, whatever the arithmetic
+  // says — even off a dart that would otherwise have bust — so it is checked
+  // before the outcome. Above range it pays the bonus and the leg goes on.
+  const trio = !missed && completesShanghai(visit.throws, result, leg.shanghai);
+  const trioWins = trio && visit.scoreAtVisitStart <= SHANGHAI_RANGE;
+  if (trioWins) {
     result.shanghai = true;
     result.outcome = 'CHECKOUT';
     result.scoreAfter = 0;
@@ -251,13 +250,21 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
   const events: EngineEvent[] = [{ type: 'THROW', result }];
   const perVisit = throwsPerVisit(n);
 
+  if (trio && !trioWins && result.outcome !== 'BUST') {
+    // A trio in the scoring phase: the crowd pays, the board does not.
+    n.pot += SHANGHAI_BONUS;
+    n.stats.potEarned += SHANGHAI_BONUS;
+    n.stats.shanghais++;
+    events.push({ type: 'SHANGHAI', number: leg.shanghai, total: visitTotal(visit), won: false, pot: SHANGHAI_BONUS });
+  }
+
   if (result.outcome === 'CHECKOUT') {
     visit.busted = false;
     leg.heat = Math.min(HEAT_CAP, leg.heat + 1);
     n.stats.bestHeat = Math.max(n.stats.bestHeat, leg.heat);
     if (result.shanghai) {
       n.stats.shanghais++;
-      events.push({ type: 'SHANGHAI', number: leg.shanghai, total: visitTotal(visit) });
+      events.push({ type: 'SHANGHAI', number: leg.shanghai, total: visitTotal(visit), won: true, pot: SHANGHAI_BONUS });
     }
     endVisit(n, leg, visit, events, false);
     leg.status = 'CHECKED_OUT';
@@ -267,7 +274,9 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
     n.streak = leg.dirty ? 0 : n.streak + 1;
     n.stats.bestStreak = Math.max(n.stats.bestStreak, n.streak);
     const reward = leg.index === LEG_COUNT - 1 ? null : potReward(leg, n.streak);
-    const checkoutFrom = visit.scoreAtVisitStart;
+    // A Shanghai is not a checkout: the folk stats and the unlocks that read
+    // "a 100+ checkout" and "a leg in six" are about the arithmetic.
+    const checkoutFrom = result.shanghai ? 0 : visit.scoreAtVisitStart;
     n.stats.bestCheckout = Math.max(n.stats.bestCheckout, checkoutFrom);
     if (reward) {
       leg.reward = reward;
@@ -278,13 +287,13 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
       if (reward.nineDarter) n.stats.nineDarters++;
     } else {
       // Last leg: still track the folk stats.
-      if (leg.visits.length === 3) n.stats.nineDarters++;
+      if (leg.visits.length === 3 && startedLong(leg) && !result.shanghai) n.stats.nineDarters++;
       if (checkoutFrom >= 100) n.stats.bigFinishes++;
       if (leg.bustsThisLeg === 0) n.stats.cleanLegs++;
     }
     events.push({ type: 'CHECKOUT', legIndex: leg.index, reward });
     if (checkoutFrom >= 100) achieve(n, 'sharp', events);
-    if (leg.visits.length <= 6) achieve(n, 'thin', events);
+    if (leg.visits.length <= 6 && startedLong(leg)) achieve(n, 'thin', events);
 
     if (leg.index === LEG_COUNT - 1) {
       n.status = 'WON';
@@ -309,11 +318,18 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
       events.push({ type: 'HEAT_LOST', from: leg.heat, reason: 'BUST' });
       leg.heat = 0;
     }
-    dirtyLeg(n, leg, events, 'BUST');
+    // Cheap Chalk's bust-to-2 is a line the chalk exists for: the sheet forgives it.
+    if (!result.firedChalk.includes('cheap_chalk')) dirtyLeg(n, leg, events);
     endVisit(n, leg, visit, events, false);
     if (leg.visits.length >= leg.visitLimit) timeOut(n, leg, events);
     else events.push(...startVisit(n, leg));
     return { result, events };
+  }
+
+  // A forgiven bust never happened on the board, but the crowd saw the dart.
+  if (result.forgiven && leg.heat > 0) {
+    events.push({ type: 'HEAT_LOST', from: leg.heat, reason: 'BUST' });
+    leg.heat = 0;
   }
 
   // CONTINUE — the visit ends when the darts run out, or on a deliberate miss.
@@ -326,7 +342,8 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
         events.push({ type: 'HEAT_LOST', from: leg.heat, reason: 'MISS' });
         leg.heat = 0;
       }
-    } else {
+    } else if (!visit.throws.some((t) => t.forgiven)) {
+      // A visit the crowd watched a dart get forgiven in does not warm them.
       leg.heat = Math.min(HEAT_CAP, leg.heat + 1);
     }
     n.stats.bestHeat = Math.max(n.stats.bestHeat, leg.heat);
@@ -341,13 +358,14 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
 /**
  * True if `result`, added to the visit's previous throws, gives a single, a
  * double and a treble of the called number. Only each throw's primary hit
- * counts (a split-tips echo is not a dart), bulls never qualify, and the
- * resolved bed is what matters, so Mirrored and Narrow Beds play into it.
+ * counts (a split-tips echo is not a dart), a forgiven dart never happened,
+ * bulls never qualify, and the resolved bed is what matters, so Mirrored and
+ * Narrow Beds play into it.
  */
 export function completesShanghai(previous: ThrowResult[], result: ThrowResult, number: number): boolean {
   const seen = new Set<string>();
   for (const t of [...previous, result]) {
-    if (t.miss) continue;
+    if (t.miss || t.forgiven) continue;
     const hit = t.hits[0];
     if (!hit || hit.target.bed !== number) continue;
     if (hit.target.region === 'S' || hit.target.region === 'D' || hit.target.region === 'T') seen.add(hit.target.region);
@@ -361,7 +379,7 @@ export function shanghaiProgress(leg: LegState): Set<'S' | 'D' | 'T'> {
   const visit = leg.visits[leg.visits.length - 1];
   if (!visit) return seen;
   for (const t of visit.throws) {
-    if (t.miss) continue;
+    if (t.miss || t.forgiven) continue;
     const hit = t.hits[0];
     if (!hit || hit.target.bed !== leg.shanghai) continue;
     if (hit.target.region === 'S' || hit.target.region === 'D' || hit.target.region === 'T') seen.add(hit.target.region);
@@ -369,34 +387,20 @@ export function shanghaiProgress(leg: LegState): Set<'S' | 'D' | 'T'> {
   return seen;
 }
 
+/** A leg that began at the full 501 or more: the nine-darter and "a leg in six" are about that game. */
+export function startedLong(leg: LegState): boolean {
+  const first = leg.visits[0];
+  return LEGS[leg.index].start >= 501 || (!!first && first.scoreAtVisitStart >= 501);
+}
+
 /** A bust takes the leg off the clean sheet. */
-function dirtyLeg(n: NightState, leg: LegState, events: EngineEvent[], reason: 'BUST' | 'MISS'): void {
+function dirtyLeg(n: NightState, leg: LegState, events: EngineEvent[]): void {
   if (leg.dirty) return;
   leg.dirty = true;
   if (n.streak > 0) {
-    events.push({ type: 'STREAK_LOST', from: n.streak, reason });
+    events.push({ type: 'STREAK_LOST', from: n.streak });
     n.streak = 0;
   }
-}
-
-/**
- * Cash the crowd: bank the heat as Pot now instead of riding it to the
- * finish. Only at the start of a visit, so it is a decision about the hand in
- * front of you — take the sure thing, or throw and risk the wipe.
- */
-export function cashHeat(n: NightState): { ok: boolean; events: EngineEvent[] } {
-  if (n.status !== 'ACTIVE' || n.phase !== 'LEG') return { ok: false, events: [] };
-  const leg = currentLeg(n);
-  if (leg.status !== 'ACTIVE' || leg.heat <= 0) return { ok: false, events: [] };
-  const visit = currentVisit(leg);
-  if (visit.throws.length > 0) return { ok: false, events: [] };
-  const pips = Math.min(HEAT_CAP, leg.heat);
-  const pot = pips * HEAT_CASH;
-  leg.heat = 0;
-  n.pot += pot;
-  n.stats.potEarned += pot;
-  n.stats.heatCashed++;
-  return { ok: true, events: [{ type: 'HEAT_CASHED', pips, pot }] };
 }
 
 /**
@@ -491,7 +495,11 @@ function rollChalkOffer(n: NightState): string | null {
 export function generateShop(n: NightState, afterLeg: number): ShopState {
   const slots: ShopSlot[] = [];
   const c1 = rollCardOffer(n);
-  const c2 = rollCardOffer(n);
+  const rolled = rollCardOffer(n);
+  // The second card is always a piece of the next leg's Shanghai number — the
+  // region the library holds fewest of — so the hunt is something you can buy
+  // toward. The roll is still consumed, so the RNG order does not move.
+  const c2 = shanghaiPieceOffer(n, afterLeg + 1) ?? rolled;
   slots.push({ kind: 'CARD', defId: c1, cost: cardPrice(n, c1), sold: false });
   slots.push({ kind: 'CARD', defId: c2, cost: cardPrice(n, c2), sold: false });
   const ch = rollChalkOffer(n);
@@ -499,6 +507,22 @@ export function generateShop(n: NightState, afterLeg: number): ShopState {
   const s = rollService(n);
   slots.push({ kind: 'SERVICE', service: s, cost: SERVICE_COST[s], sold: false });
   return { slots, refreshed: false, afterLeg };
+}
+
+/** The def id of the single, double or treble of the next leg's number the library has fewest of. */
+export function shanghaiPieceOffer(n: NightState, legIndex: number): string | null {
+  const num = n.shanghaiNumbers[legIndex];
+  if (num === undefined) return null;
+  let best: 'S' | 'D' | 'T' = 'S';
+  let fewest = Infinity;
+  for (const reg of ['D', 'T', 'S'] as const) {
+    const copies = n.library.filter((c) => c.target.bed === num && c.target.region === reg).length;
+    if (copies < fewest) {
+      fewest = copies;
+      best = reg;
+    }
+  }
+  return `${best.toLowerCase()}${num}`;
 }
 
 export interface BuyOptions {
@@ -551,7 +575,7 @@ export function shopBuy(n: NightState, slotIndex: number, opts: BuyOptions = {})
       const card = n.library.find((c) => c.id === opts.cardId);
       if (!card) return { ok: false, reason: 'choose a card', events: [] };
       if (slot.service === 'REMOVE') {
-        if (n.library.length <= 6) return { ok: false, reason: 'library too small', events: [] };
+        if (n.library.length <= LIBRARY_FLOOR) return { ok: false, reason: 'library too small', events: [] };
         n.library = n.library.filter((c) => c.id !== card.id);
         repeatable = true;
       } else if (slot.service === 'DUPLICATE') {

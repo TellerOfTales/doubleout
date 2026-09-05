@@ -26,20 +26,25 @@ export function potReward(leg: LegState, streak = 0): PotBreakdown {
   const finishing = leg.visits[leg.visits.length - 1];
   const checkoutFrom = finishing ? finishing.scoreAtVisitStart : 0;
   const lastThrow = finishing ? finishing.throws[finishing.throws.length - 1] : undefined;
+  const byShanghai = !!lastThrow?.shanghai;
   const base = def.reward;
   const unusedVisits = Math.max(0, leg.visitLimit - visitsUsed);
-  const bigFinish = bigFinishBonus(checkoutFrom);
+  // A Shanghai is not a checkout: no finish ladder, and the nine-darter is a
+  // 501 thing thrown to zero.
+  const bigFinish = byShanghai ? 0 : bigFinishBonus(checkoutFrom);
   const cleanLeg = leg.bustsThisLeg === 0 ? 3 : 0;
-  const nineDarter = visitsUsed === 3 ? 5 : 0;
+  const nineDarter = visitsUsed === 3 && (def.start >= 501 || (leg.visits[0]?.scoreAtVisitStart ?? 0) >= 501) && !byShanghai ? 5 : 0;
   const setup = leg.setupBonuses;
-  const shanghai = lastThrow?.shanghai ? SHANGHAI_BONUS : 0;
+  const shanghai = byShanghai ? SHANGHAI_BONUS : 0;
   const subtotal = base + unusedVisits + bigFinish + cleanLeg + nineDarter + setup + shanghai;
   const heat = Math.min(HEAT_CAP, leg.heat);
   // ×1 at heat 0 rising to ×2 at the cap, in quarters so it stays integer.
   const heatBonus = Math.floor((subtotal * heat) / HEAT_CAP);
   const withHeat = subtotal + heatBonus;
+  // The clean sheet multiplies the leg and its finish, not the visits it left
+  // unused or the crowd: a fast clean leg is worth more, not everything.
   const streakMult = streakMultiplier(streak);
-  const streakBonus = withHeat * (streakMult - 1);
+  const streakBonus = (base + bigFinish + nineDarter + shanghai) * (streakMult - 1);
   return {
     base,
     unusedVisits,

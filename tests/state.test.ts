@@ -5,21 +5,21 @@
  * checkout and the Pot breakdown, the shop, night end, achievements, stats.
  */
 import { describe, expect, it } from 'vitest';
-import { STARTING_LIBRARY, THIN_LIBRARY, cardCost, libraryFor, SHOP_CARD_POOL } from '../src/content/cards.ts';
+import { STARTING_LIBRARY, THIN_LIBRARY, cardCost, cardDef, libraryFor, SHOP_CARD_POOL } from '../src/content/cards.ts';
 import { CHALK_DEFS, chalkDef } from '../src/content/chalkdefs.ts';
 import {
   DEFAULT_THROWS_PER_VISIT,
   HEAT_CAP,
-  HEAT_CASH,
   LEGS,
   LEG_COUNT,
+  LIBRARY_FLOOR,
   SERVICE_COST,
   SETUP_BONUS,
   SETUP_BONUS_CAP,
   SHANGHAI_BONUS,
   SHANGHAI_NUMBERS,
+  SHANGHAI_RANGE,
   SHOP_REFRESH_COST,
-  STARTING_SCORE,
   streakMultiplier,
 } from '../src/content/legs.ts';
 import { OCHES } from '../src/content/oches.ts';
@@ -30,7 +30,6 @@ import {
   addChalk,
   beginLeg,
   cardPrice,
-  cashHeat,
   commitCard,
   commitMiss,
   createNight,
@@ -40,6 +39,7 @@ import {
   hasChalk,
   legName,
   pocketCard,
+  shanghaiPieceOffer,
   shanghaiProgress,
   shopBuy,
   shopLeave,
@@ -107,13 +107,13 @@ function subtotalOf(r: PotBreakdown): number {
   return r.base + r.unusedVisits + r.bigFinish + r.cleanLeg + r.nineDarter + r.setup + r.shanghai;
 }
 
-/** Every breakdown must add up: subtotal, × (1 + heat/HEAT_CAP) floored, × the clean sheet. */
+/** Every breakdown must add up: subtotal, × (1 + heat/HEAT_CAP) floored, plus the clean sheet on the leg and its finish. */
 function expectAddsUp(r: PotBreakdown): void {
   expect(r.heat).toBeGreaterThanOrEqual(0);
   expect(r.heat).toBeLessThanOrEqual(HEAT_CAP);
   expect(r.heatBonus).toBe(Math.floor((subtotalOf(r) * r.heat) / HEAT_CAP));
   expect(r.streakMult).toBe(streakMultiplier(r.streak));
-  expect(r.streakBonus).toBe((subtotalOf(r) + r.heatBonus) * (r.streakMult - 1));
+  expect(r.streakBonus).toBe((r.base + r.bigFinish + r.nineDarter + r.shanghai) * (r.streakMult - 1));
   expect(r.total).toBe(subtotalOf(r) + r.heatBonus + r.streakBonus);
 }
 
@@ -268,7 +268,6 @@ describe('legs and visit limits (TDD §4)', () => {
     expect(LEG_COUNT).toBe(8);
     expect(LEGS).toHaveLength(8);
     expect(LEGS.map((l) => l.name)).toEqual(['First Round', 'Second Round', 'Quarter', 'Interval', 'Semi', 'Last Four', 'Final', 'The Decider']);
-    expect(STARTING_SCORE).toBe(501);
     // The numbers moved with the per-visit hand (docs/decisions/balance.md) and
     // they are pinned here: every leg length and payout in the game comes from
     // this table, so it must never drift by accident.
@@ -1278,7 +1277,7 @@ describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
     expect(result.outcome).toBe('CHECKOUT');
     expect(leg.status).toBe('CHECKED_OUT');
     expect(leg.score).toBe(0);
-    expect(eventTypes(events)).toEqual(['THROW', 'VISIT_END', 'CHECKOUT', 'ACHIEVEMENT', 'SHOP_OPEN']);
+    expect(eventTypes(events)).toEqual(['THROW', 'VISIT_END', 'CHECKOUT', 'SHOP_OPEN']); // a leg in six is a 501 thing, so no unlock here
     expect(ev(events, 'VISIT_END').busted).toBe(false);
     expect(ev(events, 'VISIT_END').heat).toBe(1); // the winning visit warms the crowd before the Pot is counted
     const subtotal = LEGS[0].reward + (LEGS[0].visitLimit - 1) + 3;
@@ -1405,8 +1404,8 @@ describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
     setScore(n, 40);
     play(n, 'd20');
     // the second clean leg in a row is on the clean sheet: it pays double
-    expect(n.legs[1].reward).toMatchObject({ streak: 2, streakMult: 2, streakBonus: firstVisitPot(1) });
-    expect(n.pot).toBe(firstVisitPot(0) + firstVisitPot(1) * 2);
+    expect(n.legs[1].reward).toMatchObject({ streak: 2, streakMult: 2, streakBonus: LEGS[1].reward });
+    expect(n.pot).toBe(firstVisitPot(0) + firstVisitPot(1) + LEGS[1].reward);
     expect(n.streak).toBe(2);
     expect(n.stats.legsWon).toBe(2);
     expect(n.legs).toHaveLength(2);
@@ -1426,6 +1425,10 @@ describe('the shop (TDD §4.1)', () => {
     expect(shop).toBe(n.shop);
     expect(shop.slots).toHaveLength(4);
     expect(shop.slots.map((s) => s.kind)).toEqual(['CARD', 'CARD', 'CHALK', 'SERVICE']);
+    // the second card is always a piece of the next leg's Shanghai number
+    const second = shop.slots[1] as Extract<ShopSlot, { kind: 'CARD' }>;
+    expect(second.defId).toBe(shanghaiPieceOffer(n, 1));
+    expect(cardDef(second.defId).target.bed).toBe(n.shanghaiNumbers[1]);
     expect(shop.refreshed).toBe(false);
     expect(shop.afterLeg).toBe(0);
     for (const s of shop.slots) {
@@ -1544,12 +1547,12 @@ describe('the shop (TDD §4.1)', () => {
     expect(countOf(n.library, victim.defId)).toBe(held - 1);
     expect(n.pot).toBe(50 - SERVICE_COST.REMOVE);
   });
-  it('REMOVE refuses to shrink the library below 7 cards (engine choice)', () => {
+  it('REMOVE refuses to thin the library below LIBRARY_FLOOR (a tuned deck must still be a deck)', () => {
     const n = inShop(11, 50);
-    n.library = n.library.slice(0, 6);
+    n.library = n.library.slice(0, LIBRARY_FLOOR);
     setSlot(n, 3, { kind: 'SERVICE', service: 'REMOVE', cost: 2, sold: false });
     expect(shopBuy(n, 3, { cardId: n.library[0].id })).toMatchObject({ ok: false, reason: 'library too small' });
-    expect(n.library).toHaveLength(6);
+    expect(n.library).toHaveLength(LIBRARY_FLOOR);
   });
   it('DUPLICATE adds a fresh copy of a chosen card for 4', () => {
     const n = inShop(11, 50);
@@ -1724,8 +1727,8 @@ describe('night end (TDD §9.3)', () => {
     expect(n.legs).toHaveLength(8);
     expect(n.stats.legsWon).toBe(8);
     // every leg checked out on visit 1: (base + unused + clean) × the one visit
-    // of heat, and every leg clean, so the sheet multiplies from leg 2 on
-    const expectedPot = LEGS.slice(0, 7).reduce((a, _d, i) => a + firstVisitPot(i) * streakMultiplier(i + 1), 0);
+    // of heat, and every leg clean, so the sheet multiplies the base from leg 2 on
+    const expectedPot = LEGS.slice(0, 7).reduce((a, d, i) => a + firstVisitPot(i) + d.reward * (streakMultiplier(i + 1) - 1), 0);
     expect(n.pot).toBe(expectedPot);
     expect(n.streak).toBe(8);
     expect(n.stats.bestStreak).toBe(8);
@@ -1742,7 +1745,7 @@ describe('achievements (TDD §9.4 unlock conditions)', () => {
     play(n, 't20');
     const { events } = play(n, 'd20');
     expect(n.achievements).toContain('sharp');
-    expect(events.filter((e) => e.type === 'ACHIEVEMENT').map((e) => (e as { oche: OcheId }).oche)).toEqual(['sharp', 'thin']);
+    expect(events.filter((e) => e.type === 'ACHIEVEMENT').map((e) => (e as { oche: OcheId }).oche)).toEqual(['sharp']);
   });
   it('sharp is not awarded for a 99 checkout', () => {
     const n = startNight(15);
@@ -1820,7 +1823,7 @@ describe('achievements (TDD §9.4 unlock conditions)', () => {
     play(n, 't20');
     const { events } = play(n, 'd20');
     expect(eventTypes(events)).not.toContain('ACHIEVEMENT');
-    expect(n.achievements).toEqual(['sharp', 'thin']);
+    expect(n.achievements).toEqual(['sharp']);
   });
 });
 
@@ -1939,45 +1942,75 @@ describe('stats counters and commentary state', () => {
 
 // ---------------------------------------------------------------- the excitement package (DECISIONS.md #62-66)
 
-describe('Shanghai: single, double and treble of the called number in one visit wins the leg', () => {
-  function calledOn(seed: number, num: number): NightState {
-    const n = startNight(seed);
+describe('Shanghai: single, double and treble of the called number in one visit', () => {
+  function calledOn(seed: number, num: number, chalk: string[] = []): NightState {
+    const n = startNight(seed, 'local', chalk);
     currentLeg(n).shanghai = num;
     return n;
   }
-  it('the three pieces in any order, from any score, check the leg out with the bonus in the Pot', () => {
+  it('in checkout range, the three pieces in any order check the leg out with the bonus in the Pot', () => {
     const n = calledOn(31, 20);
-    setScore(n, 100000);
+    setScore(n, SHANGHAI_RANGE);
     const { result, events } = playAll(n, ['t20', 's20', 'd20']);
     expect(result.shanghai).toBe(true);
     expect(result.outcome).toBe('CHECKOUT');
     expect(currentLeg(n).status).toBe('CHECKED_OUT');
     expect(currentLeg(n).score).toBe(0);
-    expect(eventTypes(events)).toContain('SHANGHAI');
-    expect(ev(events, 'SHANGHAI')).toMatchObject({ number: 20, total: 120 });
+    expect(ev(events, 'SHANGHAI')).toMatchObject({ number: 20, total: 120, won: true, pot: SHANGHAI_BONUS });
     expect(eventTypes(events).indexOf('SHANGHAI')).toBeLessThan(eventTypes(events).indexOf('CHECKOUT'));
     const r = currentLeg(n).reward as PotBreakdown;
     expect(r.shanghai).toBe(SHANGHAI_BONUS);
+    // not a checkout: no ladder, no nine-darter, no 100+ checkout on record, no Sharp
+    expect(r.bigFinish).toBe(0);
+    expect(r.nineDarter).toBe(0);
+    expect(n.stats.bestCheckout).toBe(0);
+    expect(n.stats.bigFinishes).toBe(0);
+    expect(n.achievements).not.toContain('sharp');
     expectAddsUp(r);
     expect(n.stats.shanghais).toBe(1);
     expect(n.phase).toBe('SHOP');
   });
-  it('the third piece wins even when that dart would have bust', () => {
+  it('the third piece wins even when that dart would have bust, and the crowd and the sheet are untouched', () => {
     const n = calledOn(31, 20);
     setScore(n, 70);
     play(n, 's20'); // 50
     play(n, 'd20'); // 10
-    const { result } = play(n, 't20'); // 10 - 60: a bust, except it completes the set
+    const { result, events } = play(n, 't20'); // 10 - 60: a bust, except it completes the set
     expect(result.shanghai).toBe(true);
     expect(result.outcome).toBe('CHECKOUT');
     expect(result.scoreCommitted).toBe(0);
     expect(currentLeg(n).status).toBe('CHECKED_OUT');
     expect(currentLeg(n).bustsThisLeg).toBe(0);
+    expect(currentLeg(n).dirty).toBe(false);
     expect(n.stats.busts).toBe(0);
+    expect(eventTypes(events)).not.toContain('HEAT_LOST');
+    expect(eventTypes(events)).not.toContain('STREAK_LOST');
+  });
+  it('above checkout range the trio pays the bonus straight to the Pot and the leg goes on', () => {
+    const n = calledOn(31, 20);
+    setScore(n, 100000);
+    const pot = n.pot;
+    const { result, events } = playAll(n, ['t20', 's20', 'd20']);
+    expect(result.shanghai).toBe(false);
+    expect(result.outcome).toBe('CONTINUE');
+    expect(currentLeg(n).status).toBe('ACTIVE');
+    expect(ev(events, 'SHANGHAI')).toMatchObject({ number: 20, won: false, pot: SHANGHAI_BONUS });
+    expect(n.pot).toBe(pot + SHANGHAI_BONUS);
+    expect(n.stats.shanghais).toBe(1);
+    expect(n.phase).toBe('LEG');
+  });
+  it('the range is the visit start: a visit that began above 170 cannot win by Shanghai', () => {
+    const n = calledOn(31, 20);
+    setScore(n, SHANGHAI_RANGE + 60);
+    play(n, 't20'); // now inside 170, but the visit began outside it
+    play(n, 's20');
+    const { result } = play(n, 'd20');
+    expect(result.shanghai).toBe(false);
+    expect(currentLeg(n).status).toBe('ACTIVE');
   });
   it('two pieces are nothing; the wrong number is nothing; the pieces must share a visit', () => {
     const n = calledOn(31, 20);
-    setScore(n, 100000);
+    setScore(n, 150);
     expect(shanghaiProgress(currentLeg(n)).size).toBe(0);
     play(n, 's20');
     play(n, 'd20');
@@ -1991,33 +2024,50 @@ describe('Shanghai: single, double and treble of the called number in one visit 
     expect(result.shanghai).toBe(false);
     // the other number's set does nothing either
     const m = calledOn(32, 16);
-    setScore(m, 100000);
+    setScore(m, 150);
     expect(playAll(m, ['s20', 'd20', 't20']).result.shanghai).toBe(false);
     expect(currentLeg(m).status).toBe('ACTIVE');
   });
-  it('a walk to the wall is not a piece, and a bull is never one', () => {
+  it('a walk to the wall is not a piece, a bull is never one, and a forgiven dart never happened', () => {
     const n = calledOn(31, 20);
-    setScore(n, 100000);
+    setScore(n, 150);
     play(n, 's20');
     commitMiss(n); // ends the visit with one piece
     expect(currentLeg(n).status).toBe('ACTIVE');
     const m = calledOn(31, 20);
-    setScore(m, 100000);
+    setScore(m, 150);
     expect(playAll(m, ['ib', 'ob', 't20']).result.shanghai).toBe(false);
+    // Forgiving Oche: the first piece busts and is forgiven, so it is not a piece
+    const f = calledOn(31, 20, ['forgiving_oche']);
+    setScore(f, 30);
+    const first = play(f, 't20'); // 30 - 60: forgiven
+    expect(first.result.forgiven).toBe(true);
+    expect(shanghaiProgress(currentLeg(f)).size).toBe(0);
+    play(f, 's20'); // 10
+    const last = play(f, 'd20'); // 10 - 40: a bust, and only two real pieces
+    expect(last.result.shanghai).toBe(false);
+    expect(last.result.outcome).toBe('BUST');
   });
-  it('the night calls one number per leg, from the numbers the library can complete, in a fixed place in the RNG order', () => {
+  it('the night calls one number per leg from all five, in a fixed place in the RNG order, and the shop sells a piece of the next one', () => {
     const a = createNight(40);
     const b = createNight(40);
     expect(a.shanghaiNumbers).toHaveLength(8);
     expect(a.shanghaiNumbers).toEqual(b.shanghaiNumbers);
-    for (const num of a.shanghaiNumbers) {
-      for (const reg of ['S', 'D', 'T']) expect(a.library.some((c) => c.target.bed === num && c.target.region === reg), `${reg}${num}`).toBe(true);
-    }
-    // The Local holds the full set only for 20 and 16
-    for (const num of a.shanghaiNumbers) expect([16, 20]).toContain(num);
+    for (const num of a.shanghaiNumbers) expect(SHANGHAI_NUMBERS).toContain(num);
+    // over many nights every number gets called: no library can be tuned to one
+    const seen = new Set<number>();
+    for (let seed = 1; seed < 40; seed++) for (const num of createNight(seed).shanghaiNumbers) seen.add(num);
+    expect([...seen].sort()).toEqual([...SHANGHAI_NUMBERS].sort());
     a.legIndex = 3;
     beginLeg(a);
     expect(currentLeg(a).shanghai).toBe(a.shanghaiNumbers[3]);
+    // the piece on offer is the region the library holds fewest of
+    const num = a.shanghaiNumbers[4];
+    const offer = shanghaiPieceOffer(a, 4) as string;
+    expect(cardDef(offer).target.bed).toBe(num);
+    const copies = (reg: string) => a.library.filter((c) => c.target.bed === num && c.target.region === reg).length;
+    expect(copies(cardDef(offer).target.region)).toBe(Math.min(copies('S'), copies('D'), copies('T')));
+    expect(shanghaiPieceOffer(a, 99)).toBeNull();
   });
 });
 
@@ -2032,7 +2082,7 @@ describe('the clean sheet: consecutive legs won without a bust multiply the Pot'
     setScore(n, 10);
     const first = play(n, 't20'); // bust
     expect(leg.dirty).toBe(true);
-    expect(ev(first.events, 'STREAK_LOST')).toMatchObject({ from: 1, reason: 'BUST' });
+    expect(ev(first.events, 'STREAK_LOST')).toEqual({ type: 'STREAK_LOST', from: 1 });
     expect(n.streak).toBe(0);
     setScore(n, 10);
     const second = play(n, 't20'); // a second bust says nothing new
@@ -2048,6 +2098,71 @@ describe('the clean sheet: consecutive legs won without a bust multiply the Pot'
     expect(n.streak).toBe(1);
     expect(currentLeg(n).reward?.streakMult).toBe(1);
   });
+  it('multiplies the leg and its finish, not the visits left unused', () => {
+    const n = startNight(37);
+    for (let i = 0; i < 2; i++) {
+      setScore(n, 40);
+      play(n, 'd20');
+      shopLeave(n);
+    }
+    setScore(n, 40);
+    play(n, 'd20'); // third clean leg: x3 on base + finish bonuses only
+    const r = currentLeg(n).reward as PotBreakdown;
+    expect(r.streakMult).toBe(3);
+    expect(r.streakBonus).toBe((r.base + r.bigFinish + r.nineDarter + r.shanghai) * 2);
+    expect(r.streakBonus).toBe(LEGS[2].reward * 2);
+    expectAddsUp(r);
+  });
+  it("Cheap Chalk's bust-to-2 keeps the sheet (the crowd still cools)", () => {
+    const n = startNight(38, 'local', ['cheap_chalk']);
+    setScore(n, 40);
+    play(n, 'd20');
+    expect(n.streak).toBe(1);
+    shopLeave(n);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    playVisit(n);
+    expect(leg.heat).toBe(1);
+    setScore(n, 10);
+    const { result, events } = play(n, 't20'); // bust, dropped to 2
+    expect(result.outcome).toBe('BUST');
+    expect(result.scoreCommitted).toBe(2);
+    expect(leg.dirty).toBe(false);
+    expect(n.streak).toBe(1);
+    expect(eventTypes(events)).not.toContain('STREAK_LOST');
+    expect(ev(events, 'HEAT_LOST')).toMatchObject({ from: 1, reason: 'BUST' });
+    expect(leg.heat).toBe(0);
+  });
+  it('a forgiven bust keeps the sheet clean but the crowd saw it', () => {
+    const n = startNight(39, 'local', ['forgiving_oche']);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    playVisit(n);
+    playVisit(n);
+    expect(leg.heat).toBe(2);
+    setScore(n, 10);
+    const { result, events } = play(n, 't20');
+    expect(result.forgiven).toBe(true);
+    expect(leg.dirty).toBe(false);
+    expect(leg.bustsThisLeg).toBe(0);
+    expect(ev(events, 'HEAT_LOST')).toMatchObject({ from: 2, reason: 'BUST' });
+    expect(leg.heat).toBe(0);
+    // and the visit it happened in does not warm the crowd back up
+    play(n, 's1');
+    play(n, 's1');
+    expect(leg.heat).toBe(0);
+  });
+  it('the nine-darter is a 501 thing: a 301 leg in three visits pays nothing for it', () => {
+    const n = startNight(8);
+    expect(currentLeg(n).score).toBe(301);
+    playAll(n, ['t20', 't20', 't20']); // 121
+    playAll(n, ['t20', 's1', 's20']); // 40
+    play(n, 'd20');
+    expect(currentLeg(n).visits.length).toBe(3);
+    expect(currentLeg(n).reward?.nineDarter).toBe(0);
+    expect(n.stats.nineDarters).toBe(0);
+    expect(n.achievements).not.toContain('thin'); // a leg in six is a 501 thing too
+  });
   it('the third clean leg in a row pays treble, and the multiplier holds from there', () => {
     const n = startNight(34);
     for (let i = 0; i < 5; i++) {
@@ -2062,59 +2177,6 @@ describe('the clean sheet: consecutive legs won without a bust multiply the Pot'
     expect(streakMultiplier(3)).toBe(3);
     expect(streakMultiplier(9)).toBe(3);
     expect(n.stats.bestStreak).toBe(5);
-  });
-});
-
-describe('cash the crowd: bank the heat as Pot at the start of a visit', () => {
-  /** A night whose called number is one the library cannot complete, so a visit played blind never wins by Shanghai. */
-  function coldNight(seed: number): NightState {
-    const n = startNight(seed);
-    currentLeg(n).shanghai = 3;
-    return n;
-  }
-  it('pays HEAT_CASH a pip, empties the gauge, and counts', () => {
-    const n = coldNight(35);
-    const leg = currentLeg(n);
-    setScore(n, 100000);
-    playVisit(n);
-    playVisit(n);
-    playVisit(n);
-    expect(leg.heat).toBe(3);
-    const pot = n.pot;
-    const out = cashHeat(n);
-    expect(out.ok).toBe(true);
-    expect(ev(out.events, 'HEAT_CASHED')).toEqual({ type: 'HEAT_CASHED', pips: 3, pot: 3 * HEAT_CASH });
-    expect(n.pot).toBe(pot + 3 * HEAT_CASH);
-    expect(n.stats.potEarned).toBe(3 * HEAT_CASH);
-    expect(n.stats.heatCashed).toBe(1);
-    expect(leg.heat).toBe(0);
-    // nothing left to cash
-    expect(cashHeat(n).ok).toBe(false);
-  });
-  it('is refused mid-visit, with a cold crowd, and outside a leg', () => {
-    const n = coldNight(35);
-    const leg = currentLeg(n);
-    setScore(n, 100000);
-    expect(cashHeat(n).ok).toBe(false); // cold
-    playVisit(n);
-    play(n, 's20'); // mid-visit
-    expect(leg.heat).toBe(1);
-    expect(cashHeat(n).ok).toBe(false);
-    expect(leg.heat).toBe(1);
-    setScore(n, 40);
-    play(n, 'd20');
-    expect(n.phase).toBe('SHOP');
-    expect(cashHeat(n).ok).toBe(false);
-  });
-  it('cashing before a walk keeps the Pot the wall would have cost', () => {
-    const n = coldNight(35);
-    setScore(n, 100000);
-    playVisit(n);
-    playVisit(n);
-    cashHeat(n);
-    const { events } = commitMiss(n);
-    expect(eventTypes(events)).not.toContain('HEAT_LOST');
-    expect(n.pot).toBe(2 * HEAT_CASH);
   });
 });
 

@@ -212,42 +212,73 @@ TDD §3.3, deliberately and with measurements.
 ## The excitement package (after "it's not feeling addictive enough")
 
 The playtest verdict after the loop rework was that the loop had tactics but no
-thrill. These five changes are the answer, tuned together (`docs/decisions/balance.md`,
-fourth pass). The design brief they serve, in the developer's words: "just one more
-turn mechanics and real thought out tactics that incorporate small gambling mechanics
-for the fun of the mechanic."
+thrill. These are the answer, tuned together (`docs/decisions/balance.md`, fourth and
+fifth passes). The brief they serve, in the developer's words: "just one more turn
+mechanics and real thought out tactics that incorporate small gambling mechanics for
+the fun of the mechanic." A three-critic adversarial pass on the first version found
+a solved engine and two mechanics with no risk in them; #67 records what changed.
 
-62. **Shanghai.** Every leg calls a number (drawn for all eight legs at the start of
-    the night, from the numbers the starting library holds a single, a double and a
-    treble of, so the hunt is always possible). A single, a double and a treble of
-    that number in one visit wins the leg outright, whatever the score, and takes
-    precedence over a bust on the dart that completes it. It pays `SHANGHAI_BONUS`
-    on top of the leg. Only each throw's primary hit counts, bulls never do, and the
-    resolved bed is what matters, so Mirrored and Narrow Beds play into it. The next
-    leg's number is shown in the shop, the leg's number and its three pips sit on the
-    checkout line, and cards of the number wear a claret corner in the hand. This is
-    the folk rule the brief asked for: it gives singles a reason to exist, gives the
-    pocket a second job, and puts a jackpot on every visit that costs nothing to
-    hope for.
-63. **The clean sheet.** Consecutive legs won without a bust multiply the leg's Pot:
-    ×1, ×2, then ×3 for the third clean leg and every one after (`STREAK_MULT`). One
-    bust and the sheet is gone, announced the moment it happens. Throwing at the wall
-    keeps the sheet (it costs the crowd instead, #64). This is the run's compounding
-    number, and the thing a player is afraid of losing.
-64. **The wall costs the crowd.** A deliberate miss now wipes the heat as well as
-    ending the visit. The safe option is still safe for the score; it is no longer
-    free.
-65. **Bank the crowd.** At the start of any visit the heat can be banked at
-    `HEAT_CASH` Pot a pip instead of ridden to the finish, which empties the gauge.
-    The gauge itself is the button. The decision it creates: a hand full of busts on
-    a warm crowd is "cash, then walk" — a planned move rather than a loss.
+62. **Shanghai.** Every leg calls a number, drawn for all eight legs at the start of
+    the night from all five of 20/19/18/17/16, so no library can be tuned to one of
+    them. A single, a double and a treble of that number in one visit is a Shanghai.
+    **Inside checkout range (the visit began at 170 or below) it wins the leg
+    outright**, whatever the arithmetic says, and takes precedence over a bust on the
+    dart that completes it. Above range it pays `SHANGHAI_BONUS` straight to the Pot
+    and the leg goes on. A Shanghai is not a checkout: no finish ladder, no
+    nine-darter, no best-checkout record, no Sharp unlock. Only each throw's primary
+    hit counts, a forgiven dart never happened, bulls never do, and the resolved bed
+    is what matters. The shop's second card is always a piece of the next leg's
+    number (the region the library holds fewest of), the leg banner names the
+    number, it sits on the checkout line with S D T lighting up as the visit collects
+    them, cards of it wear a claret corner, and the third piece in hand reads as a
+    finish, never as a bust. The hunt gives singles a reason to exist and the pocket
+    a second job; the range gate is what stops it being an engine (#67).
+63. **The clean sheet.** Consecutive legs won without a bust multiply **the leg's
+    base reward and its finish bonuses** — not the visits it left unused, the setup
+    bonuses or the crowd — by ×1, ×2, then ×3 from the third clean leg on
+    (`STREAK_MULT`). One bust and the sheet is gone, announced the moment it happens.
+    Throwing at the wall keeps the sheet (it costs the crowd instead, #64); a Cheap
+    Chalk bust-to-2 keeps it too, since that line is what the chalk is for; a
+    Forgiving Oche bust keeps it, as the blurb promises. This is the run's compounding
+    number and the thing a player who busts is afraid of losing. The bot never busts,
+    so its ×3 is a default; a human's is not.
+64. **The wall costs the crowd.** A deliberate miss wipes the heat as well as ending
+    the visit, and a forgiven bust wipes it too — the board forgives, the crowd saw
+    the dart, and the visit it happened in does not warm them back up. The safe
+    option is still safe for the score; it is no longer free.
+65. **Banking the crowd — retired.** The first version let the heat be banked at
+    visit start for Pot. The critics showed it was never a decision: the whole hand
+    is visible and every outcome is deterministic before the choice, so the only play
+    was "bank, then walk", which refunded #64 at 2 Pot a pip and moved 6.7 of 218 Pot
+    a night. A wager needs something the player cannot see. It is gone; the gauge is
+    a gauge again. (A leg-start call — "I'll do it in six" — is the shape a real
+    wager would take here, because it spans hands not yet dealt. It is the next thing
+    to try.)
 66. **The short game opens the night, and finishes pay a ladder.** Legs 1 and 2 start
     at 301 with ten visits; the rest are 501. The first win now lands in a median
     four visits instead of six. Big finishes pay 2 from a ton, 4 from 130 and 8 for
-    the 170 (`BIG_FINISH_LADDER`); a timed-out leg within 60 and finishable says SO
-    CLOSE. The 501 legs keep the nine-darter and the 180 exactly as they were.
+    the 170 (`BIG_FINISH_LADDER`); a timed-out leg within 60 that the deck could
+    still have closed says SO CLOSE. The nine-darter and the Thin unlock ("a leg in
+    six") are 501 things and pay only on a leg that began at 501 or more.
+67. **What the critics changed.** Three agents read the first version of #62–66
+    against the code and the simulator. Findings and outcomes: (a) with the number
+    drawn only from what the starting deck completed, a player on The Thin who binned
+    everything but the 20s won 73% of nights by Shanghai on visit one — fixed by the
+    range gate, all five numbers, and a bin floor of `LIBRARY_FLOOR` (14) cards
+    (measured after: 1%); (b) the sheet's ×3 on top of heat and the unused-visit Pot
+    flooded the economy (218 Pot a night, 198 unspent) — fixed by multiplying the base
+    and finish only (121 a night); (c) banking was never a decision — retired;
+    (d) a Shanghai was scored as a checkout from its starting score — fixed;
+    (e) Forgiving Oche kept the crowd warm through a bust and let a forgiven dart
+    count as a piece — fixed, and the chalk now costs 10; (f) the bot walked away
+    from a completing piece that would have bust — fixed; (g) the completing piece
+    read as BUST in the hand — fixed; (h) `{card}` in the Shanghai lines named the
+    dart, not the number — a `{number}` placeholder now exists; (i) "Double money"
+    in a heat line — reworded; (j) the ×2.0 gauge text, the ASCII arrow, the sheet
+    label hiding until leg 2 and colliding with VISIT 10/10, the unlabelled pips, the
+    SO CLOSE that ignored the deck, the stale 501 constant — all fixed.
 
-The shop bot learned all of it except the hunt: it will take a Shanghai the hand
-offers and cashes before a walk or on a last visit, but it does not pocket toward a
-Shanghai — measured, that heuristic cost leg 1 eight points because the pocket has a
-better job. A human hunting deliberately does better than the bot's numbers.
+The shop bot plays a Shanghai the hand offers (including off a busting dart) but
+does not pocket toward the number: measured, that heuristic cost leg 1 eight points
+because the pocket has a better job. A human hunting deliberately, buying the piece
+the shop offers, does better than the bot's numbers.

@@ -98,6 +98,7 @@ export class Commentary {
       pot: String(ctx.night.pot),
       card: tr ? targetNotation(tr.intent.card.target) : '',
       n180: String(ctx.night.stats.oneEighties),
+      number: String(leg.shanghai),
     };
     return line.replace(/\{(\w+)\}/g, (m, k: string) => (k in vals ? vals[k] : m));
   }

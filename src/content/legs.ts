@@ -12,9 +12,8 @@ export interface LegDef {
 }
 
 /**
- * Visit limits, recalibrated for the per-visit hand: one hand of five spent
- * across three darts scores less than a fresh best-of-three every dart did, so
- * every leg gets one more visit than TDD §4. See docs/decisions/balance.md.
+ * Visit limits: the two 301 legs get ten, the 501 legs step down from eleven
+ * to the Decider's four. Tuned by simulation — docs/decisions/balance.md.
  */
 const LIMITS = [10, 10, 11, 10, 9, 8, 6, 4];
 const STARTS = [301, 301, 501, 501, 501, 501, 501, 501];
@@ -31,7 +30,6 @@ export const LEGS: LegDef[] = [
 ];
 
 export const LEG_COUNT = LEGS.length;
-export const STARTING_SCORE = 501;
 export const DEFAULT_THROWS_PER_VISIT = 3;
 export const DEFAULT_CHALK_SLOTS = 5;
 export const SHOP_REFRESH_COST = 1;
@@ -46,22 +44,27 @@ export const SETUP_BONUS_CAP = 4;
 
 /**
  * Shanghai (the pub rule): a single, a double and a treble of the called
- * number in one visit wins the leg outright, whatever the score. Each leg
- * calls its number from this list at the start of the night, so the shop can
- * show the next one and a player can build toward it.
+ * number in one visit. Inside checkout range it wins the leg outright, whatever
+ * the arithmetic says; above it, it pays the bonus and the leg goes on. Each
+ * leg calls its number from this list at the start of the night, so the shop
+ * can show the next one and sell a piece of it.
  */
 export const SHANGHAI_NUMBERS = [20, 19, 18, 17, 16];
-/** Pot on top of the leg's reward for a Shanghai finish. */
+/** A Shanghai wins outright only when the visit began at or below this. */
+export const SHANGHAI_RANGE = 170;
+/** Pot for a Shanghai, on the leg's reward when it wins and straight to the Pot when it does not. */
 export const SHANGHAI_BONUS = 6;
 
-/** Pot per pip when the crowd is cashed early instead of ridden to the finish. */
-export const HEAT_CASH = 2;
+/** The bin will not thin a library below this many cards. */
+export const LIBRARY_FLOOR = 14;
 
 /**
  * The clean sheet: consecutive legs won without a bust. The second clean leg
- * in a row pays double, the third and every one after pays treble. One bust
- * and it is gone. (Throwing at the wall keeps the sheet clean; it costs the
- * visit and the crowd instead.)
+ * in a row pays double, the third and every one after pays treble — on the
+ * leg's base reward and its finish bonuses only, not on the visits it left
+ * unused, so a fast leg does not compound into a flood. One bust and it is
+ * gone. (Throwing at the wall keeps the sheet; it costs the visit and the
+ * crowd instead.)
  */
 export const STREAK_MULT = [1, 1, 2, 3];
 export function streakMultiplier(streak: number): number {

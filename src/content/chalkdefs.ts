@@ -23,8 +23,8 @@ export const CHALK_DEFS: ChalkDef[] = [
   { id: 'wide_doubles', name: 'Wide Doubles', stage: 'BOARD', cost: 9, blurb: 'Anything in the 16, 18 or 20 bed counts as a double.' },
   { id: 'mirrored', name: 'Mirrored', stage: 'BOARD', cost: 5, blurb: 'Darts land in the bed directly opposite.' },
   // ---- RULE ----
-  { id: 'cheap_chalk', name: 'Cheap Chalk', stage: 'RULE', cost: 8, blurb: 'A bust drops your score to 2 instead of putting it back.' },
-  { id: 'forgiving_oche', name: 'Forgiving Oche', stage: 'RULE', cost: 7, blurb: 'The first bust of each leg never happened.' },
+  { id: 'cheap_chalk', name: 'Cheap Chalk', stage: 'RULE', cost: 8, blurb: 'A bust drops your score to 2 instead of putting it back. The sheet forgives it; the crowd does not.' },
+  { id: 'forgiving_oche', name: 'Forgiving Oche', stage: 'RULE', cost: 10, blurb: 'The first bust of each leg never happened. The crowd still saw it.' },
   { id: 'straight_out', name: 'Straight Out', stage: 'RULE', cost: 10, blurb: 'You no longer need a double to finish.' },
   { id: 'overshoot', name: 'Overshoot', stage: 'RULE', cost: 12, blurb: 'A finishing double may go 1 or 2 below zero and still count.' },
   { id: 'chalk_dust', name: 'Chalk Dust', stage: 'RULE', cost: 4, blurb: 'Landing on 1 is legal. It is treated as 2.' },

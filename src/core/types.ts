@@ -115,7 +115,7 @@ export interface VisitState {
 export interface LegState {
   index: number; // 0..7
   visitLimit: number;
-  score: number; // remaining, starts at 501
+  score: number; // remaining; starts at the leg's `start` (301 or 501)
   visits: VisitState[];
   deck: DartCard[];
   discard: DartCard[];
@@ -210,10 +210,8 @@ export interface NightStats {
   setups: number;
   /** Highest heat reached in the night. */
   bestHeat: number;
-  /** Shanghai finishes. */
+  /** Shanghais: legs won by one plus trios hit in the scoring phase. */
   shanghais: number;
-  /** Times the crowd was cashed early. */
-  heatCashed: number;
   /** Longest clean sheet of the night. */
   bestStreak: number;
 }
@@ -264,9 +262,9 @@ export type EngineEvent =
   | { type: 'SETUP_BONUS'; score: number; pot: number }
   | { type: 'POCKETED'; card: DartCard }
   | { type: 'HEAT_LOST'; from: number; reason: 'BUST' | 'MISS' }
-  | { type: 'HEAT_CASHED'; pips: number; pot: number }
-  | { type: 'STREAK_LOST'; from: number; reason: 'BUST' | 'MISS' }
-  | { type: 'SHANGHAI'; number: number; total: number }
+  | { type: 'STREAK_LOST'; from: number }
+  /** A single, a double and a treble of the called number in one visit. `won` when it was in range and closed the leg. */
+  | { type: 'SHANGHAI'; number: number; total: number; won: boolean; pot: number }
   | { type: 'ONE_EIGHTY'; total: number }
   | { type: 'CHECKOUT'; legIndex: number; reward: PotBreakdown | null }
   | { type: 'LEG_TIMEOUT'; legIndex: number }
