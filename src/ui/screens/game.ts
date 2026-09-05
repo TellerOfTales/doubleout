@@ -313,6 +313,7 @@ export class GameScreen implements Scene {
     this.pendingEvents = out.events.filter((e) => e.type !== 'THROW');
     this.co.run(this.missSequence(from), () => {
       this.busy = false;
+      this.handBack();
     });
   }
 
@@ -354,7 +355,28 @@ export class GameScreen implements Scene {
     this.pendingEvents = out.events.filter((e) => e.type !== 'THROW');
     this.co.run(this.throwSequence(out.result, from, v), () => {
       this.busy = false;
+      this.handBack();
     });
+  }
+
+  /** Fast-forward the current throw's theatre (never the dart or the score count). */
+  private hurry(): void {
+    if (this.hooks.ownsFlow) return;
+    this.co.hurry();
+    this.bar.skip();
+    this.app.input.touchActivity();
+  }
+
+  /**
+   * Give the hand back after a throw sequence. A visit-ending throw already
+   * unlocked it when the next hand was dealt; a mid-visit throw has no such
+   * event, so this is the only place the lock comes off. The tutorial owns
+   * the lock while it runs the flow.
+   */
+  private handBack(): void {
+    if (this.hooks.ownsFlow) return;
+    if (this.leg.status !== 'ACTIVE' || this.night.phase !== 'LEG') return;
+    this.hand.locked = false;
   }
 
   private *throwSequence(result: ThrowResult, from: { x: number; y: number }, v: { vx: number; vy: number }): Routine {
@@ -768,6 +790,12 @@ export class GameScreen implements Scene {
       this.bar.skip();
       return;
     }
+    // Any tap while the result plays out hurries it along: the player has
+    // seen the number and wants the next card.
+    if (this.busy) {
+      this.hurry();
+      return;
+    }
     if (this.hand.onDown(p)) return;
     // tap the board with a selected card → throw (tap fallback)
     if (this.hand.selected && this.hand.tapToThrow && inRect(p.x, p.y, { x: this.layout.board.x - 10, y: this.layout.board.y - 10, w: this.layout.board.w + 20, h: this.layout.board.h + 20 })) {
@@ -807,6 +835,10 @@ export class GameScreen implements Scene {
     }
     if (key === 'Escape') {
       this.openPause();
+      return;
+    }
+    if (this.busy && (key === 'Enter' || key === ' ' || key === 'ArrowUp' || (key >= '1' && key <= '4'))) {
+      this.hurry();
       return;
     }
     if (key === 'ArrowLeft') this.hand.moveSelection(-1);

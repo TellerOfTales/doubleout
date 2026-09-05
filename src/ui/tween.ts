@@ -118,6 +118,16 @@ export class Coroutines {
     return this.list.length > 0;
   }
 
+  /**
+   * Skip every timed wait in flight. Condition waits (a dart still flying, a
+   * score still counting) are left alone, so the theatre can be hurried but
+   * never torn: a tap during the readout gets you to the next decision, not
+   * past the result.
+   */
+  hurry(): void {
+    for (const r of this.list) if (!r.done && !r.until) r.wait = 0;
+  }
+
   clear(): void {
     this.list = [];
   }

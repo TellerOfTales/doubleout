@@ -362,9 +362,13 @@ export class TitleScreen implements Scene {
     if (st.nightsPlayed > 0) {
       const sx = this.portrait ? 8 : 4;
       const sy = this.portrait ? 272 : 160 - 12;
-      const txt = `NIGHTS ${st.nightsWon}/${st.nightsPlayed} · 180s ${st.oneEighties} · BEST LEG ${st.bestLeg}`;
-      if (!this.portrait) r.text(txt, sx, sy, { color: P.STONE });
-      else r.text(txt, sx, sy, { color: P.STONE });
+      const txt = `NIGHTS ${st.nightsWon}/${st.nightsPlayed} · BEST LEG ${st.bestLeg} · BEST POT ${st.bestPot} · 180s ${st.oneEighties}`;
+      r.text(txt, sx, sy, { color: P.STONE });
+      // The next thing to chase, so a run always has a reason beyond the run.
+      const next = OCHES.find((o) => !this.app.save.isUnlocked(o.id));
+      if (next && this.overlay === 'none') {
+        r.text(`NEXT OCHE · ${next.name.toUpperCase()} · ${next.unlock.toUpperCase()}`, sx, sy + 8, { color: P.STONE });
+      }
     }
     r.text('v1.0', this.w - 3, 2, { color: P.STONE, align: 'right' });
     if (!this.app.save.data.stats.tutorialDone && this.overlay === 'none') {

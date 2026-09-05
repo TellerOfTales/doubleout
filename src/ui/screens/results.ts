@@ -3,6 +3,7 @@
  * win screen (the game says plainly that it is finished, §9.3).
  */
 import { P } from '../../art/palette';
+import { OCHES } from '../../content/oches';
 import { seedToString } from '../../core/rng';
 import { legName } from '../../core/state';
 import type { NightState } from '../../core/types';
@@ -23,6 +24,8 @@ export class ResultsScreen implements Scene {
   w = 320;
   h = 180;
   private confettiTimer = 0;
+  /** Lifetime records this night beat, by results-table label. */
+  private newBests = new Set<string>();
 
   constructor(
     public app: App,
@@ -48,11 +51,22 @@ export class ResultsScreen implements Scene {
     }
     const n = this.night;
     const st = this.app.save.data.stats;
+    // Records first, while the old ones are still there to compare against.
+    // Only a night that is not the first counts as beating something.
+    this.newBests.clear();
+    if (st.nightsPlayed > 0) {
+      if (n.stats.bestCheckout > st.bestCheckout) this.newBests.add('BEST CHECKOUT');
+      if (n.stats.bestVisit > st.bestVisit) this.newBests.add('BEST VISIT');
+      if (n.stats.potEarned > st.bestPot) this.newBests.add('POT EARNED');
+      if (n.legs.length > st.bestLeg) this.newBests.add('LEGS WON');
+    }
     st.nightsPlayed++;
     if (this.won) st.nightsWon++;
     st.legsWon += n.stats.legsWon;
     st.oneEighties += n.stats.oneEighties;
     st.bestCheckout = Math.max(st.bestCheckout, n.stats.bestCheckout);
+    st.bestVisit = Math.max(st.bestVisit, n.stats.bestVisit);
+    st.bestPot = Math.max(st.bestPot, n.stats.potEarned);
     st.bestLeg = Math.max(st.bestLeg, n.legs.length);
     st.nineDarters += n.stats.nineDarters;
     this.app.save.persist();
@@ -180,8 +194,10 @@ export class ResultsScreen implements Scene {
     const cx = px + Math.floor(pw / 2);
     let y = py + 12;
     const blurb = (head: string, headColor: number, sub: string) => {
-      r.text(head, cx, y, { color: headColor, align: 'center' });
-      y += 9;
+      for (const line of r.wrap(head, pw - 12)) {
+        r.text(line, cx, y, { color: headColor, align: 'center' });
+        y += 9;
+      }
       for (const line of r.wrap(sub, pw - 12)) {
         r.text(line, cx, y, { color: P.MIST, align: 'center' });
         y += 8;
@@ -207,11 +223,14 @@ export class ResultsScreen implements Scene {
       ['CARDS BOUGHT', String(n.stats.cardsBought)],
       ['POT EARNED', String(n.stats.potEarned)],
     ];
+    const blink = Math.floor(this.time * 3) % 2 === 0;
     rows.forEach((row, i) => {
       const col = this.portrait ? 0 : i % 2;
       const rowI = this.portrait ? i : Math.floor(i / 2);
       const x = px + 8 + col * (colW + 8);
-      drawRow(r, x, y + rowI * 9, colW, row[0], row[1], i === 1 && n.stats.oneEighties > 0 ? P.EMBER : P.BRASS_LIT);
+      const best = this.newBests.has(row[0]);
+      const label = row[0];
+      drawRow(r, x, y + rowI * 9, colW, label, row[1], best && blink ? P.CHALK : i === 1 && n.stats.oneEighties > 0 ? P.EMBER : P.BRASS_LIT);
     });
     y += (this.portrait ? rows.length : rows.length / 2) * 9 + 4;
     drawRule(r, px + 8, y, pw - 16);
@@ -220,6 +239,20 @@ export class ResultsScreen implements Scene {
     if (n.achievements.length) {
       y += 9;
       r.text(`OCHE UNLOCKED: ${n.achievements.map((a) => a.toUpperCase()).join(', ')}`, cx, y, { color: P.SKY_LIT, align: 'center' });
+    }
+    // Under the panel: what this night beat, or what the next one could unlock.
+    const under = py + ph + 4;
+    const strip = (lines: number) => r.dither(px, under - 2, pw, lines * 8 + 3, P.INK, 12);
+    if (this.newBests.size) {
+      strip(1);
+      r.text(`NEW BEST · ${[...this.newBests].join(' · ')}`, cx, under, { color: blink ? P.BRASS_LIT : P.BRASS, align: 'center' });
+    } else if (!n.achievements.length) {
+      const next = OCHES.find((o) => !this.app.save.isUnlocked(o.id));
+      if (next) {
+        strip(2);
+        r.text(`NEXT OCHE · ${next.name.toUpperCase()}`, cx, under, { color: P.MIST, align: 'center' });
+        r.text(next.unlock.toUpperCase(), cx, under + 8, { color: P.PEWTER, align: 'center' });
+      }
     }
     this.buttons.draw(r, this.keyboardFocus);
     for (const p of this.particles.list) r.sprite(p.sprite, Math.round(p.x), Math.round(p.y), p.frame);

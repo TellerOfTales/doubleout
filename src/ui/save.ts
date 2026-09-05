@@ -26,6 +26,10 @@ export interface LifetimeStats {
   bestLeg: number; // furthest leg index reached (0..7) + 1
   nineDarters: number;
   tutorialDone: boolean;
+  /** Highest single-visit total. */
+  bestVisit: number;
+  /** Most Pot earned in one night. */
+  bestPot: number;
 }
 
 export interface SaveData {
@@ -65,6 +69,8 @@ function defaults(): SaveData {
       bestLeg: 0,
       nineDarters: 0,
       tutorialDone: false,
+      bestVisit: 0,
+      bestPot: 0,
     },
   };
 }

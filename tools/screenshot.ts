@@ -183,6 +183,30 @@ async function main(): Promise<void> {
     await d.shot('02_flick_landed');
   });
 
+  // Regression: the pointer must be able to throw a whole visit. The lock that
+  // once stuck after the first flick was invisible to keyboard-driven scenarios.
+  await run('flick3', land, async (d) => {
+    await d.evalApp("app.startNight(777, 'local')");
+    await d.wait(900);
+    const slot = async () => (await d.evalApp("(function(){const l=app.scenes.current.layout; const n=app.night.legs[0].hand.length; const gap=n>=4?4:8; const total=n*40+(n-1)*gap; const start=l.hand.x+Math.floor((l.hand.w-total)/2); return {x:start+20,y:l.hand.y+28};})()")) as { x: number; y: number };
+    const settled = async () => {
+      for (let i = 0; i < 200; i++) {
+        const st = (await d.evalApp('(function(){const s=app.scenes.current; return {busy:s.busy, locked:s.hand.locked};})()')) as { busy: boolean; locked: boolean };
+        if (!st.busy && !st.locked) return;
+        await d.wait(25);
+      }
+      throw new Error('hand never unlocked after a flick');
+    };
+    for (let i = 0; i < 3; i++) {
+      const p = await slot();
+      await d.flick(p.x, p.y, -10, -70);
+      await settled();
+    }
+    const visits = (await d.evalApp('app.night.legs[0].visits.length')) as number;
+    if (visits !== 2) throw new Error(`three flicks should end the first visit; visits = ${visits}`);
+    await d.shot('01_second_visit');
+  });
+
   await run('pocketdemo', land, async (d) => {
     await d.evalApp("app.startNight(31415, 'local')");
     await d.wait(900);
