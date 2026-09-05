@@ -19,23 +19,7 @@ import { chalkDef } from '../content/chalkdefs';
 import { LEG_COUNT, SHOP_REFRESH_COST } from '../content/legs';
 import { computeCheckoutHints } from './checkout';
 import { resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
-import {
-  addChalk,
-  beginLeg,
-  commitCard,
-  commitMiss,
-  pocketCard,
-  createNight,
-  currentLeg,
-  currentVisit,
-  hasChalk,
-  newCard,
-  shopBuy,
-  shopLeave,
-  shopRefresh,
-  visitTotal,
-  type BuyOptions,
-} from './state';
+import { addChalk, beginLeg, cashHeat, commitCard, commitMiss, createNight, currentLeg, currentVisit, hasChalk, newCard, pocketCard, shanghaiProgress, shopBuy, shopLeave, shopRefresh, type BuyOptions, visitTotal } from './state';
 import type { Chalk, DartCard, LegState, NightState, OcheId, ThrowResult, VisitState } from './types';
 
 export type Policy = 'greedy' | 'checkout' | 'optimal';
@@ -57,6 +41,10 @@ export interface NightOutcome {
   legsWon: number;
   oneEighties: number;
   busts: number;
+  misses: number;
+  shanghais: number;
+  bestStreak: number;
+  heatCashed: number;
   chalkHeld: string[];
   seed: number;
   throws: number;
@@ -446,7 +434,18 @@ function chooseOptimal(n: NightState, leg: LegState): DartCard {
   type Line = { first: DartCard; score: number };
   let best: Line | null = null;
 
-  const walk = (score: number, throwIndex: number, remaining: DartCard[], first: DartCard | null, spent: number): void => {
+  // Shanghai: single, double and treble of the called number in one visit
+  // wins outright, even off a dart that would have bust. Track what the visit
+  // has already hit and what each planned dart adds.
+  const already = shanghaiProgress(leg);
+  const pieceOf = (r: ThrowResult): 'S' | 'D' | 'T' | null => {
+    const hit = r.hits[0];
+    if (!hit || hit.target.bed !== leg.shanghai) return null;
+    const reg = hit.target.region;
+    return reg === 'S' || reg === 'D' || reg === 'T' ? reg : null;
+  };
+
+  const walk = (score: number, throwIndex: number, remaining: DartCard[], first: DartCard | null, spent: number, pieces: Set<string>): void => {
     const dartsGone = throwIndex - ti;
     if (dartsGone >= dartsLeft || remaining.length === 0) {
       if (first) consider(first, visitValue(ctx, score, spent, false));
@@ -463,7 +462,9 @@ function chooseOptimal(n: NightState, leg: LegState): DartCard {
         forgivenessUsed: leg.forgivenessUsed,
       }).result;
       const head = first ?? card;
-      if (r.outcome === 'CHECKOUT') {
+      const piece = pieceOf(r);
+      const withPiece = piece && !pieces.has(piece) ? new Set(pieces).add(piece) : pieces;
+      if (withPiece.size === 3 || r.outcome === 'CHECKOUT') {
         // Nothing beats finishing the leg.
         consider(head, 1e9 - dartsGone);
         continue;
@@ -474,7 +475,7 @@ function chooseOptimal(n: NightState, leg: LegState): DartCard {
         continue;
       }
       const rest = remaining.slice(0, i).concat(remaining.slice(i + 1));
-      walk(r.scoreCommitted, throwIndex + 1, rest, head, spent + r.totalValue);
+      walk(r.scoreCommitted, throwIndex + 1, rest, head, spent + r.totalValue, withPiece);
     }
   };
 
@@ -483,7 +484,7 @@ function chooseOptimal(n: NightState, leg: LegState): DartCard {
     if (!best || value + tie > best.score) best = { first, score: value + tie };
   };
 
-  walk(leg.score, ti, leg.hand.slice(), null, 0);
+  walk(leg.score, ti, leg.hand.slice(), null, 0, new Set(already));
   return best ? (best as Line).first : leg.hand[0];
 }
 
@@ -947,6 +948,18 @@ function legOutcome(leg: LegState): LegOutcome {
   };
 }
 
+/**
+ * Cash the crowd when riding it is worth less than banking it: the wall is
+ * about to wipe it anyway, or the leg is on its last visit and a finish now
+ * is unlikely to be clean.
+ */
+export function considerCash(n: NightState, leg: LegState, aboutToWalk: boolean): void {
+  const visit = currentVisit(leg);
+  if (!visit || visit.throws.length > 0 || leg.heat <= 0) return;
+  const visitsLeft = leg.visitLimit - leg.visits.length;
+  if (aboutToWalk || visitsLeft <= 0) cashHeat(n);
+}
+
 export function playNight(seed: number, policy: Policy, opts: PlayOptions = {}): NightOutcome {
   const n = createNight(seed, opts.oche ?? 'local');
   if (opts.startLeg !== undefined) n.legIndex = Math.max(0, Math.min(LEG_COUNT - 1, opts.startLeg));
@@ -960,7 +973,9 @@ export function playNight(seed: number, policy: Policy, opts: PlayOptions = {}):
       if (policy !== 'greedy') considerPocket(n, leg);
       const card = chooseCard(n, leg, policy);
       // Every card would bust: throw at the wall instead of wrecking the visit.
-      if (policy !== 'greedy' && wouldBust(n, leg, card)) commitMiss(n);
+      const walk = policy !== 'greedy' && wouldBust(n, leg, card);
+      if (policy !== 'greedy') considerCash(n, leg, walk);
+      if (walk) commitMiss(n);
       else commitCard(n, card.id);
       throws++;
     } else if (n.phase === 'SHOP') {
@@ -976,6 +991,10 @@ export function playNight(seed: number, policy: Policy, opts: PlayOptions = {}):
     legsWon: n.stats.legsWon,
     oneEighties: n.stats.oneEighties,
     busts: n.stats.busts,
+    misses: n.stats.misses,
+    shanghais: n.stats.shanghais,
+    bestStreak: n.stats.bestStreak,
+    heatCashed: n.stats.heatCashed,
     chalkHeld: n.chalk.map((c) => c.def.id),
     seed,
     throws,

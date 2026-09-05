@@ -13,7 +13,7 @@ const LINES: [string, number][] = [
   ['DOUBLE OUT', P.BRASS_LIT],
   ['', 0],
   ['A single-player darts roguelite.', P.CHALK],
-  ['501 down to nothing. Finish on a double.', P.CHALK],
+  ['301 to open, 501 to close. Finish on a double.', P.CHALK],
   ['', 0],
   ['COMMENTARY', P.PEWTER],
   ['BARREL - the excitable one', P.CLARET_LIT],

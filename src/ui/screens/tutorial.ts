@@ -319,7 +319,7 @@ class Tutorial {
         this.setHand(['t20', 's5', 's1', 's20']);
         this.arrangeNext(['s20', 't19', 's7', 's12']);
         this.say({
-          text: 'Welcome to the oche. This is your score. Get it from 501 to exactly zero. The last dart has to land on a DOUBLE.',
+          text: 'Welcome to the oche. This is your score. Get it to exactly zero: 301 in the short game, 501 later. The last dart has to land on a DOUBLE.',
           target: () => this.scoreRect(),
           button: 'NEXT',
           onNext: () => this.gotoCards(),
@@ -602,7 +602,7 @@ class Tutorial {
   private gotoDone(): void {
     this.stage = 'done';
     this.say({
-      text: 'That is the whole game. Eight legs, fewer visits each time. Bin the filler, buy chalk to bend the maths, keep the crowd warm. Finish on a double. Have a good night.',
+      text: 'That is the whole game. Eight legs, fewer visits each time. Keep the crowd warm or bank it. Win legs without a bust and the sheet pays treble. Hit the Shanghai and the leg is yours. Have a good night.',
       button: 'PLAY',
       onNext: () => this.finish(true),
       second: { label: 'MENU', onPress: () => this.finish(false) },

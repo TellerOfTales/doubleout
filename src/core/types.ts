@@ -84,6 +84,8 @@ export interface ThrowResult {
   deflected: boolean;
   /** True for a deliberate miss: the dart went at the wall, nothing resolved. */
   miss: boolean;
+  /** True when this throw completed a Shanghai and won the leg outright. */
+  shanghai: boolean;
   /**
    * Step-by-step readout of the pipeline for the UI: one entry per chalk that
    * fired, with the targets and values after that chalk applied. Cosmetic;
@@ -136,6 +138,10 @@ export interface LegState {
   heat: number;
   /** "Left it right" bonuses banked this leg (score left finishable). */
   setupBonuses: number;
+  /** The number called for Shanghai this leg (single + double + treble in one visit wins). */
+  shanghai: number;
+  /** True once this leg has seen a bust: the clean sheet is off. */
+  dirty: boolean;
   /** Pot awarded for this leg once checked out. */
   reward?: PotBreakdown;
 }
@@ -152,6 +158,14 @@ export interface PotBreakdown {
   heat: number;
   /** Extra Pot the heat multiplier added. */
   heatBonus: number;
+  /** Pot for a Shanghai finish (0 otherwise). */
+  shanghai: number;
+  /** Clean-sheet streak this leg counts as (1 = first clean leg). 0 if the leg was dirty. */
+  streak: number;
+  /** Multiplier the clean sheet applied to everything above. */
+  streakMult: number;
+  /** Extra Pot the clean sheet added. */
+  streakBonus: number;
   total: number;
   /** Score at the start of the finishing visit (the darts sense of "a 100 checkout"). */
   checkoutFrom: number;
@@ -196,6 +210,12 @@ export interface NightStats {
   setups: number;
   /** Highest heat reached in the night. */
   bestHeat: number;
+  /** Shanghai finishes. */
+  shanghais: number;
+  /** Times the crowd was cashed early. */
+  heatCashed: number;
+  /** Longest clean sheet of the night. */
+  bestStreak: number;
 }
 
 export interface Rng {
@@ -228,6 +248,10 @@ export interface NightState {
   achievements: OcheId[];
   /** Consecutive busts across the night, for commentary escalation. Reset on a non-bust visit end. */
   consecutiveBusts: number;
+  /** Shanghai number called for each leg, drawn at the start of the night. */
+  shanghaiNumbers: number[];
+  /** The clean sheet: consecutive legs won with no bust and no wall. */
+  streak: number;
 }
 
 // ---------- Engine events ----------
@@ -239,7 +263,10 @@ export type EngineEvent =
   | { type: 'VISIT_END'; visit: VisitState; total: number; busted: boolean; missed: boolean; heat: number }
   | { type: 'SETUP_BONUS'; score: number; pot: number }
   | { type: 'POCKETED'; card: DartCard }
-  | { type: 'HEAT_LOST'; from: number }
+  | { type: 'HEAT_LOST'; from: number; reason: 'BUST' | 'MISS' }
+  | { type: 'HEAT_CASHED'; pips: number; pot: number }
+  | { type: 'STREAK_LOST'; from: number; reason: 'BUST' | 'MISS' }
+  | { type: 'SHANGHAI'; number: number; total: number }
   | { type: 'ONE_EIGHTY'; total: number }
   | { type: 'CHECKOUT'; legIndex: number; reward: PotBreakdown | null }
   | { type: 'LEG_TIMEOUT'; legIndex: number }

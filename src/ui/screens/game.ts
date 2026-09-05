@@ -4,15 +4,16 @@
  * call; this screen choreographs what the player sees and hears.
  */
 import { P } from '../../art/palette';
+import { isFinishableBase } from '../../core/rules';
 import { measureText } from '../../art/sprites';
 import { CHALK_DEFS, chalkDef } from '../../content/chalkdefs';
 import { OCHE_BY_ID } from '../../content/oches';
 import { baseValue, targetNotation } from '../../core/board';
 import { computeCheckoutHints, type CheckoutHints } from '../../core/checkout';
-import { HEAT_CAP } from '../../content/legs';
+import { HEAT_CAP, HEAT_CASH, LEGS, streakMultiplier } from '../../content/legs';
 import { buildBarkContext } from '../../core/commentary';
 import { resolveThrow } from '../../core/resolver';
-import { commitCard, commitMiss, currentLeg, currentVisit, legName, pocketCard, throwsPerVisit, visitTotal } from '../../core/state';
+import { cashHeat, commitCard, commitMiss, currentLeg, currentVisit, legName, pocketCard, shanghaiProgress, throwsPerVisit, visitTotal } from '../../core/state';
 import type { DartCard, EngineEvent, LegState, NightState, ThrowResult } from '../../core/types';
 import type { App } from '../app';
 import { BoardView } from '../boardview';
@@ -212,6 +213,8 @@ export class GameScreen implements Scene {
   }
 
   refreshHints(): void {
+
+    this.hand.shanghaiBed = this.leg.shanghai;
     const leg = this.leg;
     if (!leg || leg.status !== 'ACTIVE') return;
     this.hand.pocketId = leg.pocket ? leg.pocket.id : null;
@@ -501,7 +504,7 @@ export class GameScreen implements Scene {
       }
       if (result.scoreCommitted === 170) this.float('THE BIG FISH', l.score.x + l.score.w / 2, l.score.y - 4, P.BRASS_LIT, 1, 1.5);
     }
-    this.app.audio.setCrowdTension(0.2 + (1 - this.leg.score / 501) * 0.4);
+    this.app.audio.setCrowdTension(0.2 + (1 - this.leg.score / LEGS[this.leg.index].start) * 0.4);
     this.bark({ type: 'THROW', result }, result);
 
     // engine events in order
@@ -575,9 +578,44 @@ export class GameScreen implements Scene {
       }
       case 'HEAT_LOST': {
         this.heatLost.fire(1.1);
-        this.app.sfx('lose_sting', { volume: 0.5 });
-        this.float('CROWD COOLS', l.orientation === 'landscape' ? 240 : l.w / 2, l.orientation === 'landscape' ? 18 : 126, P.EMBER, 1, 1.3);
+        this.app.sfx('lose_sting', { volume: e.reason === 'MISS' ? 0.3 : 0.5 });
+        this.float(e.reason === 'MISS' ? 'CROWD GOES COLD' : 'CROWD COOLS', l.orientation === 'landscape' ? 240 : l.w / 2, l.orientation === 'landscape' ? 18 : 126, P.EMBER, 1, 1.3);
         yield 0.3;
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'STREAK_LOST': {
+        this.app.sfx('bust', { volume: 0.6, pitch: 0.8 });
+        this.shake.hit(1.5, 0.2);
+        this.float(`CLEAN SHEET GONE  x${streakMultiplier(e.from + 1)} -> x1`, l.score.x + l.score.w / 2, l.score.y + l.score.h + 12, P.EMBER, 1, 1.8);
+        this.readout = `THE CLEAN SHEET IS GONE. ${e.from} LEG${e.from === 1 ? '' : 'S'} OF IT.`;
+        this.readoutColor = P.EMBER;
+        yield 0.5;
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'HEAT_CASHED': {
+        this.app.sfx('pot');
+        this.float(`+${e.pot} POT`, l.score.x + l.score.w / 2, l.score.y + 4, P.BRASS_LIT, 1, 1.3);
+        yield 0.3;
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'SHANGHAI': {
+        this.score.set(0, 0.2);
+        this.app.sfx('one_eighty');
+        this.app.sfx('checkout');
+        this.goldFlash.fire(0.8);
+        this.shake.hit(3, 0.4);
+        this.confetti(l.boardCentre.x, l.boardCentre.y, 60);
+        this.crowdJump.fire(1.6);
+        this.app.audio.crowdRoar(1);
+        this.bigText = { text: 'SHANGHAI!', sub: `${e.number}S · GAME SHOT`, pulse: new Pulse(), color: P.CLARET_LIT };
+        this.bigText.pulse.fire(2.4);
+        this.readout = `SHANGHAI ON THE ${e.number}S. THE LEG IS YOURS, WHATEVER WAS LEFT.`;
+        this.readoutColor = P.CLARET_LIT;
+        this.bark(e, result);
+        yield 1.4;
         this.hooks.onEvent?.(e, this);
         break;
       }
@@ -597,7 +635,8 @@ export class GameScreen implements Scene {
       case 'LEG_TIMEOUT': {
         yield 0.4;
         this.app.sfx('lose_sting');
-        this.bigText = { text: 'TIMED OUT', sub: `${legName(e.legIndex).toUpperCase()} · ${this.leg.score} LEFT`, pulse: new Pulse(), color: P.EMBER };
+        const close = this.leg.score <= 60 && isFinishableBase(this.leg.score);
+        this.bigText = { text: 'TIMED OUT', sub: `${close ? 'SO CLOSE' : legName(e.legIndex).toUpperCase()} · ${this.leg.score} LEFT`, pulse: new Pulse(), color: P.EMBER };
         this.bigText.pulse.fire(2.4);
         this.bark(e, result);
         this.app.audio.setCrowdTension(0.05);
@@ -692,7 +731,7 @@ export class GameScreen implements Scene {
     this.buttons.clear();
     const l = this.layout;
     const pw = l.orientation === 'landscape' ? 210 : 168;
-    const ph = 138;
+    const ph = 156;
     const px = Math.floor((l.w - pw) / 2);
     const py = Math.floor((l.h - ph) / 2) - (l.orientation === 'landscape' ? 8 : 24);
     this.buttons.add({
@@ -778,6 +817,10 @@ export class GameScreen implements Scene {
         return;
       }
     }
+    if (this.canCash && inRect(p.x, p.y, this.heatRect)) {
+      this.cashCrowd();
+      return;
+    }
     if (inRect(p.x, p.y, this.layout.pocket)) {
       this.pocketSelected();
       return;
@@ -849,6 +892,8 @@ export class GameScreen implements Scene {
       else this.hand.throwSelected();
     } else if (key === 'p' || key === 'P') {
       this.pocketSelected();
+    } else if (key === 'c' || key === 'C') {
+      this.cashCrowd();
     } else if (key === 'm' || key === 'M' || key === '0') {
       this.throwAtWall();
     } else if (key === 'h' || key === 'H') {
@@ -1028,12 +1073,13 @@ export class GameScreen implements Scene {
         r.text(route, cl.x + 22, cl.y, { color: P.BRASS_LIT });
       } else if (this.hints.inRange) {
         r.text('OUT', cl.x, cl.y, { color: P.PEWTER });
-        r.text('NO ROUTE IN THIS DECK', cl.x + 22, cl.y, { color: P.EMBER });
+        r.text('NO ROUTE HERE', cl.x + 22, cl.y, { color: P.EMBER });
       } else {
         // Too far out for a route: just the standing reminder.
-        r.text('FINISH ON A DOUBLE', cl.x, cl.y, { color: P.STONE });
+        r.text('DOUBLE OUT', cl.x, cl.y, { color: P.STONE });
       }
     }
+    this.drawShanghai(r);
     // visit line
     const v = leg.status === 'ACTIVE' ? currentVisit(leg) : leg.visits[leg.visits.length - 1];
     if (v) {
@@ -1045,6 +1091,13 @@ export class GameScreen implements Scene {
       }
       const vl = l.visitLine;
       r.text(`VISIT ${v.index + 1}/${leg.visitLimit}`, vl.x, vl.y, { color: leg.visitLimit - v.index <= 1 ? P.EMBER : P.PEWTER });
+      // The clean sheet: what this leg pays if it is won without a bust.
+      const sheetX = vl.x + Math.floor(vl.w / 2) - 10;
+      if (leg.dirty) r.text('SHEET OFF', sheetX, vl.y, { color: P.STONE, align: 'center' });
+      else if (this.night.streak >= 1) {
+        const mult = streakMultiplier(this.night.streak + 1);
+        r.text(`SHEET x${mult}`, sheetX, vl.y, { color: mult >= 3 ? P.BRASS_LIT : P.BRASS, align: 'center' });
+      }
       const darts = parts.join(' ');
       r.text(darts, vl.x + vl.w, vl.y, { color: P.MIST, align: 'right' });
       const total = visitTotal(v);
@@ -1055,9 +1108,64 @@ export class GameScreen implements Scene {
   }
 
   /**
+   * The Shanghai call: the leg's number and three pips for the single, the
+   * double and the treble of it, lit as this visit collects them. Two lit is
+   * the moment the hand holds its breath.
+   */
+  private drawShanghai(r: Renderer): void {
+    const l = this.layout;
+    const leg = this.leg;
+    if (leg.status !== 'ACTIVE') return;
+    const got = shanghaiProgress(leg);
+    const cl = l.checkoutLine;
+    const right = cl.x + cl.w;
+    const two = got.size === 2 && Math.floor(this.time * 4) % 2 === 0;
+    let x = right;
+    for (const reg of ['T', 'D', 'S'] as const) {
+      const lit = got.has(reg);
+      x -= 4;
+      r.rect(x, cl.y + 1, 3, 5, lit ? (two ? P.CHALK : P.CLARET_LIT) : P.SHADE);
+    }
+    r.text(`SHANGHAI ${leg.shanghai}`, x - 3, cl.y, { color: got.size === 2 ? P.CLARET_LIT : got.size === 1 ? P.MIST : P.PEWTER, align: 'right' });
+  }
+
+  /**
    * The crowd gauge: four pips that fill as visits land without a bust, and
    * the Pot multiplier they are worth. A bust empties it in one go.
    */
+  /** The gauge is also the cash button: tap it at the start of a visit to bank the pips. */
+  private heatRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
+
+  private get canCash(): boolean {
+    const leg = this.leg;
+    if (this.busy || this.hand.locked || this.hooks.ownsFlow || leg.status !== 'ACTIVE' || leg.heat <= 0) return false;
+    return currentVisit(leg).throws.length === 0;
+  }
+
+  /** Cash the crowd: the sure thing instead of the ride. */
+  private cashCrowd(): void {
+    if (!this.canCash) {
+      this.app.sfx('error');
+      return;
+    }
+    const out = cashHeat(this.night);
+    if (!out.ok) {
+      this.app.sfx('error');
+      return;
+    }
+    const cashed = out.events.find((e) => e.type === 'HEAT_CASHED');
+    const pot = cashed && cashed.type === 'HEAT_CASHED' ? cashed.pot : 0;
+    this.app.sfx('pot');
+    this.app.input.touchActivity();
+    this.float(`+${pot} POT`, this.heatRect.x + Math.floor(this.heatRect.w / 2), this.heatRect.y - 6, P.BRASS_LIT, 1, 1.3);
+    this.readout = `CROWD BANKED FOR ${pot}. THE GAUGE STARTS AGAIN.`;
+    this.readoutColor = P.BRASS;
+    for (const e of out.events) {
+      this.bark(e);
+      this.hooks.onEvent?.(e, this);
+    }
+  }
+
   private drawHeat(r: Renderer): void {
     const l = this.layout;
     const leg = this.leg;
@@ -1077,7 +1185,15 @@ export class GameScreen implements Scene {
       r.rect(px2, y + 1 - (lit ? bump : 0), 3, 5, lost ? P.EMBER : lit ? (hot ? P.BRASS_LIT : P.BRASS) : P.SHADE);
       px2 += 4;
     }
-    r.text('CROWD', px2 - HEAT_CAP * 4 - 38, y, { color: P.PEWTER, align: 'left' });
+    const labelX = px2 - HEAT_CAP * 4 - 38;
+    this.heatRect = { x: labelX - 2, y: y - 2, w: x - labelX + 4, h: 11 };
+    if (this.canCash) {
+      // The offer: bank the pips now, at HEAT_CASH each, and start the gauge again.
+      const on = Math.floor(this.time * 3) % 2 === 0;
+      r.text(`BANK ${heat * HEAT_CASH}`, labelX, y, { color: on ? P.BRASS_LIT : P.BRASS, align: 'left' });
+    } else {
+      r.text('CROWD', labelX, y, { color: P.PEWTER, align: 'left' });
+    }
   }
 
   private drawChalkStrip(r: Renderer): void {
@@ -1257,7 +1373,7 @@ export class GameScreen implements Scene {
     const leg = this.leg;
     const rw = leg.reward;
     const pw = l.orientation === 'landscape' ? 210 : 168;
-    const ph = 138;
+    const ph = 156;
     const px = Math.floor((l.w - pw) / 2);
     const py = Math.floor((l.h - ph) / 2) - (l.orientation === 'landscape' ? 8 : 24);
     r.dither(0, 0, l.w, l.h, P.INK, 8);
@@ -1276,7 +1392,9 @@ export class GameScreen implements Scene {
           ['CLEAN LEG', rw.cleanLeg, rw.cleanLeg > 0],
           ['NINE-DARTER', rw.nineDarter, rw.nineDarter > 0],
           ['LEFT IT RIGHT', rw.setup, rw.setup > 0],
+          ['SHANGHAI', rw.shanghai, rw.shanghai > 0],
           [`CROWD ×${(1 + rw.heat / HEAT_CAP).toFixed(2).replace(/0$/, '').replace(/\.$/, '')}`, rw.heatBonus, rw.heatBonus > 0],
+          [rw.streak > 0 ? `CLEAN SHEET ×${rw.streakMult}` : 'CLEAN SHEET', rw.streakBonus, rw.streakMult > 1],
         ];
         const shown = Math.floor(this.checkoutPanelT * rows.length + 0.5);
         rows.forEach((row, i) => {

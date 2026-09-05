@@ -197,6 +197,8 @@ function buildSequence(): BarkContext[] {
   const idle = (seconds: number) => seq.push(snap(n, { type: 'IDLE', seconds }));
 
   push(beginLeg(n));
+  // The short game opens a real night; this script wants the 501 arithmetic.
+  setScore(n, 501);
   // visit 1: a 180 (501 → 321)
   for (const c of ['t20', 't20', 't20']) push(play(n, c).events);
   idle(20);
@@ -269,6 +271,7 @@ function buildSequence(): BarkContext[] {
     for (const e of events) seq.push(snap(nine, e));
   };
   pushNine(beginLeg(nine));
+  setScore(nine, 501); // the short game opens a real night; the nine-darter is a 501 thing
   for (const c of ['t20', 't20', 't20', 't20', 't20', 't20', 't20', 't19']) pushNine(play(nine, c).events);
   pushNine(playAll(nine, ['d12']).events);
   seq.push(snap(nine, { type: 'SHOP_ENTER', pot: nine.pot }));
@@ -364,8 +367,8 @@ describe('the triggers the reworked visit added', () => {
 
   it('heat_lost speaks only when there was heat worth losing', () => {
     const t = BY_ID.get('heat_lost') as BarkTrigger;
-    for (const from of [2, 3, HEAT_CAP]) expect(t.when(buildBarkContext(n0, { type: 'HEAT_LOST', from })), `from ${from}`).toBe(true);
-    for (const from of [0, 1]) expect(t.when(buildBarkContext(n0, { type: 'HEAT_LOST', from })), `from ${from}`).toBe(false);
+    for (const from of [2, 3, HEAT_CAP]) expect(t.when(buildBarkContext(n0, { type: 'HEAT_LOST', from, reason: 'BUST' as const })), `from ${from}`).toBe(true);
+    for (const from of [0, 1]) expect(t.when(buildBarkContext(n0, { type: 'HEAT_LOST', from, reason: 'BUST' as const })), `from ${from}`).toBe(false);
   });
 
   it('setup_bonus and pocketed answer their own event and nothing else, and nothing shouts over them', () => {
@@ -475,7 +478,7 @@ describe('Commentary engine (src/core/commentary.ts)', () => {
   });
 
   it('the nine-darter outranks the checkout barks', () => {
-    const idx = SEQUENCE.findIndex((c, i) => c.event.type === 'CHECKOUT' && c.leg.visits.length === 3 && i > 150);
+    const idx = SEQUENCE.findIndex((c) => c.event.type === 'CHECKOUT' && c.leg.visits.length === 3 && c.leg.visits[0].scoreAtVisitStart === 501);
     expect(idx).toBeGreaterThan(0);
     expect(OUT[idx][0].triggerId).toBe('nine_darter');
   });

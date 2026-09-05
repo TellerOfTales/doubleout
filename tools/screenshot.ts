@@ -207,6 +207,51 @@ async function main(): Promise<void> {
     await d.shot('01_second_visit');
   });
 
+  // The excitement package end to end: a Shanghai from a forced hand, the
+  // two-of-three tease, the overlay row, and banking the crowd from the gauge.
+  await run('package', land, async (d) => {
+    await d.evalApp("app.startNight(2024, 'local')");
+    await d.wait(900);
+    await d.evalApp("(function(){const s=app.state; const n=app.night; const leg=n.legs[0]; leg.shanghai=16; leg.hand=['s16','d16','t16','s20','t20'].map((x)=>s.newCard(n,x)); const g=app.scenes.current; g.hand.deal(leg.hand); g.refreshHints(); return leg.hand.length;})()");
+    await d.wait(700);
+    await d.shot('01_shanghai_hand');
+    await d.key('1');
+    await d.key('Enter');
+    await d.wait(1800);
+    await d.key('1');
+    await d.key('Enter');
+    await d.wait(1600);
+    await d.shot('02_two_of_three');
+    await d.key('1');
+    await d.key('Enter');
+    await d.wait(1300);
+    await d.shot('03_shanghai');
+    await d.wait(2600);
+    await d.shot('04_shanghai_overlay');
+    const won = (await d.evalApp("app.night.legs[0].status === 'CHECKED_OUT' && app.night.stats.shanghais === 1")) as boolean;
+    if (!won) throw new Error('a single, a double and a treble of the called number did not win the leg');
+    // bank the crowd
+    await d.evalApp("app.startNight(31, 'local')");
+    await d.wait(900);
+    await d.evalApp("(function(){const leg=app.night.legs[0]; leg.shanghai=3; leg.score=100000; leg.visits[0].scoreAtVisitStart=100000; app.scenes.current.score.snap(100000); app.scenes.current.refreshHints(); return 1;})()");
+    for (let v = 0; v < 2; v++) {
+      for (let t = 0; t < 3; t++) {
+        await d.key('1');
+        await d.key('Enter');
+        await d.wait(t === 2 ? 2200 : 1500);
+      }
+    }
+    const heat = (await d.evalApp('app.night.legs[0].heat')) as number;
+    if (heat !== 2) throw new Error(`two clean visits should warm the crowd to 2, got ${heat}`);
+    await d.shot('05_bank_offer');
+    const before = (await d.evalApp('app.night.pot')) as number;
+    await d.key('c');
+    await d.wait(500);
+    const after = (await d.evalApp('app.night.pot')) as number;
+    if (after !== before + 4) throw new Error(`banking two pips should pay 4, pot went ${before} -> ${after}`);
+    await d.shot('06_banked');
+  });
+
   await run('pocketdemo', land, async (d) => {
     await d.evalApp("app.startNight(31415, 'local')");
     await d.wait(900);

@@ -20,6 +20,7 @@
  *
  * Character set: ASCII printable plus '…' (the 5x7 font has no em-dash).
  */
+import { shanghaiProgress } from '../core/state';
 import type { BarkContext, BarkTrigger, ThrowResult } from '../core/types';
 
 const LAST_LEG = 7;
@@ -124,15 +125,15 @@ export const BARKS: BarkTrigger[] = [
     lines: [
       "Good evening! Welcome to the oche! The board is up, the carpet is sticky, we are LIVE!",
       "Here we go! Eight legs, one night, and I have had precisely one pint! Maybe two!",
-      "Ladies, gentlemen, Gerald: welcome! Five hundred and one to nothing, let's have it!",
+      "Ladies, gentlemen, Gerald: welcome! Three hundred and one to nothing, let's have it!",
       "It's a night at the darts! I've got a new pen and everything! Two pens!",
       "Welcome in! The wiring's been checked! By Gerald! So it hasn't been checked!",
     ],
     reply: {
       speaker: 'NOCK',
       lines: [
-        "Five hundred and one. A prime number… no. It is 3 times 167. Carry on.",
-        "Thirteen visits for the first leg. I shall count every dart. Nobody asked me to.",
+        "Three hundred and one. A prime number… no. It is 7 times 43. Carry on.",
+        "Ten visits for the first leg. I shall count every dart. Nobody asked me to.",
         "Good evening. I have brought a calculator. Barrel has brought a whistle.",
         "Good evening. The board has been hung straight. It is the last straight thing tonight.",
       ],
@@ -466,7 +467,7 @@ export const BARKS: BarkTrigger[] = [
       "THAT'S THE NIGHT! THE DECIDER IS DECIDED! Roll up the carpet! IT'S DONE!",
       "GAME SHOT AND THE NIGHT! I can't feel my hands! I don't NEED my hands!",
       "THE DECIDER! WON! Gerald's crying! I'm crying! The board's leaking!",
-      "THAT'S IT! THAT'S THE LOT! Five hundred and one to nothing, eight times! EIGHT!",
+      "THAT'S IT! THAT'S THE LOT! Eight legs to nothing! EIGHT! I counted! Nock counted!",
       "A NIGHT AT THE DARTS, AND THE DARTS LOST! In a good way! The best way!",
       "IT'S OVER! WE'VE DONE IT! Well, not WE, but I was here! I was HERE!",
     ],
@@ -1210,6 +1211,180 @@ export const BARKS: BarkTrigger[] = [
     },
   },
 ];
+
+
+// ---------------------------------------------------------------- the excitement package (DECISIONS.md #62-66)
+
+const PACKAGE_BARKS: BarkTrigger[] = [
+  {
+    id: 'shanghai',
+    speaker: 'BARREL',
+    priority: 108,
+    cooldown: 6,
+    when: (ctx) => ctx.event.type === 'SHANGHAI',
+    lines: [
+      "SHANGHAI! SINGLE, DOUBLE, TREBLE! THE LEG IS OVER! Nock, the leg is OVER!",
+      "SHANGHAI! Whatever was left, it's gone! GONE! The scoreboard's been made redundant!",
+      "SHANGHAI ON THE {card}S! Gerald's up! Gerald's on a CHAIR! That chair has a history!",
+      "THE SHANGHAI! The pub rule! The ONE! Three darts, one number, and the leg just… ENDS!",
+      "SHANGHAI! I've never seen one! I've seen one NOW! I'll be seeing it for WEEKS!",
+      "ONE NUMBER, THREE WAYS, AND GOODNIGHT! That is a SHANGHAI and I need a sit down!",
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'Single, double, treble of the called number. What was left does not matter. It never did.',
+        'The rule predates the scoreboard. Tonight the scoreboard found out.',
+        'Three darts in one bed, three rings. The arithmetic is dismissed. It returns next leg.',
+        'That is the oldest rule in the room, and the loudest. Both by some distance.',
+      ],
+    },
+  },
+  {
+    id: 'shanghai_two',
+    speaker: 'NOCK',
+    priority: 48,
+    cooldown: 5,
+    when: (ctx) => {
+      if (ctx.event.type !== 'THROW' || ctx.event.result.outcome !== 'CONTINUE') return false;
+      const v = ctx.leg.visits[ctx.leg.visits.length - 1];
+      return !!v && v.throws.length < 3 && shanghaiProgress(ctx.leg).size === 2;
+    },
+    lines: [
+      'Two of the three. One dart, one ring, and the leg ends where it stands.',
+      'That is two pieces of the Shanghai in one visit. The room has noticed. So has the board.',
+      'Two down. The third would finish the leg from anywhere. I will not say more. Barrel will.',
+      'Single and double, or double and treble, it does not matter. One more of the {card}s.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        "ONE MORE OF THEM AND IT'S OVER! I can't look! I'm looking! I CAN'T STOP LOOKING!",
+        "Come on! COME ON! One more in that bed and the leg is DONE! DONE, I said!",
+        "Nock, I have never wanted a dart to land anywhere this much! ANYWHERE!",
+      ],
+    },
+  },
+  {
+    id: 'shanghai_called',
+    speaker: 'NOCK',
+    priority: 28,
+    cooldown: 12,
+    when: (ctx) => ctx.event.type === 'LEG_START' && ctx.leg.visits.length <= 1,
+    lines: [
+      'Shanghai stands tonight. Single, double and treble of one number in a visit wins the leg.',
+      'House rule on the board: three rings of the called number in a visit and the leg is yours.',
+      'The Shanghai number is called. Most nights nobody hits it. Everyone talks about it anyway.',
+    ],
+  },
+  {
+    id: 'heat_lost_wall',
+    speaker: 'BARREL',
+    priority: 62,
+    cooldown: 8,
+    when: (ctx) => ctx.event.type === 'HEAT_LOST' && ctx.event.reason === 'MISS' && ctx.event.from >= 2,
+    lines: [
+      "Into the WALL! Score's safe! Crowd's gone COLD! You can't have both, apparently! Who KNEW!",
+      "The wall! Safe as houses! Cold as houses! Houses are cold, Nock! Mine is!",
+      "Walked away from it! Sensible! The crowd HATES sensible! Listen to them! NOTHING!",
+      "That's the wall, and the warmth's gone with it! You could have banked that! I WOULD have!",
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'The wall keeps the score and spends the crowd. It was on offer to bank before the throw.',
+        'A cold room and an intact score. That is the trade. It is not a bad trade. It is a trade.',
+        'Nothing lost on the board. Everything lost on the gauge. Two different ledgers.',
+      ],
+    },
+  },
+  {
+    id: 'heat_cashed',
+    speaker: 'NOCK',
+    priority: 58,
+    cooldown: 6,
+    when: (ctx) => ctx.event.type === 'HEAT_CASHED',
+    lines: [
+      'Banked. The sure thing, taken. The gauge starts again from nothing, where it started.',
+      'The crowd is paid off and sits down. {pot} to the Pot. Could have been more, or nothing.',
+      'Banked before the throw. The wall can do what it likes now. So can the board.',
+      'That is the ride declined. Sensible people decline rides. Barrel never has.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        "BANKED IT! Coins in the tin! The crowd's confused but they've been PAID!",
+        "Took the coins and ran! Well, stood! Took the coins and STOOD!",
+        "That's a pint's worth right there! Not a real pint! A METAPHORICAL pint! Gerald, DOWN!",
+      ],
+    },
+  },
+  {
+    id: 'streak_lost',
+    speaker: 'BARREL',
+    priority: 87,
+    cooldown: 8,
+    when: (ctx) => ctx.event.type === 'STREAK_LOST',
+    lines: [
+      "THE CLEAN SHEET! GONE! One bust and it's back to the start! The START, Nock!",
+      "That was the sheet! The multiplier! It was a LOT of things, and now it's ONE thing!",
+      "Bust, and the clean sheet goes with it! I felt that in my TEETH!",
+      "There goes the sheet! Whole legs of it! Gerald's got his coat on! Not cold! GRIEF!",
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'The sheet is gone. The next clean leg starts a new one. That is how sheets work.',
+        'One bust. The multiplier was never yours; it was on loan against not busting.',
+        'Back to times one. The board did not do that. The board never does anything.',
+      ],
+    },
+  },
+  {
+    id: 'clean_sheet_3',
+    speaker: 'NOCK',
+    priority: 72,
+    cooldown: 8,
+    when: (ctx) => ctx.event.type === 'CHECKOUT' && !!ctx.event.reward && ctx.event.reward.streakMult >= 3,
+    lines: [
+      'Three clean legs in a row. The Pot pays treble, and keeps paying it until something busts.',
+      'The clean sheet holds. Treble on everything. The shop is about to be very good to you.',
+      'Not a bust in three legs. The multiplier is at its top and stays there as long as you do.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        "TREBLE THE POT! TREBLE! Every coin's got two friends! Bring your friends! BRING EVERYONE!",
+        "Three clean legs! The sheet's SPOTLESS! You could eat off it! Don't! But you COULD!",
+      ],
+    },
+  },
+  {
+    id: 'leg_301',
+    speaker: 'NOCK',
+    priority: 26,
+    cooldown: 20,
+    when: (ctx) => ctx.event.type === 'LEG_START' && ctx.event.legIndex <= 1 && ctx.leg.score === 301,
+    lines: [
+      'Three hundred and one to start. The short game. Ten visits, and a double at the end of it.',
+      'The short game opens the night: 301, ten visits. The 501 comes later, once it is earned.',
+    ],
+  },
+  {
+    id: 'big_fish',
+    speaker: 'BARREL',
+    priority: 96,
+    cooldown: 10,
+    when: (ctx) => isCheckout(ctx) && checkoutFrom(ctx) >= 170,
+    lines: [
+      "THE BIG FISH! ONE SEVENTY! OUT! Two trebles and the bull and I have swallowed my pen!",
+      "170! THE BIG FISH! The biggest finish there IS! There's no bigger! I've CHECKED!",
+      "A HUNDRED AND SEVENTY! Off the bull! The crowd's fainted! ALL of them! At ONCE!",
+    ],
+  },
+];
+
+BARKS.push(...PACKAGE_BARKS);
 
 /** Every line in the bark pool, main and reply, in declaration order. */
 export function allBarkLines(triggers: BarkTrigger[] = BARKS): string[] {

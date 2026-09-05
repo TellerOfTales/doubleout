@@ -315,3 +315,89 @@ and `last_orders` (44.7%). That bar was written against a leg 8 a bare deck won 
 the time; with the pocket the bare floor is 9.6%, so the meaningful test — the one
 `tests/balance.test.ts` asserts — is that no chalk stands far above the *field*, and
 none does. Both are expensive, and neither wins leg 8 without a deck behind it.
+
+
+---
+
+# Fourth pass: the excitement package
+
+The playtest verdict after the third pass was "it's not feeling addictive enough",
+then, more precisely: "more just one more turn mechanics and real thought out
+tactics that incorporate small gambling mechanics for the fun of the mechanic."
+DECISIONS.md #62–66 are the answer; this is what the instrument said while they
+were being tuned.
+
+## What was measured on the way
+
+**The 301 opener is not a free win.** Legs 1 and 2 at 301 with eight visits lost
+leg 1 more often than 501 in thirteen did (69% against 85%), because the limit is
+what matters and eight was tight. Ten visits is the setting shipped; measured
+against 501/13 with the same bot:
+
+| opener | leg 1 | median visits to the first win | night |
+|---|---|---|---|
+| 501 in 13 | 83% | 6 | 11.7% |
+| 301 in 10 | 77% | 4 | 13.3% |
+| 301 in 11 | 78% | 4 | 12.7% |
+
+The first win arrives two visits (six darts) sooner, for six points of leg-1 win
+rate. That is the trade the brief asked for.
+
+**The bot must not hunt the Shanghai with the pocket.** A first version pocketed a
+piece of the called number while the finish was far off. It cost leg 1 eight points
+(77% → 69%) and the night half its win rate (13.3% → 6.7%), because the pocket's
+real job is the finisher and one pocketed piece leaves a 4% chance a visit deals
+the other two. The bot now only takes a Shanghai the hand already offers; the
+planner sees the set (including the dart that would otherwise bust) and plays it.
+Humans hunting deliberately, and buying toward the number, will beat the bot's
+Shanghai rate, which is the point.
+
+**The clean sheet had to allow the wall.** The first draft broke the streak on a
+bust *or* a walk to the wall. The optimal bot walks 2.2 times a leg, so the streak
+never formed (mean best streak 1.06) and the mechanic was dead. Busts only, with
+the wall costing the crowd instead: mean best streak 2.9, and the sheet is the
+thing a run is afraid to lose. The multiplier tops out at ×3 rather than ×4
+because ×4 from leg 3 on made the shop trivial.
+
+**Shanghai numbers are only called from what the deck can complete.** With any of
+20/19/18/17/16 called, the starting library (which holds the full trio only for 20
+and 16) produced a Shanghai in 6% of nights. Calling only completable numbers
+(and the bot merely accepting what it is dealt) gives 14–19% of nights; the two-of-
+three tease fires far more often than that, which is where the moment lives.
+
+## Where it lands (1000 nights)
+
+| metric | target | measured | |
+|---|---|---|---|
+| leg 1, greedy | > 97% | **39.5%** | miss — the skill gap, see the first pass |
+| leg 1, checkout-aware | — | 77.0% | the short game: median four visits to the first win |
+| leg 8, no chalk | < 5% | **15.4%** | the sheet-fed Pot and the pocket raised the floor |
+| leg 8, five strong chalk | 45–60% | **80.9%** | a curated build is meant to pay |
+| leg 8, twenty random five-chalk sets | 45–60% | **29.8%** | an average build |
+| full night (optimal) | 18–28% | **11.3%** | unchanged from the third pass, with a shorter night |
+| full night (greedy) | < 8% | **0.0%** | ok |
+| median 180s (3+ chalk) | 4–9 | **5** | ok |
+| busts per night | 3–7 | **0.0** | the bot always takes the wall; see pass one |
+| mean legs won, optimal / greedy | — | **2.85 / 0.64** | leg 1 is harder, the rest are easier |
+
+Conditional leg win rates: `76 74 76 79 78 80 74 72`. The ramp is flatter than the
+third pass's `85 78 75 77 76 81 75 65`: the short game costs leg 1 nine points, and
+the clean sheet's Pot makes the Decider seven points kinder to a build that arrives
+clean. The night's win rate is the same to the decimal, reached faster.
+
+Over 300 nights with the package on, the optimal bot: Pot earned 218 a night (was
+119), best clean sheet 2.9 legs, a Shanghai in 14% of nights, the crowd banked 1.9
+times a night, and 2.3 walks to the wall per leg.
+
+The chalk over §15.3's 35% line on leg 8 alone are now `fourth_dart` (52.7%),
+`wide_grip` (40.3%) and `last_orders` (36.3%) — the extra dart and the extra card
+are exactly what a Shanghai wants, which is a synergy the folk rule invites rather
+than an accident. The test that guards the anti-target (no chalk far above the
+field) still passes with room; if playtesting says Fourth Dart is a must-buy, its
+price is the knob.
+
+The instrument is honest about what it cannot see: the bot never busts, so the
+clean sheet's ×3 is its default and the busts-per-night line stays at 0.0; a human
+who busts twice a night feels the sheet break, which is the design. The bot also
+never hunts the Shanghai and never rides the crowd on purpose, so its Shanghai and
+cash numbers are floors.

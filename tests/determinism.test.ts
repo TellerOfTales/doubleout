@@ -15,6 +15,12 @@ import { botPickCard, continueScripted, playScripted, playSmart, sha256, smartPi
 
 const SEED = 12345;
 const DEEP_CHALK = ['straight_out', 'overshoot', 'wide_grip', 'wired'];
+/**
+ * The deep run's seed: the first from SEED upward whose checkout-aware night
+ * reaches leg 3, deflects a dart and spends in the shop under the current
+ * rules (the short-game opener retired 12345 for this job).
+ */
+const DEEP_SEED = 12347;
 
 function random50(): number[] {
   const r = createRng(0xd00b1e);
@@ -161,8 +167,8 @@ describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
 
   it('a snapshot taken in the shop continues identically', () => {
     const chalk = DEEP_CHALK;
-    const full = serialiseNight(playSmart(SEED, chalk));
-    const live = startNight(SEED, 'local', chalk);
+    const full = serialiseNight(playSmart(DEEP_SEED, chalk));
+    const live = startNight(DEEP_SEED, 'local', chalk);
     continueScripted(live, (s) => s.phase === 'SHOP', true);
     expect(live.phase).toBe('SHOP');
     expect(live.shop).not.toBeNull();
@@ -173,10 +179,10 @@ describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
 
   it('a snapshot from a later leg of the deep run continues identically', () => {
     const chalk = DEEP_CHALK;
-    const reference = playSmart(SEED, chalk);
+    const reference = playSmart(DEEP_SEED, chalk);
     expect(reference.legIndex).toBeGreaterThanOrEqual(2);
     const full = serialiseNight(reference);
-    const live = startNight(SEED, 'local', chalk);
+    const live = startNight(DEEP_SEED, 'local', chalk);
     continueScripted(live, (s) => s.legIndex >= 2 && s.phase === 'LEG' && currentLeg(s).visits.length >= 2, true);
     expect(live.legIndex).toBeGreaterThanOrEqual(2);
     const resumed = deserialiseNight(serialiseNight(live));
@@ -186,8 +192,8 @@ describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
 
   it('every intermediate snapshot of the deep run resumes to the same end state', () => {
     const chalk = DEEP_CHALK;
-    const full = serialiseNight(playSmart(SEED, chalk));
-    const live = startNight(SEED, 'local', chalk);
+    const full = serialiseNight(playSmart(DEEP_SEED, chalk));
+    const live = startNight(DEEP_SEED, 'local', chalk);
     let checks = 0;
     while (live.status === 'ACTIVE') {
       continueScripted(live, (s) => s.stats.throwsMade % 9 === 0 && s.stats.throwsMade > 0 && s.phase === 'LEG', true);
@@ -205,14 +211,14 @@ describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
 
 describe('checkout-aware deep run with wired (the RNG-consuming chalk)', () => {
   it('reaches at least leg 3, deflects darts, buys in the shop, and is identical across 25 runs', () => {
-    const first = playSmart(SEED, DEEP_CHALK);
+    const first = playSmart(DEEP_SEED, DEEP_CHALK);
     expect(first.legIndex).toBeGreaterThanOrEqual(2);
     const deflections = first.legs.flatMap((l) => l.visits).flatMap((v) => v.throws).filter((t) => t.deflected).length;
     expect(deflections).toBeGreaterThan(0);
     expect(first.stats.cardsBought + first.stats.potSpent).toBeGreaterThan(0);
     const json = serialiseNight(first);
-    for (let i = 0; i < 25; i++) expect(serialiseNight(playSmart(SEED, DEEP_CHALK))).toBe(json);
-    console.log(`seed 12345 deep (wired) night sha256 = ${sha256(json)} (${first.status} at leg ${first.legIndex + 1}, ${deflections} deflections)`);
+    for (let i = 0; i < 25; i++) expect(serialiseNight(playSmart(DEEP_SEED, DEEP_CHALK))).toBe(json);
+    console.log(`seed ${DEEP_SEED} deep (wired) night sha256 = ${sha256(json)} (${first.status} at leg ${first.legIndex + 1}, ${deflections} deflections)`);
   });
 
   it('ten seeds × three runs of the deep configuration are identical', () => {

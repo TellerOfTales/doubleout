@@ -78,6 +78,7 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
         forgiven: false,
         deflected: false,
         miss: true,
+        shanghai: false,
         trace: [],
       },
       forgivenessConsumed: false,
@@ -359,6 +360,7 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
     forgiven,
     deflected,
     miss: false,
+    shanghai: false,
     trace,
   };
   return { result, forgivenessConsumed };

@@ -2,30 +2,44 @@
  * Base ruleset helpers (TDD §3, §4): pot rewards and the unmodified
  * bust/checkout law used as the reference table in tests.
  */
-import { HEAT_CAP, LEGS } from '../content/legs';
+import { BIG_FINISH_LADDER, HEAT_CAP, LEGS, SHANGHAI_BONUS, streakMultiplier } from '../content/legs';
 import { baseValue, isDoubleRegion } from './board';
 import type { LegState, PotBreakdown, Target } from './types';
 
+/** Pot for a checkout from `score` on the big-finish ladder (0 below a ton). */
+export function bigFinishBonus(score: number): number {
+  for (const [from, pot] of BIG_FINISH_LADDER) if (score >= from) return pot;
+  return 0;
+}
+
 /**
- * Pot for a checked-out leg (TDD §4), plus the two additions this build makes:
- * the "left it right" bonuses banked during the leg, and the crowd heat, which
- * scales everything by up to ×2 and is wiped by a single bust.
+ * Pot for a checked-out leg (TDD §4), plus this build's additions: the
+ * "left it right" bonuses banked during the leg; the crowd heat, which scales
+ * everything by up to ×2 and is wiped by a bust or a walk to the wall; the
+ * Shanghai bonus; and the clean sheet, which multiplies the lot when this is
+ * the second or later clean leg in a row. `streak` is the night's clean-sheet
+ * count INCLUDING this leg (0 when the leg was dirty).
  */
-export function potReward(leg: LegState): PotBreakdown {
+export function potReward(leg: LegState, streak = 0): PotBreakdown {
   const def = LEGS[leg.index];
   const visitsUsed = leg.visits.length;
   const finishing = leg.visits[leg.visits.length - 1];
   const checkoutFrom = finishing ? finishing.scoreAtVisitStart : 0;
+  const lastThrow = finishing ? finishing.throws[finishing.throws.length - 1] : undefined;
   const base = def.reward;
   const unusedVisits = Math.max(0, leg.visitLimit - visitsUsed);
-  const bigFinish = checkoutFrom >= 100 ? 2 : 0;
+  const bigFinish = bigFinishBonus(checkoutFrom);
   const cleanLeg = leg.bustsThisLeg === 0 ? 3 : 0;
   const nineDarter = visitsUsed === 3 ? 5 : 0;
   const setup = leg.setupBonuses;
-  const subtotal = base + unusedVisits + bigFinish + cleanLeg + nineDarter + setup;
+  const shanghai = lastThrow?.shanghai ? SHANGHAI_BONUS : 0;
+  const subtotal = base + unusedVisits + bigFinish + cleanLeg + nineDarter + setup + shanghai;
   const heat = Math.min(HEAT_CAP, leg.heat);
   // ×1 at heat 0 rising to ×2 at the cap, in quarters so it stays integer.
   const heatBonus = Math.floor((subtotal * heat) / HEAT_CAP);
+  const withHeat = subtotal + heatBonus;
+  const streakMult = streakMultiplier(streak);
+  const streakBonus = withHeat * (streakMult - 1);
   return {
     base,
     unusedVisits,
@@ -35,7 +49,11 @@ export function potReward(leg: LegState): PotBreakdown {
     setup,
     heat,
     heatBonus,
-    total: subtotal + heatBonus,
+    shanghai,
+    streak,
+    streakMult,
+    streakBonus,
+    total: withHeat + streakBonus,
     checkoutFrom,
     visitsUsed,
   };

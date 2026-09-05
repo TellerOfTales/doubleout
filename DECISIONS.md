@@ -208,3 +208,46 @@ TDD §3.3, deliberately and with measurements.
     per-throw rule (and a "later acquisition wins" clash between Wide Grip and Tunnel
     Vision that the live rule does not have). Nothing used them. They are deleted, and
     the two chalk blurbs now describe what the chalk actually does to the visit hand.
+
+## The excitement package (after "it's not feeling addictive enough")
+
+The playtest verdict after the loop rework was that the loop had tactics but no
+thrill. These five changes are the answer, tuned together (`docs/decisions/balance.md`,
+fourth pass). The design brief they serve, in the developer's words: "just one more
+turn mechanics and real thought out tactics that incorporate small gambling mechanics
+for the fun of the mechanic."
+
+62. **Shanghai.** Every leg calls a number (drawn for all eight legs at the start of
+    the night, from the numbers the starting library holds a single, a double and a
+    treble of, so the hunt is always possible). A single, a double and a treble of
+    that number in one visit wins the leg outright, whatever the score, and takes
+    precedence over a bust on the dart that completes it. It pays `SHANGHAI_BONUS`
+    on top of the leg. Only each throw's primary hit counts, bulls never do, and the
+    resolved bed is what matters, so Mirrored and Narrow Beds play into it. The next
+    leg's number is shown in the shop, the leg's number and its three pips sit on the
+    checkout line, and cards of the number wear a claret corner in the hand. This is
+    the folk rule the brief asked for: it gives singles a reason to exist, gives the
+    pocket a second job, and puts a jackpot on every visit that costs nothing to
+    hope for.
+63. **The clean sheet.** Consecutive legs won without a bust multiply the leg's Pot:
+    ×1, ×2, then ×3 for the third clean leg and every one after (`STREAK_MULT`). One
+    bust and the sheet is gone, announced the moment it happens. Throwing at the wall
+    keeps the sheet (it costs the crowd instead, #64). This is the run's compounding
+    number, and the thing a player is afraid of losing.
+64. **The wall costs the crowd.** A deliberate miss now wipes the heat as well as
+    ending the visit. The safe option is still safe for the score; it is no longer
+    free.
+65. **Bank the crowd.** At the start of any visit the heat can be banked at
+    `HEAT_CASH` Pot a pip instead of ridden to the finish, which empties the gauge.
+    The gauge itself is the button. The decision it creates: a hand full of busts on
+    a warm crowd is "cash, then walk" — a planned move rather than a loss.
+66. **The short game opens the night, and finishes pay a ladder.** Legs 1 and 2 start
+    at 301 with ten visits; the rest are 501. The first win now lands in a median
+    four visits instead of six. Big finishes pay 2 from a ton, 4 from 130 and 8 for
+    the 170 (`BIG_FINISH_LADDER`); a timed-out leg within 60 and finishable says SO
+    CLOSE. The 501 legs keep the nine-darter and the 180 exactly as they were.
+
+The shop bot learned all of it except the hunt: it will take a Shanghai the hand
+offers and cashes before a walk or on a last visit, but it does not pocket toward a
+Shanghai — measured, that heuristic cost leg 1 eight points because the pocket has a
+better job. A human hunting deliberately does better than the bot's numbers.

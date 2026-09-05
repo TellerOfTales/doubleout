@@ -57,6 +57,8 @@ export class Hand {
   pocketId: string | null = null;
   tapToThrow = true;
   hintOn = true;
+  /** The leg's Shanghai number: cards of it wear a corner mark. */
+  shanghaiBed: number | null = null;
   time = 0;
 
   drag: {
@@ -337,6 +339,11 @@ export class Hand {
     const kept = this.pocketId === c.card.id;
     const band = kept ? P.BRASS_LIT : t.region === 'T' ? P.BRASS : t.region === 'D' ? P.SKY_LIT : t.region === 'IB' ? P.CLARET_LIT : t.region === 'OB' ? P.BAIZE_LIT : P.MIST;
     r.rect(x + 4, y + 4, cardW - 8, 3, band);
+    // A piece of the leg's Shanghai wears a claret corner, so the hunt reads at a glance.
+    if (this.shanghaiBed !== null && t.bed === this.shanghaiBed && (t.region === 'S' || t.region === 'D' || t.region === 'T')) {
+      r.rect(x + cardW - 9, y + 3, 5, 5, P.CLARET_LIT);
+      r.rect(x + cardW - 8, y + 4, 3, 3, P.INK);
+    }
     // A kept card wears a brass edge all visit, so it reads at a glance.
     if (kept) r.rectOutline(x, y, cardW, cardH, P.BRASS_LIT);
     // The target, large — the notation already says single, double or treble.

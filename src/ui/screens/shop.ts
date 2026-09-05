@@ -485,7 +485,13 @@ export class ShopScreen implements Scene {
       return { text: `${d.name.toUpperCase()} (${d.stage}): ${d.blurb}`, color: P.CHALK };
     }
     const slot = this.night.shop?.slots[this.selected];
-    if (!slot) return { text: 'TAP AN OFFER TO READ ABOUT IT. THE POT DOES NOT CARRY OVER SHAME, ONLY COINS.', color: P.STONE };
+    if (!slot) {
+      const next = this.night.shanghaiNumbers[this.night.legIndex + 1];
+      return {
+        text: next ? `NEXT LEG: SHANGHAI ON THE ${next}S. SINGLE, DOUBLE AND TREBLE OF IT IN ONE VISIT WINS THE LEG.` : 'TAP AN OFFER TO READ ABOUT IT. THE POT DOES NOT CARRY OVER SHAME, ONLY COINS.',
+        color: P.STONE,
+      };
+    }
     if (slot.kind === 'CARD') {
       const d = cardDef(slot.defId);
       const region = d.target.region === 'T' ? 'A treble: three times the bed.' : d.target.region === 'D' ? 'A double: finishes a leg.' : d.target.region === 'IB' ? 'The bull: 50, and it counts as a double.' : d.target.region === 'OB' ? 'Outer bull: 25.' : 'A single.';

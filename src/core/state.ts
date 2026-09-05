@@ -5,7 +5,7 @@
  */
 import { CHALK_DEFS, chalkDef } from '../content/chalkdefs';
 import { SHOP_CARD_POOL, cardCost, cardDef, libraryFor, makeCard, sharpenedDefId } from '../content/cards';
-import { DEFAULT_CHALK_SLOTS, HEAT_CAP, LEGS, LEG_COUNT, SERVICE_COST, SETUP_BONUS, SETUP_BONUS_CAP, SHOP_REFRESH_COST, STARTING_SCORE } from '../content/legs';
+import { DEFAULT_CHALK_SLOTS, HEAT_CAP, HEAT_CASH, LEGS, LEG_COUNT, SERVICE_COST, SETUP_BONUS, SETUP_BONUS_CAP, SHANGHAI_NUMBERS, SHOP_REFRESH_COST } from '../content/legs';
 import { computeCheckoutHints } from './checkout';
 import { discardHand, drawHand, takeFromHand } from './deck';
 import { WALL_CARD_ID } from './board';
@@ -62,13 +62,25 @@ export function createNight(seed: number, oche: OcheId = 'local'): NightState {
       misses: 0,
       setups: 0,
       bestHeat: 0,
+      shanghais: 0,
+      heatCashed: 0,
+      bestStreak: 0,
     },
     achievements: [],
     consecutiveBusts: 0,
+    shanghaiNumbers: [],
+    streak: 0,
   };
   for (const [defId, copies] of libraryFor(oche)) {
     for (let i = 0; i < copies; i++) n.library.push(newCard(n, defId));
   }
+  // Every leg's Shanghai number is called up front, in a fixed place in the
+  // RNG order, so the shop can name the next one and a player can build for
+  // it. Only numbers the starting library can actually complete are called,
+  // so the hunt is always on.
+  const callable = SHANGHAI_NUMBERS.filter((num) => (['S', 'D', 'T'] as const).every((reg) => n.library.some((c) => c.target.bed === num && c.target.region === reg)));
+  const pool = callable.length ? callable : SHANGHAI_NUMBERS;
+  for (let i = 0; i < LEG_COUNT; i++) n.shanghaiNumbers.push(pool[nextInt(n.rng, pool.length)]);
   if (oche === 'steady') addChalk(n, 'forgiving_oche');
   return n;
 }
@@ -121,7 +133,7 @@ export function beginLeg(n: NightState): EngineEvent[] {
   const leg: LegState = {
     index: n.legIndex,
     visitLimit: def.visitLimit,
-    score: STARTING_SCORE,
+    score: def.start,
     visits: [],
     deck: shuffle(n.rng, n.library.map((c) => ({ ...c, target: { ...c.target } }))),
     discard: [],
@@ -133,6 +145,8 @@ export function beginLeg(n: NightState): EngineEvent[] {
     pocket: null,
     heat: 0,
     setupBonuses: 0,
+    shanghai: n.shanghaiNumbers[n.legIndex] ?? SHANGHAI_NUMBERS[0],
+    dirty: false,
   };
   n.legs.push(leg);
   n.phase = 'LEG';
@@ -218,6 +232,17 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
   });
   if (forgivenessConsumed) leg.forgivenessUsed = true;
 
+  // Shanghai: single, double and treble of the called number in one visit
+  // wins the leg outright, whatever the score — even off a dart that would
+  // otherwise have bust. Checked before the outcome so it takes precedence.
+  if (!missed && completesShanghai(visit.throws, result, leg.shanghai)) {
+    result.shanghai = true;
+    result.outcome = 'CHECKOUT';
+    result.scoreAfter = 0;
+    result.scoreCommitted = 0;
+    result.forgiven = false;
+  }
+
   visit.throws.push(result);
   n.stats.throwsMade++;
   n.stats.chalkFires += result.firedChalk.length;
@@ -230,11 +255,18 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
     visit.busted = false;
     leg.heat = Math.min(HEAT_CAP, leg.heat + 1);
     n.stats.bestHeat = Math.max(n.stats.bestHeat, leg.heat);
+    if (result.shanghai) {
+      n.stats.shanghais++;
+      events.push({ type: 'SHANGHAI', number: leg.shanghai, total: visitTotal(visit) });
+    }
     endVisit(n, leg, visit, events, false);
     leg.status = 'CHECKED_OUT';
     n.stats.legsWon++;
     n.consecutiveBusts = 0;
-    const reward = leg.index === LEG_COUNT - 1 ? null : potReward(leg);
+    // The clean sheet: this leg counts only if nothing dirtied it.
+    n.streak = leg.dirty ? 0 : n.streak + 1;
+    n.stats.bestStreak = Math.max(n.stats.bestStreak, n.streak);
+    const reward = leg.index === LEG_COUNT - 1 ? null : potReward(leg, n.streak);
     const checkoutFrom = visit.scoreAtVisitStart;
     n.stats.bestCheckout = Math.max(n.stats.bestCheckout, checkoutFrom);
     if (reward) {
@@ -274,9 +306,10 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
     n.consecutiveBusts++;
     // A bust wipes the crowd: this is what makes the big score a gamble.
     if (leg.heat > 0) {
-      events.push({ type: 'HEAT_LOST', from: leg.heat });
+      events.push({ type: 'HEAT_LOST', from: leg.heat, reason: 'BUST' });
       leg.heat = 0;
     }
+    dirtyLeg(n, leg, events, 'BUST');
     endVisit(n, leg, visit, events, false);
     if (leg.visits.length >= leg.visitLimit) timeOut(n, leg, events);
     else events.push(...startVisit(n, leg));
@@ -286,8 +319,16 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
   // CONTINUE — the visit ends when the darts run out, or on a deliberate miss.
   if (missed || visit.throws.length >= perVisit) {
     n.consecutiveBusts = 0;
-    // Heat only builds on a visit actually thrown out; walking away holds it.
-    if (!missed) leg.heat = Math.min(HEAT_CAP, leg.heat + 1);
+    if (missed) {
+      // The wall saves the score and the clean sheet, nothing else: the crowd
+      // goes cold. Cash it first if you are going to walk.
+      if (leg.heat > 0) {
+        events.push({ type: 'HEAT_LOST', from: leg.heat, reason: 'MISS' });
+        leg.heat = 0;
+      }
+    } else {
+      leg.heat = Math.min(HEAT_CAP, leg.heat + 1);
+    }
     n.stats.bestHeat = Math.max(n.stats.bestHeat, leg.heat);
     awardSetupBonus(n, leg, events);
     endVisit(n, leg, visit, events, missed);
@@ -295,6 +336,67 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
     else events.push(...startVisit(n, leg));
   }
   return { result, events };
+}
+
+/**
+ * True if `result`, added to the visit's previous throws, gives a single, a
+ * double and a treble of the called number. Only each throw's primary hit
+ * counts (a split-tips echo is not a dart), bulls never qualify, and the
+ * resolved bed is what matters, so Mirrored and Narrow Beds play into it.
+ */
+export function completesShanghai(previous: ThrowResult[], result: ThrowResult, number: number): boolean {
+  const seen = new Set<string>();
+  for (const t of [...previous, result]) {
+    if (t.miss) continue;
+    const hit = t.hits[0];
+    if (!hit || hit.target.bed !== number) continue;
+    if (hit.target.region === 'S' || hit.target.region === 'D' || hit.target.region === 'T') seen.add(hit.target.region);
+  }
+  return seen.size === 3;
+}
+
+/** Which of S, D and T of the leg's number the current visit has already hit. */
+export function shanghaiProgress(leg: LegState): Set<'S' | 'D' | 'T'> {
+  const seen = new Set<'S' | 'D' | 'T'>();
+  const visit = leg.visits[leg.visits.length - 1];
+  if (!visit) return seen;
+  for (const t of visit.throws) {
+    if (t.miss) continue;
+    const hit = t.hits[0];
+    if (!hit || hit.target.bed !== leg.shanghai) continue;
+    if (hit.target.region === 'S' || hit.target.region === 'D' || hit.target.region === 'T') seen.add(hit.target.region);
+  }
+  return seen;
+}
+
+/** A bust takes the leg off the clean sheet. */
+function dirtyLeg(n: NightState, leg: LegState, events: EngineEvent[], reason: 'BUST' | 'MISS'): void {
+  if (leg.dirty) return;
+  leg.dirty = true;
+  if (n.streak > 0) {
+    events.push({ type: 'STREAK_LOST', from: n.streak, reason });
+    n.streak = 0;
+  }
+}
+
+/**
+ * Cash the crowd: bank the heat as Pot now instead of riding it to the
+ * finish. Only at the start of a visit, so it is a decision about the hand in
+ * front of you — take the sure thing, or throw and risk the wipe.
+ */
+export function cashHeat(n: NightState): { ok: boolean; events: EngineEvent[] } {
+  if (n.status !== 'ACTIVE' || n.phase !== 'LEG') return { ok: false, events: [] };
+  const leg = currentLeg(n);
+  if (leg.status !== 'ACTIVE' || leg.heat <= 0) return { ok: false, events: [] };
+  const visit = currentVisit(leg);
+  if (visit.throws.length > 0) return { ok: false, events: [] };
+  const pips = Math.min(HEAT_CAP, leg.heat);
+  const pot = pips * HEAT_CASH;
+  leg.heat = 0;
+  n.pot += pot;
+  n.stats.potEarned += pot;
+  n.stats.heatCashed++;
+  return { ok: true, events: [{ type: 'HEAT_CASHED', pips, pot }] };
 }
 
 /**

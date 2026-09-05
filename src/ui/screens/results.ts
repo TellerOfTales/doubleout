@@ -219,8 +219,8 @@ export class ResultsScreen implements Scene {
       ['BEST VISIT', String(n.stats.bestVisit)],
       ['BEST CHECKOUT', n.stats.bestCheckout ? String(n.stats.bestCheckout) : '-'],
       ['BUSTS', String(n.stats.busts)],
-      ['CHALK FIRED', String(n.stats.chalkFires)],
-      ['CARDS BOUGHT', String(n.stats.cardsBought)],
+      ['SHANGHAIS', String(n.stats.shanghais)],
+      ['CLEAN SHEET', n.stats.bestStreak ? `${n.stats.bestStreak} LEG${n.stats.bestStreak === 1 ? '' : 'S'}` : '-'],
       ['POT EARNED', String(n.stats.potEarned)],
     ];
     const blink = Math.floor(this.time * 3) % 2 === 0;
