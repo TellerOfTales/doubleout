@@ -1,0 +1,213 @@
+/**
+ * Night over: the loss screen (seed + one-input AGAIN, TDD §9.1) and the
+ * win screen (the game says plainly that it is finished, §9.3).
+ */
+import { P } from '../../art/palette';
+import { seedToString } from '../../core/rng';
+import { legName } from '../../core/state';
+import type { NightState } from '../../core/types';
+import type { App } from '../app';
+import { CommentaryBar } from '../commentarybar';
+import type { Renderer } from '../draw';
+import type { Pointer } from '../input';
+import type { Scene } from '../scene';
+import { Particles, rndRange } from '../tween';
+import { ButtonSet, drawPanel, drawRow, drawRule } from '../widgets';
+
+export class ResultsScreen implements Scene {
+  buttons = new ButtonSet();
+  bar = new CommentaryBar();
+  particles = new Particles();
+  keyboardFocus = true;
+  time = 0;
+  w = 320;
+  h = 180;
+  private confettiTimer = 0;
+
+  constructor(
+    public app: App,
+    public won: boolean,
+  ) {
+    this.bar.blip = (s, ch) => (app.save.data.settings.voice ? app.audio.blip(s, ch) : 25);
+  }
+
+  get night(): NightState {
+    return this.app.night as NightState;
+  }
+
+  get portrait(): boolean {
+    return this.app.screen.orientation === 'portrait';
+  }
+
+  enter(): void {
+    this.resize();
+    this.app.audio.setCrowdTension(this.won ? 0.5 : 0.05);
+    if (this.won) {
+      this.app.sfx('win_fanfare');
+      this.app.audio.crowdRoar(1);
+    }
+    const n = this.night;
+    const st = this.app.save.data.stats;
+    st.nightsPlayed++;
+    if (this.won) st.nightsWon++;
+    st.legsWon += n.stats.legsWon;
+    st.oneEighties += n.stats.oneEighties;
+    st.bestCheckout = Math.max(st.bestCheckout, n.stats.bestCheckout);
+    st.bestLeg = Math.max(st.bestLeg, n.legs.length);
+    st.nineDarters += n.stats.nineDarters;
+    this.app.save.persist();
+    if (this.won) {
+      this.bar.say([
+        { speaker: 'BARREL', text: "That's the night! That's the actual night! I need to sit down.", triggerId: 'win', priority: 100 },
+        { speaker: 'NOCK', text: 'Eight legs. Fewer visits each time. It is finished, and it was done properly.', triggerId: 'win', priority: 100 },
+      ]);
+    }
+  }
+
+  exit(): void {
+    this.app.audio.setCrowdTension(0);
+  }
+
+  resize(): void {
+    this.w = this.app.screen.width;
+    this.h = this.app.screen.height;
+    this.bar.lines = this.portrait ? 4 : 2;
+    this.buildButtons();
+  }
+
+  private buildButtons(): void {
+    const b = this.buttons;
+    b.clear();
+    const bw = 96;
+    const y = this.portrait ? 250 : 136;
+    const x0 = this.portrait ? Math.floor((this.w - bw) / 2) : Math.floor(this.w / 2) - bw - 6;
+    b.add({
+      id: 'again',
+      rect: { x: x0, y, w: bw, h: 18 },
+      label: 'AGAIN',
+      icon: 15,
+      primary: true,
+      onPress: () => {
+        this.app.sfx('ui_confirm');
+        this.app.startNight(this.app.chosenSeed, this.night.oche);
+      },
+    });
+    b.add({
+      id: 'menu',
+      rect: this.portrait ? { x: x0, y: y + 22, w: bw, h: 18 } : { x: x0 + bw + 12, y, w: bw, h: 18 },
+      label: 'MENU',
+      onPress: () => {
+        this.app.sfx('ui_back');
+        this.app.toTitle();
+      },
+    });
+    if (this.won) {
+      b.add({
+        id: 'credits',
+        rect: this.portrait ? { x: x0, y: y + 44, w: bw, h: 18 } : { x: Math.floor(this.w / 2) - 48, y: y + 22, w: 96, h: 16 },
+        label: 'CREDITS',
+        onPress: () => {
+          this.app.sfx('ui_confirm');
+          this.app.toCredits();
+        },
+      });
+    }
+    b.focusFirst();
+  }
+
+  onDown(p: Pointer): void {
+    this.keyboardFocus = false;
+    this.buttons.down(p.x, p.y);
+  }
+
+  onMove(p: Pointer): void {
+    this.buttons.move(p.x, p.y);
+  }
+
+  onUp(p: Pointer): void {
+    this.buttons.up(p.x, p.y);
+  }
+
+  onKey(key: string): void {
+    if (this.buttons.key(key)) this.keyboardFocus = true;
+  }
+
+  update(dt: number): void {
+    this.time += dt;
+    this.bar.update(dt);
+    this.particles.update(dt);
+    if (this.won) {
+      this.confettiTimer -= dt;
+      if (this.confettiTimer <= 0) {
+        this.confettiTimer = 0.35;
+        this.particles.emit(6, (i) => ({ x: rndRange(0, this.w), y: -4, vx: rndRange(-20, 20), vy: rndRange(20, 50), life: rndRange(2, 4), gravity: 12, drag: 0.4, sprite: 'confetti', frame: i % 4 }));
+      }
+    }
+  }
+
+  draw(r: Renderer): void {
+    r.clear(P.DEEP);
+    if (this.portrait) {
+      r.sprite('wall', -70, 0);
+      r.sprite('wall', -70, 132);
+      r.sprite('oche_floor', 0, 272);
+    } else {
+      r.sprite('wall', 0, 0);
+      r.sprite('oche_floor', 0, 132);
+    }
+    const n = this.night;
+    const pw = this.portrait ? 168 : 232;
+    const px = Math.floor((this.w - pw) / 2);
+    const py = this.portrait ? 24 : 14;
+    const ph = this.portrait ? 214 : 116;
+    drawPanel(r, { x: px, y: py, w: pw, h: ph }, this.won ? 'THE NIGHT IS YOURS' : 'TIMED OUT');
+    const cx = px + Math.floor(pw / 2);
+    let y = py + 12;
+    if (this.won) {
+      r.text('EIGHT LEGS. CHECKED OUT. FINISHED.', cx, y, { color: P.BRASS_LIT, align: 'center' });
+      y += 9;
+      r.text("That's the game. There is no endless mode. Go outside.", cx, y, { color: P.MIST, align: 'center' });
+      y += 12;
+    } else {
+      const leg = n.legs[n.legs.length - 1];
+      r.text(`${legName(leg.index).toUpperCase()} · ${leg.score} LEFT AFTER ${leg.visitLimit} VISITS`, cx, y, { color: P.EMBER, align: 'center' });
+      y += 9;
+      r.text('Nothing is lost. Nothing decays. Have another go.', cx, y, { color: P.MIST, align: 'center' });
+      y += 12;
+    }
+    drawRule(r, px + 8, y, pw - 16);
+    y += 4;
+    const colW = this.portrait ? pw - 16 : Math.floor((pw - 24) / 2);
+    const rows: [string, string][] = [
+      ['LEGS WON', `${n.stats.legsWon}/8`],
+      ['180s', String(n.stats.oneEighties)],
+      ['BEST VISIT', String(n.stats.bestVisit)],
+      ['BEST CHECKOUT', n.stats.bestCheckout ? String(n.stats.bestCheckout) : '-'],
+      ['BUSTS', String(n.stats.busts)],
+      ['CHALK FIRED', String(n.stats.chalkFires)],
+      ['CARDS BOUGHT', String(n.stats.cardsBought)],
+      ['POT EARNED', String(n.stats.potEarned)],
+    ];
+    rows.forEach((row, i) => {
+      const col = this.portrait ? 0 : i % 2;
+      const rowI = this.portrait ? i : Math.floor(i / 2);
+      const x = px + 8 + col * (colW + 8);
+      drawRow(r, x, y + rowI * 9, colW, row[0], row[1], i === 1 && n.stats.oneEighties > 0 ? P.EMBER : P.BRASS_LIT);
+    });
+    y += (this.portrait ? rows.length : rows.length / 2) * 9 + 4;
+    drawRule(r, px + 8, y, pw - 16);
+    y += 4;
+    r.text(`SEED ${seedToString(n.seed)} · ${ocheName(n)}`, cx, y, { color: P.PEWTER, align: 'center' });
+    if (n.achievements.length) {
+      y += 9;
+      r.text(`OCHE UNLOCKED: ${n.achievements.map((a) => a.toUpperCase()).join(', ')}`, cx, y, { color: P.SKY_LIT, align: 'center' });
+    }
+    this.buttons.draw(r, this.keyboardFocus);
+    for (const p of this.particles.list) r.sprite(p.sprite, Math.round(p.x), Math.round(p.y), p.frame);
+    this.bar.draw(r, this.portrait ? { x: 0, y: this.h - 36, w: this.w, h: 36 } : { x: 0, y: this.h - 20, w: this.w, h: 20 });
+  }
+}
+
+function ocheName(n: NightState): string {
+  return { local: 'THE LOCAL', sharp: 'THE SHARP', steady: 'THE STEADY', wide: 'THE WIDE', thin: 'THE THIN' }[n.oche];
+}
