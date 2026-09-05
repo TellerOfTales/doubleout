@@ -183,3 +183,28 @@ TDD §3.3, deliberately and with measurements.
     to keep it the wall §4 intends.
 58. **Starting library retuned again** to 24 cards where trebles carry the scoring
     (T20×2, T19×2, T18, T17, T16, T14) with the double ladder and both bulls intact.
+
+## The shop pass (third measurement pass — `docs/decisions/balance.md`)
+
+59. **The bin stays open, and comes up more often.** `REMOVE` is weighted 3 against
+    `SHARPEN` 2 and `DUPLICATE` 1, and buying it does not mark the slot sold — you
+    may bin as many cards as you can pay for while the shop is open, down to a floor
+    of six. The starting library is deliberately bloated with filler; measurement
+    says cutting that filler is worth about ten points of night win rate, which is
+    more than anything else 2 Pot buys. A once-per-three-shops, once-only service
+    could not act on that, so the pot had nowhere useful to go.
+60. **The shop bot prices a card on four terms, not one.** The old heuristic valued a
+    card purely by the points it added to an expected visit. Under the per-visit hand
+    that is close to meaningless — four free T20s handed to the starting deck
+    measurably *lose* 8 points of leg-1 win rate, because a hand of trebles is no use
+    when the leg wants a double. `purchaseWorth` now sums the change in expected visit
+    value, in the odds the visit's hand holds a finisher at all, in how much of the
+    2–110 band the library can close in two darts, and a flat penalty per card in the
+    library. Each weight is in Pot units, so a purchase is compared against its price
+    on the same scale, and the constants are calibrated against measurement rather
+    than guessed.
+61. **The per-dart hand size is gone from the code, not just from the loop.**
+    `handSizeFor`, `handSize` and `DEFAULT_HAND_SIZE` still encoded TDD §5.4's
+    per-throw rule (and a "later acquisition wins" clash between Wide Grip and Tunnel
+    Vision that the live rule does not have). Nothing used them. They are deleted, and
+    the two chalk blurbs now describe what the chalk actually does to the visit hand.

@@ -18,7 +18,7 @@ import { cardDef, makeCard, sharpenedDefId } from '../content/cards';
 import { chalkDef } from '../content/chalkdefs';
 import { LEG_COUNT, SHOP_REFRESH_COST } from '../content/legs';
 import { computeCheckoutHints } from './checkout';
-import { handSizeFor, resolveThrow, throwsPerVisitFor } from './resolver';
+import { resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
 import {
   addChalk,
   beginLeg,
@@ -118,8 +118,36 @@ const OPT = {
   forgiveTax: 20,
 };
 
-/** Shop heuristic: pot-equivalent worth of +1 point of expected visit total. */
-const K_CARD = 1.0;
+/**
+ * Shop weights, both in pot units, so a purchase is priced on the same scale
+ * as its cost.
+ *
+ * Under the per-visit hand a card pulls two ways: a good one raises the
+ * expected visit total, but EVERY extra card thins the odds of drawing a
+ * finisher when the leg comes down to a double. Pricing only the first term
+ * makes the bot buy its own deck to death (docs/decisions/balance.md), so
+ * both are priced.
+ */
+/** Worth of +1 point of expected visit total. */
+const K_SCORE = 0.25;
+/** Worth of +1.00 (i.e. certainty) of holding a finisher in the visit's hand. */
+const K_FINISH = 30;
+/** Worth of covering the whole finishing band in two darts. */
+const K_COVER = 20;
+/**
+ * Flat worth of each card NOT in the library. Measured, not derived: four free
+ * T20s handed to the starting deck cost it 8 points of leg-1 win rate, and
+ * cutting six filler cards is worth ten points of night win rate
+ * (docs/decisions/balance.md). A visit's hand is drawn once and spent across
+ * three darts, so a crowded library is a hand of trebles when the leg wants a
+ * double — a cost the per-visit order statistic above cannot see.
+ */
+const K_BLOAT = 1.5;
+/** Pot held back for a chalk while a chalk slot is still open. */
+const CHALK_RESERVE = 12;
+/** The band a leg actually ends in, which the coverage term scores over. */
+const COVER_LO = 2;
+const COVER_HI = 110;
 /** Doubles the shop bot is happy to pay a premium for when the library lacks them. */
 const PRIZED_DOUBLES = new Set(['d16', 'd20', 'd8', 'd4', 'ib']);
 
@@ -195,22 +223,6 @@ function binom(n: number, k: number): number {
   return BINOM[n][k];
 }
 
-/**
- * Expected maximum of `h` cards drawn without replacement from a multiset of
- * values. Sorts `values` in place. Exact via order statistics: the j-th
- * largest is the hand's best iff the other h−1 cards come from below it.
- */
-export function expectedMax(values: number[], h: number): number {
-  const m = values.length;
-  if (m === 0) return 0;
-  h = Math.min(h, m);
-  values.sort((a, b) => b - a);
-  const total = binom(m, h);
-  let e = 0;
-  for (let j = 1; j <= m - h + 1; j++) e += values[j - 1] * binom(m - j, h - 1);
-  return e / total;
-}
-
 function median(xs: number[]): number {
   if (xs.length === 0) return 0;
   const s = xs.slice().sort((a, b) => a - b);
@@ -234,6 +246,7 @@ interface LegCtx {
   n: NightState;
   leg: LegState;
   perVisit: number;
+  /** Cards dealt for a whole visit (per-visit hand). */
   handSize: number;
   /** Every card in the leg (deck + hand + discard): the multiset is constant within a leg. */
   pool: DartCard[];
@@ -293,11 +306,14 @@ function legCtx(n: NightState, leg: LegState): LegCtx {
     routes = new Map();
     ROUTE_CACHE.set(sig, routes);
   }
-  const handSize = handSizeFor(n.chalk);
-  const avgBest = expectedMax(
-    pool.map((c) => (plain.get(c.defId) as number[])[1]),
-    handSize,
-  );
+  const handSize = visitHandSizeFor(n.chalk);
+  // Mean value of a dart in a visit: the best `perVisit` of a hand of `handSize`.
+  const avgBest =
+    expectedTopK(
+      pool.map((c) => (plain.get(c.defId) as number[])[1]),
+      handSize,
+      perVisit,
+    ) / perVisit;
   ctxCache = {
     n,
     leg,
@@ -409,91 +425,7 @@ function chooseCheckout(n: NightState, leg: LegState): DartCard {
 
 // ---------------------------------------------------------------- optimal-ish
 
-/** The multiset the next hand is drawn from (deck, or everything once the deck runs short). */
-function nextPool(leg: LegState, h: number): DartCard[] {
-  return leg.deck.length >= h ? leg.deck : [...leg.deck, ...leg.discard, ...leg.hand];
-}
 
-/**
- * Ply 2: expected utility of the best card in the next hand at position
- * (score, ti), with `banked` points already scored in that visit (lost on a
- * bust). Away from the endgame every card simply scores its plain value.
- */
-function look(ctx: LegCtx, leg: LegState, score: number, ti: number, banked: number): number {
-  const pool = nextPool(leg, ctx.handSize);
-  const tiv = (ti % ctx.perVisit) as 0 | 1 | 2 | 3;
-  const endgame = score <= ctx.maxPlain + 3;
-  const byDef = new Map<string, number>();
-  for (const d of ctx.defs) {
-    let u: number;
-    if (!endgame) {
-      u = (ctx.plain.get(d.defId) as number[])[tiv];
-    } else {
-      const r = resolveThrow(d, {
-        chalk: ctx.n.chalk,
-        rng: null,
-        scoreBefore: score,
-        scoreAtVisitStart: score + banked,
-        visitThrowIndex: tiv,
-        forgivenessUsed: true,
-      }).result;
-      if (r.outcome === 'CHECKOUT') u = score + OPT.finish;
-      else if (r.outcome === 'BUST') u = -banked - OPT.lostThrow;
-      else u = r.totalValue;
-    }
-    byDef.set(d.defId, u);
-  }
-  const vals = new Array<number>(pool.length);
-  for (let i = 0; i < pool.length; i++) vals[i] = byDef.get(pool[i].defId) as number;
-  return expectedMax(vals, ctx.handSize);
-}
-
-/** Static finishability of a ply-1 position, in points. */
-function fin(ctx: LegCtx, score: number, ti: number, throwsLeftInVisit: number, visitsAfter: number): number {
-  const k = routeLen(ctx, score, ti);
-  if (k < 0) return 0;
-  if (k === 0) return -OPT.unfinishable;
-  if (k <= throwsLeftInVisit) return OPT.finNow[k];
-  if (visitsAfter <= 0) return -OPT.unfinishable;
-  return OPT.finLater[k];
-}
-
-function evaluate(ctx: LegCtx, leg: LegState, visit: VisitState, card: DartCard, ti: number): number {
-  const n = ctx.n;
-  const r = resolveThrow(card, {
-    chalk: n.chalk,
-    rng: null,
-    scoreBefore: leg.score,
-    scoreAtVisitStart: visit.scoreAtVisitStart,
-    visitThrowIndex: ti as 0 | 1 | 2 | 3,
-    forgivenessUsed: leg.forgivenessUsed,
-  }).result;
-  const banked = visit.scoreAtVisitStart - leg.score;
-  const left = ctx.perVisit - ti - 1; // throws left in this visit after this one
-  const visitsLeft = leg.visitLimit - leg.visits.length; // visits after this one
-
-  if (r.outcome === 'CHECKOUT') return 1e9;
-
-  if (r.outcome === 'BUST') {
-    if (visitsLeft <= 0) return -1e8;
-    // A bust reverts to the visit start (or drops to 2 with cheap_chalk) and
-    // forfeits the rest of the visit. Sometimes that is the best move.
-    const s2 = r.scoreCommitted;
-    return -left * ctx.avgBest - OPT.bustTax + fin(ctx, s2, 0, ctx.perVisit, visitsLeft - 1) + look(ctx, leg, s2, 0, 0);
-  }
-
-  const s2 = r.scoreCommitted;
-  const gained = leg.score - s2; // 0 when forgiven
-  let u = banked + gained;
-  if (r.forgiven) u -= OPT.forgiveTax;
-  if (left === 0) {
-    if (visitsLeft <= 0) return -1e8 + gained; // the leg is lost whatever we do
-    u += fin(ctx, s2, 0, ctx.perVisit, visitsLeft - 1) + look(ctx, leg, s2, 0, 0);
-  } else {
-    u += fin(ctx, s2, ti + 1, left, visitsLeft) + look(ctx, leg, s2, ti + 1, banked + gained);
-  }
-  return u;
-}
 
 /**
  * Plan the whole visit, not one dart.
@@ -663,14 +595,63 @@ function valueTable(chalk: Chalk[], defIds: Iterable<string>): Map<string, numbe
 }
 
 /** Expected visit total: sum over throws of the expected best card in a hand drawn from `defIds`. */
+/**
+ * Expected sum of the top `k` of `h` cards drawn without replacement from
+ * `values`. A value is in the visit's top k exactly when it is drawn and fewer
+ * than k of the values above it are drawn.
+ */
+export function expectedTopK(values: number[], h: number, k: number): number {
+  const m = values.length;
+  if (m === 0 || k <= 0) return 0;
+  h = Math.min(h, m);
+  k = Math.min(k, h);
+  const sorted = values.slice().sort((a, b) => b - a);
+  const total = binom(m, h);
+  if (total === 0) return 0;
+  let e = 0;
+  for (let j = 1; j <= m; j++) {
+    let p = 0;
+    for (let i = 0; i < k && i <= j - 1; i++) p += binom(j - 1, i) * binom(m - j, h - 1 - i);
+    e += sorted[j - 1] * p;
+  }
+  return e / total;
+}
+
+/**
+ * Expected points from one visit under the per-visit hand: `visitHandSizeFor`
+ * cards are drawn ONCE and the best `throwsPerVisit` of them are spent, so this
+ * is an order statistic over the whole visit, not a best-of-hand per dart.
+ * Throw indices that pay more (last_orders, cold_hands) get the bigger cards.
+ */
 function expectedVisit(chalk: Chalk[], defIds: string[]): number {
   const table = valueTable(chalk, defIds);
   const perVisit = throwsPerVisitFor(chalk);
-  const h = handSizeFor(chalk);
-  let total = 0;
+  const h = visitHandSizeFor(chalk);
+  if (defIds.length === 0) return 0;
+  // How much each throw index is worth relative to the visit's average.
+  const perIndexTotal: number[] = [];
   for (let ti = 0; ti < perVisit; ti++) {
-    const vals = defIds.map((d) => (table.get(d) as number[])[ti]);
-    total += expectedMax(vals, h);
+    perIndexTotal.push(defIds.reduce((a, d) => a + (table.get(d) as number[])[ti], 0));
+  }
+  const sumAll = perIndexTotal.reduce((a, b) => a + b, 0);
+  if (sumAll <= 0) return 0;
+  // Base values: the visit's average multiplier, so the order statistic is
+  // taken once and then split across the indices by their share.
+  const base = defIds.map((d) => {
+    const vals = table.get(d) as number[];
+    let t = 0;
+    for (let ti = 0; ti < perVisit; ti++) t += vals[ti];
+    return t / perVisit;
+  });
+  // Best card to the best-paying index, second best to the next, and so on.
+  const shares = perIndexTotal.map((t) => (t * perVisit) / sumAll).sort((a, b) => b - a);
+  let total = 0;
+  let previous = 0;
+  for (let k = 1; k <= perVisit; k++) {
+    const topK = expectedTopK(base, h, k);
+    const kth = topK - previous; // expected value of the k-th best card drawn
+    previous = topK;
+    total += kth * shares[k - 1];
   }
   return total;
 }
@@ -693,9 +674,62 @@ function doubleBonus(n: NightState, defId: string): number {
   return 0;
 }
 
+/**
+ * Chance that a visit's hand holds at least one card that can close the leg.
+ * Straight Out makes every card a finisher, so the term drops out entirely.
+ */
+function finishOdds(chalk: Chalk[], defIds: string[]): number {
+  const m = defIds.length;
+  if (m === 0) return 0;
+  if (chalk.some((c) => c.def.id === 'straight_out')) return 1;
+  const h = Math.min(visitHandSizeFor(chalk), m);
+  let blanks = 0;
+  for (const d of defIds) if (!isDoubleDef(d)) blanks++;
+  return 1 - binom(blanks, h) / binom(m, h);
+}
+
+/**
+ * Fraction of the finishing band the library can close in two darts. This is
+ * what a scoring card is really bought for: a T19 barely moves the expected
+ * visit, but it turns 141 into a finish. It is the one thing `expectedVisit`
+ * cannot see, so without it the shop bot never buys a card. Chalk value
+ * changes are ignored here — the routes matter more than the exact numbers.
+ */
+function coverage(chalk: Chalk[], defIds: string[]): number {
+  const straight = chalk.some((c) => c.def.id === 'straight_out');
+  const values = new Set<number>();
+  const finishers: number[] = [];
+  for (const d of new Set(defIds)) {
+    const v = cardDef(d).value;
+    values.add(v);
+    if (straight || isDoubleDef(d)) finishers.push(v);
+  }
+  if (finishers.length === 0) return 0;
+  let hit = 0;
+  for (let s = COVER_LO; s <= COVER_HI; s++) {
+    for (const f of finishers) {
+      const rest = s - f;
+      if (rest === 0 || values.has(rest)) {
+        hit++;
+        break;
+      }
+    }
+  }
+  return hit / (COVER_HI - COVER_LO + 1);
+}
+
+/** Pot-unit worth of changing the library from `before` to `after`. */
+function purchaseWorth(n: NightState, base: number, before: string[], after: string[]): number {
+  const score = (expectedVisit(n.chalk, after) - base) * K_SCORE;
+  const finish = (finishOdds(n.chalk, after) - finishOdds(n.chalk, before)) * K_FINISH;
+  const cover = (coverage(n.chalk, after) - coverage(n.chalk, before)) * K_COVER;
+  const bloat = (before.length - after.length) * K_BLOAT;
+  return score + finish + cover + bloat;
+}
+
 function cardWorth(n: NightState, base: number, defId: string): number {
-  const gain = expectedVisit(n.chalk, [...libraryDefIds(n), defId]) - base;
-  return gain * K_CARD + doubleBonus(n, defId);
+  const lib = libraryDefIds(n);
+  return purchaseWorth(n, base, lib, [...lib, defId]) + doubleBonus(n, defId);
 }
 
 /** Pot-unit rating of a chalk for this deck. `held` rates a chalk already owned (for replacement). */
@@ -783,8 +817,15 @@ function bestPurchase(n: NightState): Purchase | null {
   const lib = libraryDefIds(n);
   const base = expectedVisit(n.chalk, lib);
   let best: Purchase | null = null;
+  // Pot buys nothing outside the shop, but a purchase still has to clear its
+  // price: measurement says a marginal card is worse than the pot it costs,
+  // and a bot that spends for the sake of spending buys its deck to death.
+  // What it should hold pot back for is a chalk, which is where the leverage
+  // is, so a below-price purchase is refused while a chalk slot is open.
+  const reserve = n.chalk.length < n.chalkSlots ? CHALK_RESERVE : 0;
   const consider = (p: Purchase) => {
-    if (p.worth < p.cost) return;
+    if (p.worth <= 0) return;
+    if (p.worth < p.cost || n.pot - p.cost < reserve) return;
     if (!best || p.worth - p.cost > best.worth - best.cost) best = p;
   };
   shop.slots.forEach((slot, i) => {
@@ -819,11 +860,12 @@ function bestPurchase(n: NightState): Purchase | null {
       }
       case 'SERVICE': {
         if (slot.service === 'REMOVE') {
-          if (n.library.length < 20) return;
+          // A floor, so the bot cannot thin the library below a playable deck.
+          if (n.library.length <= 14) return;
           const target = lowestValueCard(n);
           if (!target) return;
-          const gain = expectedVisit(n.chalk, lib.filter((_, j) => n.library[j].id !== target.id)) - base;
-          consider({ slot: i, opts: { cardId: target.id }, worth: gain * K_CARD + 1, cost: slot.cost });
+          const thinned = lib.filter((_, j) => n.library[j].id !== target.id);
+          consider({ slot: i, opts: { cardId: target.id }, worth: purchaseWorth(n, base, lib, thinned), cost: slot.cost });
         } else if (slot.service === 'DUPLICATE') {
           const target = highestValueCard(n);
           if (!target) return;
@@ -835,8 +877,7 @@ function bestPurchase(n: NightState): Purchase | null {
           const up = sharpenedDefId(target.defId);
           if (!up) return;
           const replaced = lib.map((d, j) => (n.library[j].id === target.id ? up : d));
-          const gain = expectedVisit(n.chalk, replaced) - base;
-          consider({ slot: i, opts: { cardId: target.id }, worth: gain * K_CARD + doubleBonus(n, up), cost: slot.cost });
+          consider({ slot: i, opts: { cardId: target.id }, worth: purchaseWorth(n, base, lib, replaced) + doubleBonus(n, up), cost: slot.cost });
         }
         break;
       }

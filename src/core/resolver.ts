@@ -41,16 +41,6 @@ function byOrder(chalk: Chalk[]): Chalk[] {
   return chalk.slice().sort((a, b) => a.order - b.order);
 }
 
-/** Handsize after DEAL chalk (TDD §5.4). Wide Grip and Tunnel Vision together: later acquisition wins. */
-export function handSizeFor(chalk: Chalk[]): number {
-  let size = 3;
-  for (const c of byOrder(chalk)) {
-    if (c.def.id === 'wide_grip') size = 4;
-    else if (c.def.id === 'tunnel_vision') size = 2;
-  }
-  return size;
-}
-
 /** Spare cards over the dart count. Tuned by simulation — see docs/decisions/balance.md. */
 export const VISIT_HAND_SPARE = 2;
 

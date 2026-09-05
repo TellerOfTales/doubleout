@@ -208,7 +208,9 @@ export function playVisit(n: NightState): { result: ThrowResult; events: EngineE
  * bonus that depends on them — still sees the whole library.
  */
 export function playPoolThenMiss(n: NightState, defIds: string[]): { result: ThrowResult; events: EngineEvent[] } {
-  for (const card of dealFromPool(n, defIds)) commitCard(n, card.id);
+  // Snapshot the hand: commitCard splices the card out of `leg.hand`, so
+  // iterating the live array would skip every other card.
+  for (const card of [...dealFromPool(n, defIds)]) commitCard(n, card.id);
   return commitMiss(n);
 }
 

@@ -34,7 +34,7 @@ export interface ShopHooks {
 }
 
 const SERVICE_TEXT: Record<string, { name: string; blurb: string; icon: number }> = {
-  REMOVE: { name: 'REMOVE A CARD', blurb: 'Take one card out of your library for good.', icon: 7 },
+  REMOVE: { name: 'THE BIN', blurb: 'Take a card out of your library for good. Stays open: bin as many as you can pay for.', icon: 7 },
   DUPLICATE: { name: 'DUPLICATE', blurb: 'Add a second copy of one card you own.', icon: 8 },
   SHARPEN: { name: 'SHARPEN', blurb: 'Upgrade a card: single to treble, treble to double.', icon: 9 },
 };
@@ -122,13 +122,16 @@ export class ShopScreen implements Scene {
       const r = this.slotRects[i];
       const allowed = !this.hooks.allowedSlots || this.hooks.allowedSlots.includes(i);
       const canAfford = this.night.pot >= slot.cost;
+      // The bin never sells out, but it stops at the smallest playable library.
+      const emptied = slot.kind === 'SERVICE' && slot.service === 'REMOVE' && this.night.library.length <= 6;
+      const spent = slot.sold || emptied;
       b.add({
         id: `buy${i}`,
         rect: { x: r.x + 8, y: r.y + r.h - 22, w: r.w - 16, h: 16 },
-        label: slot.sold ? 'SOLD' : `BUY ${slot.cost}`,
-        icon: slot.sold ? undefined : 5,
-        disabled: slot.sold || !canAfford || !allowed,
-        primary: !slot.sold && canAfford && allowed,
+        label: emptied ? 'THAT IS PLENTY' : slot.sold ? 'SOLD' : `BUY ${slot.cost}`,
+        icon: spent ? undefined : 5,
+        disabled: spent || !canAfford || !allowed,
+        primary: !spent && canAfford && allowed,
         onPress: () => this.buy(i),
       });
     });
@@ -313,9 +316,13 @@ export class ShopScreen implements Scene {
 
   private chipRects(): Rect[] {
     const out: Rect[] = [];
-    const y = this.portrait ? 248 : 132;
-    const x0 = 6;
-    for (let i = 0; i < this.night.chalkSlots; i++) out.push({ x: x0 + i * 24, y, w: 22, h: 22 });
+    // Landscape has 31 rows between the action buttons and the commentary bar,
+    // shared with the library summary and the detail strip, so the chips are
+    // tighter there than in portrait.
+    const y = this.portrait ? 248 : 128;
+    const size = this.portrait ? 22 : 14;
+    const step = this.portrait ? 24 : 16;
+    for (let i = 0; i < this.night.chalkSlots; i++) out.push({ x: 6 + i * step, y, w: size, h: size });
     return out;
   }
 
@@ -429,7 +436,8 @@ export class ShopScreen implements Scene {
     if (shop) shop.slots.forEach((slot, i) => this.drawSlot(r, slot, i));
     // held chalk
     const chips = this.chipRects();
-    if (!this.portrait) r.text('YOUR CHALK', chips[0].x, chips[0].y - 9, { color: P.PEWTER });
+    // No room for a caption in landscape; the chips carry a tooltip instead.
+    if (this.portrait) r.text('YOUR CHALK', chips[0].x, chips[0].y - 9, { color: P.PEWTER });
     chips.forEach((c, i) => {
       const held = this.night.chalk[i];
       if (!held) {
@@ -439,29 +447,28 @@ export class ShopScreen implements Scene {
       }
       r.nineSlice('chalk_frame', c.x, c.y, c.w, c.h, this.chalkTip === held.def.id ? 1 : 0);
       const idx = CHALK_DEFS.findIndex((d) => d.id === held.def.id);
-      r.sprite('chalk_icons', c.x + 5, c.y + 5, Math.max(0, idx));
+      r.sprite('chalk_icons', c.x + (c.w - 8) / 2, c.y + (c.h - 8) / 2, Math.max(0, idx));
     });
     // library summary
     const lib = this.night.library;
     const mean = lib.length ? (lib.reduce((a, c) => a + cardDef(c.defId).value, 0) / lib.length).toFixed(1) : '0';
     const doubles = lib.filter((c) => c.target.region === 'D' || c.target.region === 'IB').length;
     const trebles = lib.filter((c) => c.target.region === 'T').length;
-    const infoX = this.portrait ? 6 : chips[chips.length - 1].x + 30;
+    const infoX = this.portrait ? 6 : chips[chips.length - 1].x + chips[0].w + 8;
     const infoY = this.portrait ? 272 : 132;
     if (this.portrait) {
       r.dither(infoX - 3, infoY - 2, this.w - 6, 12, P.INK, 11);
       r.text(`${lib.length} CARDS · AVG ${mean} · ${trebles}T ${doubles}D`, infoX, infoY, { color: P.MIST });
     } else {
-      r.dither(infoX - 3, infoY - 2, 130, 21, P.INK, 11);
-      r.text(`${lib.length} CARDS · AVG ${mean}`, infoX, infoY, { color: P.MIST });
-      r.text(`${trebles} TREBLES · ${doubles} DOUBLES`, infoX, infoY + 9, { color: P.PEWTER });
+      r.dither(infoX - 3, infoY - 3, this.w - infoX, 13, P.INK, 11);
+      r.text(`${lib.length} CARDS · AVG ${mean} · ${trebles}T ${doubles}D`, infoX, infoY, { color: P.MIST });
     }
-    // detail strip: selected slot blurb or chalk tip
-    const detailY = this.portrait ? 282 - 40 : 156 - 12;
+    // detail strip: selected slot blurb or chalk tip, in the last two rows
+    // above the commentary bar
     const detail = this.detailText();
     if (detail) {
-      const dy = this.portrait ? 188 : detailY + 2;
-      r.dither(3, dy - 2, this.w - 6, 20, P.INK, 11);
+      const dy = this.portrait ? 188 : 144;
+      r.dither(3, dy - 2, this.w - 6, 18, P.INK, 11);
       r.textWrap(detail.text, 6, dy, this.w - 12, { color: detail.color });
     }
     this.buttons.draw(r, this.keyboardFocus);
@@ -529,7 +536,8 @@ export class ShopScreen implements Scene {
       r.spriteScaled('icons', cx - 12, rect.y + 8, 3, s.icon);
       const lines = r.wrap(s.name, rect.w - 8).slice(0, 2);
       lines.forEach((l, k) => r.text(l, cx, stageY - lines.length * 8 + k * 8, { color: slot.sold ? P.PEWTER : P.CHALK, align: 'center' }));
-      r.text('SERVICE', cx, stageY, { color: P.MIST, align: 'center' });
+      const repeatable = slot.service === 'REMOVE';
+      r.text(repeatable ? 'STAYS OPEN' : 'SERVICE', cx, stageY, { color: repeatable ? P.BAIZE_LIT : P.MIST, align: 'center' });
     }
   }
 

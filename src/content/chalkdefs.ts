@@ -29,8 +29,8 @@ export const CHALK_DEFS: ChalkDef[] = [
   { id: 'overshoot', name: 'Overshoot', stage: 'RULE', cost: 12, blurb: 'A finishing double may go 1 or 2 below zero and still count.' },
   { id: 'chalk_dust', name: 'Chalk Dust', stage: 'RULE', cost: 4, blurb: 'Landing on 1 is legal. It is treated as 2.' },
   // ---- DEAL ----
-  { id: 'wide_grip', name: 'Wide Grip', stage: 'DEAL', cost: 8, blurb: 'Draw 4 cards per dart instead of 3.' },
-  { id: 'tunnel_vision', name: 'Tunnel Vision', stage: 'DEAL', cost: 6, blurb: 'Draw only 2 cards per dart, but every throw scores +20%.' },
+  { id: 'wide_grip', name: 'Wide Grip', stage: 'DEAL', cost: 8, blurb: 'Deal one extra card at the start of every visit.' },
+  { id: 'tunnel_vision', name: 'Tunnel Vision', stage: 'DEAL', cost: 6, blurb: 'Deal one card fewer each visit, but every throw scores +20%.' },
   { id: 'fourth_dart', name: 'Fourth Dart', stage: 'DEAL', cost: 12, blurb: 'Four darts per visit instead of three.' },
   { id: 'practice_board', name: 'Practice Board', stage: 'DEAL', cost: 5, blurb: 'Cards you do not throw go back under the deck, not the bin.' },
   { id: 'chalked_up', name: 'Chalked Up', stage: 'DEAL', cost: 4, blurb: 'See the next 3 cards of the deck at the start of each visit.' },

@@ -26,7 +26,6 @@ export const LEGS: LegDef[] = [
 
 export const LEG_COUNT = LEGS.length;
 export const STARTING_SCORE = 501;
-export const DEFAULT_HAND_SIZE = 3;
 export const DEFAULT_THROWS_PER_VISIT = 3;
 export const DEFAULT_CHALK_SLOTS = 5;
 export const SHOP_REFRESH_COST = 1;

@@ -211,3 +211,107 @@ mean of 49% — a two-point tolerance below zero meant *any* card could close a 
 which is `straight_out`'s job. §15.3 sanctions an anti-synergy, so overshoot now
 forgives 1 or 2 too many **only on a throw that already counts as a double**. It
 keeps its flavour and stops replacing the double rule.
+
+
+---
+
+# Third pass: the instrument, and what it found in the shop
+
+The second pass tuned the loop with a bot that was still scoring itself against
+the *first* loop. `expectedVisit()` modelled TDD §3.3's per-dart deal — a fresh
+best-of-three every throw — when the game now deals one hand of five per visit and
+spends it across three darts. Everything downstream of that (the whole shop
+heuristic, and therefore every number in the second pass) was measured against a
+game that no longer existed.
+
+## Fixing the instrument
+
+`expectedTopK(values, h, k)` gives the expected sum of the best `k` of `h` cards
+drawn without replacement, exactly, by order statistics. `expectedVisit` now takes
+one such statistic over the whole visit and splits it across the throw indices by
+how much each pays (`last_orders` and `cold_hands` make the darts unequal), instead
+of taking a fresh maximum per dart. Sanity check: with no chalk, `top3 of 3` is
+exactly 3x the mean, as it must be.
+
+The corrected model values a marginal card far lower than the broken one did, which
+immediately starved the shop bot — its purchase rule was `worth >= cost` with worth
+in raw visit points, and the constant converting between them had been fitted to the
+inflated numbers. Sweeping that constant went nowhere (2.0%, 1.3%, 3.3%, 0.7% for
+1, 2, 3, 5), which is the signature of the wrong lever.
+
+## What the measurement actually said
+
+The right question turned out not to be "how much is a card worth" but "is a card
+worth anything at all". Handing the starting deck free cards, no shop, 250 nights:
+
+| library | leg 1 | mean legs won | night |
+|---|---|---|---|
+| starting 24 | 84% | 3.44 | 1.6% |
+| + 2 free T20 | 78% | 2.90 | 1.2% |
+| + 4 free T20 | 76% | 2.52 | 0.8% |
+| + 4 free mixed (T20 T19 D16 D20) | 84% | 2.87 | 0.8% |
+| + 8 free mixed | 76% | 2.09 | 0.4% |
+
+**Free good cards make you worse.** The per-visit hand is why: it is drawn once and
+spent across three darts, so a deck stuffed with trebles deals you a hand of
+trebles on the visit that wanted a double, and the miss then costs you the visit.
+
+The other direction is just as emphatic. Cutting filler (S12, S16, T14, OB, S18,
+T16) out of the starting library, no shop, 300 nights:
+
+| library | leg 1 | mean legs won | night |
+|---|---|---|---|
+| 24 (shipped) | 85% | 3.42 | 1.7% |
+| 22 | 88% | 4.28 | 4.7% |
+| 20 | 92% | 5.00 | 7.0% |
+| **18** | 92% | 4.73 | **11.7%** |
+| 16 | 89% | 3.81 | 2.7% |
+
+Six cards out of the deck is worth ten points of night win rate — more than any
+chalk. That is a good thing to find: it means the starting library is doing its job
+as a *problem*, and the deckbuilding fantasy is real. It was simply unreachable,
+because the service slot rolled `REMOVE` one shop in three and sold out after one
+card.
+
+## What changed
+
+- **The bin is weighted 3:2:1 over Sharpen and Duplicate, and stays open.** One
+  purchase no longer marks the slot sold; you may bin as many cards as you can pay
+  for, down to a floor of six. At 2 Pot a card, this is what the pot is *for*.
+- **`purchaseWorth` prices four terms in Pot units** — change in expected visit
+  value, change in the odds the visit's hand holds a finisher at all, change in how
+  much of the 2-110 finishing band the library closes in two darts, and a flat
+  penalty per card held. The last is the measured effect above: it is what makes the
+  bot decline a good card it cannot afford to dilute for.
+- The dead per-dart hand-size surface (`handSizeFor`, `handSize`,
+  `DEFAULT_HAND_SIZE`) is deleted, and the Wide Grip / Tunnel Vision blurbs now
+  describe the visit hand they actually change.
+- `legPool()` counts the pocketed card. Between visits it is in neither deck, hand
+  nor discard, so the checkout hints and the setup bonus could not see the finisher
+  the player had deliberately banked.
+
+## Where it lands (1000 nights)
+
+| metric | target | measured | |
+|---|---|---|---|
+| leg 1, greedy | > 97% | **41.3%** | miss - the skill gap, see the first pass |
+| leg 1, checkout-aware | - | 83.2% | reference |
+| leg 8, no chalk | < 5% | **9.6%** | close; the pocket raised the floor |
+| leg 8, five strong chalk | 45-60% | **79.7%** | a curated build is meant to pay |
+| leg 8, twenty random five-chalk sets | 45-60% | **27.7%** | an average build |
+| full night (optimal) | 18-28% | **11.3%** | was 7.2% against the broken instrument |
+| full night (greedy) | < 8% | **0.0%** | ok |
+| median 180s (3+ chalk) | 4-9 | **5** | ok |
+| busts per night | 3-7 | **0.0** | the bot always takes the miss; see pass one |
+| mean legs won, optimal / greedy | - | **3.21 / 0.65** | |
+
+Conditional leg win rates: `85 78 75 77 76 81 75 65`, corroborated by an independent
+400-night run at `85 77 76 79 74 79 77 65`. Leg 6 sits slightly above its neighbours
+because a build that survives that far usually has three chalk by then; leg 8 is
+still the hardest, as §4 intends.
+
+The two chalk that now clear §15.3's 35% line on their own are `fourth_dart` (45.7%)
+and `last_orders` (44.7%). That bar was written against a leg 8 a bare deck won 1% of
+the time; with the pocket the bare floor is 9.6%, so the meaningful test — the one
+`tests/balance.test.ts` asserts — is that no chalk stands far above the *field*, and
+none does. Both are expensive, and neither wins leg 8 without a deck behind it.

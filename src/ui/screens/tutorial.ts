@@ -563,7 +563,7 @@ class Tutorial {
         this.shop = s;
         this.say({
           place: 'bottom',
-          text: 'Cards join your deck for every leg. Chalk bends the rules. Buy HOT TWENTY, then head TO THE OCHE.',
+          text: 'Cards join your deck. Chalk bends the rules. THE BIN takes cards out, and it stays open. Buy HOT TWENTY, then head TO THE OCHE.',
           target: () => (s.portrait ? { x: 6, y: 102, w: 82, h: 84 } : { x: 162, y: 16, w: 74, h: 90 }),
         });
       },
@@ -572,7 +572,12 @@ class Tutorial {
           this.say({
             place: 'bottom',
             text: 'That chalk now sits in a slot. It fires on every throw it applies to, in the order you bought it.',
-            target: () => (this.shop?.portrait ? { x: 6, y: 226, w: 168, h: 18 } : { x: 210, y: 112, w: 104, h: 16 }),
+            target: () => (this.shop?.portrait ? { x: 4, y: 246, w: 122, h: 26 } : { x: 4, y: 127, w: 84, h: 18 }),
+          });
+        } else if (slot.kind === 'SERVICE' && slot.service === 'REMOVE') {
+          this.say({
+            place: 'bottom',
+            text: 'Gone for good. A smaller deck deals you the card you want more often, so binning the filler is the cheapest way to get sharper.',
           });
         }
       },
@@ -597,7 +602,7 @@ class Tutorial {
   private gotoDone(): void {
     this.stage = 'done';
     this.say({
-      text: 'That is the whole game. Eight legs, fewer visits each time. Buy cards to practise. Buy chalk to bend the maths. Finish on a double. Have a good night.',
+      text: 'That is the whole game. Eight legs, fewer visits each time. Bin the filler, buy chalk to bend the maths, keep the crowd warm. Finish on a double. Have a good night.',
       button: 'PLAY',
       onNext: () => this.finish(true),
       second: { label: 'MENU', onPress: () => this.finish(false) },

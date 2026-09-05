@@ -62,5 +62,10 @@ export function discardHand(leg: LegState, practiceBoard: boolean): void {
 
 /** The whole card pool available during this leg (deck + hand + discard). */
 export function legPool(leg: LegState): DartCard[] {
-  return [...leg.deck, ...leg.hand, ...leg.discard];
+  const pool = [...leg.deck, ...leg.hand, ...leg.discard];
+  // Between visits the pocketed card is in none of those, but it is still
+  // yours to throw — and it is usually the finisher you kept back on purpose,
+  // so the checkout hints and the setup bonus have to count it.
+  if (leg.pocket && !pool.some((c) => c.id === leg.pocket?.id)) pool.push(leg.pocket);
+  return pool;
 }

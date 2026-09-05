@@ -10,7 +10,7 @@ import { computeCheckoutHints } from './checkout';
 import { discardHand, drawHand, takeFromHand } from './deck';
 import { WALL_CARD_ID } from './board';
 import { createRng, nextInt, pickWeighted, shuffle } from './rng';
-import { handSizeFor, resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
+import { resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
 import { potReward } from './rules';
 import type {
   Chalk,
@@ -101,10 +101,6 @@ export function currentVisit(leg: LegState) {
 
 export function legName(index: number): string {
   return LEGS[index]?.name ?? `Leg ${index + 1}`;
-}
-
-export function handSize(n: NightState): number {
-  return handSizeFor(n.chalk);
 }
 
 /** Cards dealt at the start of a visit, spent across its darts. */
@@ -367,9 +363,14 @@ export function cardPrice(n: NightState, defId: string): number {
   return cardCost(defId) + (n.oche === 'wide' ? 2 : 0);
 }
 
+/**
+ * The bin comes up most often on purpose: the starting library is deliberately
+ * bloated with filler, and thinning it is the strongest thing the pot can buy
+ * (docs/decisions/balance.md), so the shop has to offer the chance regularly.
+ */
 function rollService(n: NightState): ServiceKind {
   const kinds: ServiceKind[] = ['REMOVE', 'DUPLICATE', 'SHARPEN'];
-  return kinds[nextInt(n.rng, kinds.length)];
+  return pickWeighted(n.rng, kinds, [3, 1, 2]);
 }
 
 function rollCardOffer(n: NightState): string {
@@ -422,6 +423,9 @@ export function shopBuy(n: NightState, slotIndex: number, opts: BuyOptions = {})
   if (slot.sold) return { ok: false, reason: 'already sold', events: [] };
   if (n.pot < slot.cost) return { ok: false, reason: 'not enough pot', events: [] };
   const events: EngineEvent[] = [];
+  // The bin stays open: thinning is the pot's best sink, and one card a shop
+  // is not enough to dig a bloated library out on any sensible schedule.
+  let repeatable = false;
 
   switch (slot.kind) {
     case 'CARD': {
@@ -447,6 +451,7 @@ export function shopBuy(n: NightState, slotIndex: number, opts: BuyOptions = {})
       if (slot.service === 'REMOVE') {
         if (n.library.length <= 6) return { ok: false, reason: 'library too small', events: [] };
         n.library = n.library.filter((c) => c.id !== card.id);
+        repeatable = true;
       } else if (slot.service === 'DUPLICATE') {
         n.library.push(newCard(n, card.defId));
       } else {
@@ -461,7 +466,7 @@ export function shopBuy(n: NightState, slotIndex: number, opts: BuyOptions = {})
   }
   n.pot -= slot.cost;
   n.stats.potSpent += slot.cost;
-  slot.sold = true;
+  slot.sold = !repeatable;
   events.push({ type: 'SHOP_BUY', slot });
   return { ok: true, events };
 }

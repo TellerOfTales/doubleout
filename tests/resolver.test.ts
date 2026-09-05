@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { CHALK_DEFS } from '../src/content/chalkdefs.ts';
 import { ALL_TARGETS, anticlockwiseAdjacent, clockwiseAdjacent, oppositeBed, targetNotation } from '../src/core/board.ts';
-import { handSizeFor, resolveThrow, throwsPerVisitFor } from '../src/core/resolver.ts';
+import { VISIT_HAND_SPARE, resolveThrow, throwsPerVisitFor, visitHandSizeFor } from '../src/core/resolver.ts';
 import { nextFloat } from '../src/core/rng.ts';
 import { BED_ORDER, type Bed, type Target } from '../src/core/types.ts';
 import { baseOf, defIdOf, deflectingRng, mkCard, mkChalk, nonDeflectingRng, resolve, value } from './helpers.ts';
@@ -589,20 +589,24 @@ describe('chalk_dust (RULE)', () => {
 // ---------------------------------------------------------------- DEAL chalk
 
 describe('DEAL chalk', () => {
-  it('default hand size 3 and 3 throws per visit', () => {
-    expect(handSizeFor([])).toBe(3);
+  it('a visit deals its darts plus the spare, and 3 throws per visit', () => {
+    expect(visitHandSizeFor([])).toBe(3 + VISIT_HAND_SPARE);
     expect(throwsPerVisitFor([])).toBe(3);
   });
-  it('wide_grip → hand size 4', () => expect(handSizeFor(mkChalk(['wide_grip']))).toBe(4));
-  it('tunnel_vision → hand size 2', () => expect(handSizeFor(mkChalk(['tunnel_vision']))).toBe(2));
-  it('wide_grip then tunnel_vision → 2 (later acquisition wins)', () => expect(handSizeFor(mkChalk(['wide_grip', 'tunnel_vision']))).toBe(2));
-  it('tunnel_vision then wide_grip → 4 (later acquisition wins)', () => expect(handSizeFor(mkChalk(['tunnel_vision', 'wide_grip']))).toBe(4));
-  it('acquisition order, not array position, decides', () => {
-    const chalk = mkChalk(['wide_grip', 'tunnel_vision']).reverse(); // same orders, reversed array
-    expect(handSizeFor(chalk)).toBe(2);
+  it('wide_grip → one more card in the visit hand', () => expect(visitHandSizeFor(mkChalk(['wide_grip']))).toBe(4 + VISIT_HAND_SPARE));
+  it('tunnel_vision → one fewer', () => expect(visitHandSizeFor(mkChalk(['tunnel_vision']))).toBe(2 + VISIT_HAND_SPARE));
+  it('wide_grip and tunnel_vision cancel out, in either order', () => {
+    expect(visitHandSizeFor(mkChalk(['wide_grip', 'tunnel_vision']))).toBe(3 + VISIT_HAND_SPARE);
+    expect(visitHandSizeFor(mkChalk(['tunnel_vision', 'wide_grip']))).toBe(3 + VISIT_HAND_SPARE);
   });
-  it('other chalk leaves hand size at 3', () => {
-    for (const id of ALL_CHALK_IDS) if (id !== 'wide_grip' && id !== 'tunnel_vision') expect(handSizeFor(mkChalk([id]))).toBe(3);
+  it('fourth_dart deals for the extra dart too', () => {
+    expect(visitHandSizeFor(mkChalk(['fourth_dart']))).toBe(4 + VISIT_HAND_SPARE);
+  });
+  it('other chalk leaves the visit hand alone', () => {
+    for (const id of ALL_CHALK_IDS) {
+      if (id === 'wide_grip' || id === 'tunnel_vision' || id === 'fourth_dart') continue;
+      expect(visitHandSizeFor(mkChalk([id]))).toBe(3 + VISIT_HAND_SPARE);
+    }
   });
   it('fourth_dart → 4 throws per visit', () => expect(throwsPerVisitFor(mkChalk(['fourth_dart']))).toBe(4));
   it('other chalk leaves throws per visit at 3', () => {

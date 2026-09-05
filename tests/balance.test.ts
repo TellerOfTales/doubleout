@@ -53,8 +53,9 @@ describe('§15.2 balance targets', () => {
     const opt = simulate(seedRange(N), 'optimal');
     const greedy = simulate(seedRange(N), 'greedy');
     expect(greedy.winRate).toBeLessThan(0.08);
-    // Measured 7-9% with the visit-planning bot; a human planning the pocket
-    // and the crowd does better. See docs/decisions/balance.md.
+    // Measured 11.3% over 1000 nights with the visit-planning bot and a
+    // corrected shop model; a human planning the pocket, the crowd and the bin
+    // does better. See docs/decisions/balance.md.
     expect(opt.winRate).toBeGreaterThan(0.03);
     expect(opt.winRate).toBeLessThan(0.35);
     expect(opt.winRate).toBeGreaterThan(greedy.winRate + 0.02);

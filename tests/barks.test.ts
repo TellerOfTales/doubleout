@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { BARKS, allBarkLines } from '../src/content/barks.ts';
+import { HEAT_CAP } from '../src/content/legs.ts';
 import { Commentary, buildBarkContext, describeChalkChain, type Bark } from '../src/core/commentary.ts';
 import { addChalk, beginLeg, commitCard, commitMiss, createNight, currentLeg, pocketCard, shopBuy, shopLeave, shopRefresh } from '../src/core/state.ts';
 import type { BarkContext, BarkTrigger, EngineEvent, NightState, ThrowResult } from '../src/core/types.ts';
@@ -67,6 +68,11 @@ describe('the bark pool (TDD §10.3)', () => {
     ['timeout_leg8', 100],
     ['shop_zero_pot', 40],
     ['idle_15', 20],
+    // the reworked loop: the crowd, the pocket and leaving it right
+    ['heat_max', 88],
+    ['heat_lost', 86],
+    ['setup_bonus', 55],
+    ['pocketed', 45],
   ])('required trigger %s is present with priority %i', (id, priority) => {
     const t = BY_ID.get(id);
     expect(t, id).toBeDefined();
@@ -322,7 +328,7 @@ describe('the scripted event sequence', () => {
 
   it('every required trigger fires at least once over the sequence', () => {
     const fired = new Set(run(1).flat().map((b) => b.triggerId));
-    for (const id of ['visit_180', 'visit_26', 'checkout_100', 'checkout_leg8', 'bust_1', 'bust_2', 'bust_3', 'bust_4plus', 'chalk_chain_4', 'score_170', 'score_1', 'nine_darter', 'timeout_leg8', 'shop_zero_pot', 'idle_15']) {
+    for (const id of ['visit_180', 'visit_26', 'checkout_100', 'checkout_leg8', 'bust_1', 'bust_2', 'bust_3', 'bust_4plus', 'chalk_chain_4', 'score_170', 'score_1', 'nine_darter', 'timeout_leg8', 'shop_zero_pot', 'idle_15', 'heat_max', 'heat_lost', 'setup_bonus', 'pocketed']) {
       expect(fired.has(id), id).toBe(true);
     }
   });
@@ -337,6 +343,52 @@ describe('the scripted event sequence', () => {
       }
       expect(JSON.stringify(ctx)).toBe(before);
     }
+  });
+});
+
+describe('the triggers the reworked visit added', () => {
+  const n0 = createNight(31);
+  beginLeg(n0);
+  const visit = currentLeg(n0).visits[0];
+  const visitEnd = (heat: number, busted = false, missed = false): BarkContext =>
+    buildBarkContext(n0, { type: 'VISIT_END', visit, total: busted ? 0 : 60, busted, missed, heat });
+
+  it('heat_max speaks for a bust-free visit at HEAT_CAP and not a degree below it', () => {
+    const t = BY_ID.get('heat_max') as BarkTrigger;
+    expect(t.when(visitEnd(HEAT_CAP))).toBe(true);
+    expect(t.when(visitEnd(HEAT_CAP - 1))).toBe(false);
+    expect(t.when(visitEnd(HEAT_CAP, true))).toBe(false); // a busted visit has no crowd
+    expect(t.when(visitEnd(0))).toBe(false);
+    expect(t.when(visitEnd(HEAT_CAP, false, true))).toBe(true); // walking away holds it
+  });
+
+  it('heat_lost speaks only when there was heat worth losing', () => {
+    const t = BY_ID.get('heat_lost') as BarkTrigger;
+    for (const from of [2, 3, HEAT_CAP]) expect(t.when(buildBarkContext(n0, { type: 'HEAT_LOST', from })), `from ${from}`).toBe(true);
+    for (const from of [0, 1]) expect(t.when(buildBarkContext(n0, { type: 'HEAT_LOST', from })), `from ${from}`).toBe(false);
+  });
+
+  it('setup_bonus and pocketed answer their own event and nothing else, and nothing shouts over them', () => {
+    const setup = BY_ID.get('setup_bonus') as BarkTrigger;
+    const pocketed = BY_ID.get('pocketed') as BarkTrigger;
+    const setupCtx = buildBarkContext(n0, { type: 'SETUP_BONUS', score: 80, pot: 1 });
+    const pocketCtx = buildBarkContext(n0, { type: 'POCKETED', card: currentLeg(n0).hand[0] });
+    expect(setup.when(setupCtx)).toBe(true);
+    expect(setup.when(pocketCtx)).toBe(false);
+    expect(pocketed.when(pocketCtx)).toBe(true);
+    expect(pocketed.when(setupCtx)).toBe(false);
+    for (const t of BARKS) if (t.when(setupCtx)) expect(t.priority, t.id).toBeLessThanOrEqual(setup.priority);
+    for (const t of BARKS) if (t.when(pocketCtx)) expect(t.priority, t.id).toBeLessThanOrEqual(pocketed.priority);
+  });
+
+  it('{score} on a setup bonus is the score that was left on the board', () => {
+    const ctx = SEQUENCE.find((c) => c.event.type === 'SETUP_BONUS') as BarkContext;
+    const left = (ctx.event as Extract<EngineEvent, { type: 'SETUP_BONUS' }>).score;
+    expect(left).toBeGreaterThan(0);
+    const probe = new Commentary(3, [{ id: 't', speaker: 'NOCK', priority: 1, cooldown: 1, when: () => true, lines: ['{score}'] }]);
+    expect(probe.react(ctx)[0].text).toBe(String(left));
+    const real = new Commentary(3, [BY_ID.get('setup_bonus') as BarkTrigger]);
+    expect(real.react(ctx)[0].text).not.toMatch(/\{\w+\}/);
   });
 });
 
