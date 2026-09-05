@@ -134,12 +134,13 @@ export class GameScreen implements Scene {
     this.hand.tapToThrow = this.app.save.data.settings.tapToThrow;
     this.hand.hintOn = this.app.save.data.settings.checkoutHint;
     this.buildCrowd();
+    const l0 = this.layout.orientation;
     const leg = this.leg;
     this.score.snap(leg.score);
     this.board.clearDarts();
-    this.readout = this.app.input.isTouch ? 'FLICK A CARD AT THE BOARD' : 'FLICK OR CLICK A CARD TO THROW';
+    this.readout = l0 === 'portrait' ? 'FLICK A CARD AT THE BOARD' : this.app.input.isTouch ? 'FLICK A CARD AT THE BOARD' : 'FLICK OR CLICK A CARD TO THROW';
     this.readoutColor = P.MIST;
-    this.legBanner = { text: `LEG ${leg.index + 1} · ${legName(leg.index).toUpperCase()}`, sub: `${leg.visitLimit} VISITS`, t: 0 };
+    this.legBanner = this.hooks.ownsFlow ? null : { text: `LEG ${leg.index + 1} · ${legName(leg.index).toUpperCase()}`, sub: `${leg.visitLimit} VISITS`, t: 0 };
     this.app.sfx('card_flip');
     this.hand.locked = true;
     this.co.run(this.legIntro());
@@ -348,7 +349,7 @@ export class GameScreen implements Scene {
     // value label + chalk chain
     const hitText = result.hits.map((h) => targetNotation(h.target)).join('+');
     const base = result.hits.reduce((a, h) => a + baseValue(h.target), 0);
-    const labelPos = { x: l.orientation === 'landscape' ? l.board.x + l.board.w + 8 : l.boardCentre.x, y: l.orientation === 'landscape' ? l.board.y + 6 : l.board.y + l.board.h + 6 };
+    const labelPos = { x: l.boardCentre.x, y: l.orientation === 'landscape' ? l.board.y + 8 : l.board.y + 6 };
     let running = base;
     this.readout = `${hitText} = ${base}`;
     this.readoutColor = P.CHALK;
@@ -894,7 +895,7 @@ export class GameScreen implements Scene {
     const color = this.bustStamp.active ? P.EMBER : shown === 0 ? P.BRASS_LIT : this.scoreBump.active ? P.CHALK : P.CHALK;
     const cx = l.score.x + Math.floor(l.score.w / 2);
     const bump = this.scoreBump.active ? Math.round(this.scoreBump.value * 2) : 0;
-    r.text('REMAINING', l.scoreLabel.x, l.scoreLabel.y, { color: P.MIST });
+    if (l.orientation === 'landscape') r.text('REMAINING', l.scoreLabel.x, l.scoreLabel.y, { color: P.MIST });
     r.text(String(shown), cx, l.score.y - bump, { font: 9, scale, color, align: 'center', shadow: P.INK });
     // checkout hint line
     const hintOn = this.app.save.data.settings.checkoutHint;
@@ -924,7 +925,7 @@ export class GameScreen implements Scene {
       const darts = parts.join(' ');
       r.text(darts, vl.x + vl.w, vl.y, { color: P.MIST, align: 'right' });
       const total = visitTotal(v);
-      if (total > 0 && v.throws.length > 0) {
+      if (total > 0 && v.throws.length > 1) {
         r.text(`${total}`, vl.x + vl.w - measureText(5, darts) - 5, vl.y, { color: P.BRASS, align: 'right' });
       }
     }
@@ -952,8 +953,8 @@ export class GameScreen implements Scene {
     if (r.sprites.has('pint')) {
       const fill = Math.min(4, Math.floor(this.night.pot / 6));
       const l = this.layout;
-      const px = l.orientation === 'landscape' ? l.w - 16 : l.w - 16;
-      const py = l.orientation === 'landscape' ? l.readout.y - 2 : 150;
+      const px = l.orientation === 'landscape' ? l.chalkStrip.x + 114 : l.chalkStrip.x + 116;
+      const py = l.chalkStrip.y + 4;
       r.sprite('pint', px, py, fill);
     }
   }
@@ -963,7 +964,11 @@ export class GameScreen implements Scene {
     const ro = l.readout;
     // Backing strip so the readout always reads over the carpet.
     r.dither(ro.x - 3, ro.y - 1, ro.w + 6, ro.h + 2, P.INK, 11);
-    if (this.readout) r.textWrap(this.readout, ro.x, ro.y + 1, ro.w, { color: this.readoutColor });
+    if (this.readout) {
+      const maxLines = Math.max(1, Math.floor(ro.h / 9));
+      const lines = r.wrap(this.readout, ro.w).slice(0, maxLines);
+      lines.forEach((line, i) => r.text(line, ro.x, ro.y + 1 + i * 9, { color: this.readoutColor }));
+    }
     this.drawMissButton(r);
   }
 
@@ -1035,12 +1040,17 @@ export class GameScreen implements Scene {
     const v = b.pulse.value;
     const t = 1 - v;
     const scale = t < 0.15 ? 3 : 2;
-    const cx = l.w / 2;
-    const cy = l.orientation === 'landscape' ? 60 : 130;
-    const w = measureText(9, b.text) * scale + 24;
-    r.dither(cx - w / 2 - 6, cy - 8, w + 12, b.sub ? 42 : 30, P.INK, 12);
+    const cx = Math.floor(l.w / 2);
+    const cy = l.orientation === 'landscape' ? 52 : 116;
+    const bandTop = cy - 9;
+    const bandH = (b.sub ? 12 * scale + 16 : 12 * scale + 8) + 4;
+    // A full-width band: this is the loudest moment in the game, so nothing
+    // behind it is allowed to compete with the words.
+    r.dither(0, bandTop, l.w, bandH, P.INK, 14);
+    r.rect(0, bandTop, l.w, 1, b.color);
+    r.rect(0, bandTop + bandH - 1, l.w, 1, b.color);
     r.text(b.text, cx, cy, { font: 9, scale, color: b.color, align: 'center', outline: P.INK });
-    if (b.sub) r.text(b.sub, cx, cy + 12 * scale + 4, { color: P.CHALK, align: 'center', shadow: P.INK });
+    if (b.sub) r.text(b.sub, cx, cy + 12 * scale + 5, { color: P.CHALK, align: 'center', shadow: P.INK });
   }
 
   private drawLegBanner(r: Renderer): void {
@@ -1050,7 +1060,7 @@ export class GameScreen implements Scene {
     const slide = t < 0.3 ? ease.outCubic(t / 0.3) : t > 1.8 ? 1 - ease.inCubic((t - 1.8) / 0.4) : 1;
     const w = 150;
     const x = Math.round(lerp(-w, Math.floor(l.w / 2 - w / 2), slide));
-    const y = l.orientation === 'landscape' ? 40 : 140;
+    const y = l.orientation === 'landscape' ? 40 : 56;
     r.panel(x, y, w, 28, P.DEEP, P.BRASS);
     r.text(b.text, x + w / 2, y + 5, { color: P.CHALK, align: 'center' });
     r.text(b.sub, x + w / 2, y + 15, { color: P.BRASS_LIT, align: 'center' });

@@ -11,7 +11,9 @@
     "build": "npm run genart && tsc --noEmit -p tsconfig.json && vite build && node --experimental-strip-types tools/singlefile.ts",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:balance": "BALANCE_FULL=1 vitest run tests/balance.test.ts",
+    "balance": "vite-node tools/balance.ts",
+    "balance:pairs": "vite-node tools/balance.ts --pairs",
+    "screenshots": "node --experimental-strip-types tools/screenshot.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {

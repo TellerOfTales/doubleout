@@ -37,6 +37,8 @@ type Stage =
 
 interface Prompt {
   text: string;
+  /** 'bottom' pins the panel to a wide strip clear of the shop offers. */
+  place?: 'auto' | 'bottom';
   /** Where the pointer goes. */
   target?: () => Rect | null;
   /** Label of the advance button; undefined = waiting for an action. */
@@ -76,10 +78,14 @@ class Tutorial {
 
   // ---------------------------------------------------------------- deck control
 
-  /** Find (or conjure) a card by def id from the leg pool, removing it from wherever it lives. */
+  /**
+   * Find (or mint) a card by def id, taking it from the deck or the discard.
+   * Never from the hand: stealing a card the player can already see would
+   * desync the dealt hand from the leg state.
+   */
   private take(defId: string): DartCard {
     const leg = this.leg;
-    for (const pile of [leg.deck, leg.discard, leg.hand]) {
+    for (const pile of [leg.deck, leg.discard]) {
       const i = pile.findIndex((c) => c.defId === defId);
       if (i >= 0) return pile.splice(i, 1)[0];
     }
@@ -95,8 +101,9 @@ class Tutorial {
   /** Replace the current hand immediately (before any throw). */
   private setHand(defIds: string[]): void {
     const leg = this.leg;
-    leg.deck.push(...leg.hand);
+    const old = leg.hand;
     leg.hand = [];
+    leg.deck.push(...old);
     leg.hand = defIds.map((d) => this.take(d));
     if (this.game) {
       this.game.hand.deal(leg.hand);
@@ -158,17 +165,51 @@ class Tutorial {
     b.focusFirst();
   }
 
+  /** Height for `lines` of body text plus the header and any buttons. */
+  private panelHeight(w: number, lines: number): number {
+    return 12 + lines * 9 + (this.prompt?.button || this.prompt?.second ? 23 : 5);
+  }
+
   private panelRect(): Rect {
-    if (this.portrait) {
-      // Below the board and above the hand, or over the commentary when the target is up top.
-      const t = this.prompt?.target?.();
-      const top = t && t.y > 160;
-      return top ? { x: 4, y: 14, w: this.w - 8, h: 70 } : { x: 4, y: 250, w: this.w - 8, h: 66 };
-    }
     const t = this.prompt?.target?.();
+    const text = this.prompt?.text ?? '';
+    if (this.prompt?.place === 'bottom') {
+      // A wide strip that leaves the shop offers visible.
+      const w = this.w - 8;
+      const lines = this.lineCount(text, w - 10);
+      const h = this.panelHeight(w, lines);
+      return { x: 4, y: (this.portrait ? 284 : 158) - h - 2, w, h };
+    }
+    if (this.portrait) {
+      // Above the hand by default; over the board when the target is down low.
+      const w = this.w - 8;
+      const lines = this.lineCount(text, w - 10);
+      const h = this.panelHeight(w, lines);
+      const low = t !== null && t !== undefined && t.y > 150;
+      return low ? { x: 4, y: 20, w, h } : { x: 4, y: Math.min(300 - h, 316 - h), w, h };
+    }
     // Targets in the right column → panel over the board (left); otherwise right column.
     const left = !t || t.x >= 120;
-    return left ? { x: 3, y: 14, w: 128, h: 116 } : { x: 124, y: 14, w: 192, h: 66 };
+    const w = left ? 118 : 190;
+    const lines = this.lineCount(text, w - 10);
+    const h = this.panelHeight(w, lines);
+    // Sit under the chrome, and never run past the commentary bar.
+    return left ? { x: 4, y: 16, w, h } : { x: 125, y: Math.min(16, 158 - h), w, h };
+  }
+
+  /** Wrapped line count at the 5x7 font, mirroring Renderer.wrap. */
+  private lineCount(text: string, maxWidth: number): number {
+    let lines = 1;
+    let width = 0;
+    for (const word of text.split(' ')) {
+      const wWidth = word.length * 6 - 1;
+      const next = width === 0 ? wWidth : width + 6 + wWidth;
+      if (next > maxWidth && width > 0) {
+        lines++;
+        width = wWidth;
+      } else width = next;
+    }
+    return lines;
   }
 
   private allow(defIds: string[] | null): void {
@@ -476,14 +517,16 @@ class Tutorial {
       onReady: (s) => {
         this.shop = s;
         this.say({
-          text: 'Cards join your deck for every leg. Chalk bends the rules. Buy HOT TWENTY, then TO THE OCHE. Tap an offer to read it first.',
-          target: () => s.portrait ? { x: 92, y: 16, w: 82, h: 88 } : { x: 162, y: 16, w: 74, h: 90 },
+          place: 'bottom',
+          text: 'Cards join your deck for every leg. Chalk bends the rules. Buy HOT TWENTY, then head TO THE OCHE.',
+          target: () => (s.portrait ? { x: 92, y: 16, w: 82, h: 88 } : { x: 162, y: 16, w: 74, h: 90 }),
         });
       },
       onBuy: (slot) => {
         if (slot.kind === 'CHALK') {
           this.say({
-            text: 'That chalk now sits in a slot. It fires on every throw it applies to, in the order you bought it. Now: TO THE OCHE.',
+            place: 'bottom',
+            text: 'That chalk now sits in a slot. It fires on every throw it applies to, in the order you bought it.',
             target: () => (this.shop?.portrait ? { x: 6, y: 224, w: 168, h: 18 } : { x: 210, y: 112, w: 104, h: 16 }),
           });
         }
@@ -570,10 +613,8 @@ class Tutorial {
     r.dither(panel.x + 2, panel.y + 3, panel.w, panel.h, P.INK, 10);
     r.panel(panel.x, panel.y, panel.w, panel.h, P.DEEP, P.SKY_LIT);
     r.text('TUTORIAL', panel.x + 5, panel.y + 3, { color: P.SKY_LIT });
-    const textW = panel.w - 10;
-    const lines = r.wrap(p.text, textW);
-    const maxLines = p.button ? Math.floor((panel.h - 34) / 9) : Math.floor((panel.h - 14) / 9);
-    lines.slice(0, Math.max(1, maxLines)).forEach((l, i) => r.text(l, panel.x + 5, panel.y + 12 + i * 9, { color: P.CHALK }));
+    const lines = r.wrap(p.text, panel.w - 10);
+    lines.forEach((l, i) => r.text(l, panel.x + 5, panel.y + 12 + i * 9, { color: P.CHALK }));
     if (!p.button) {
       const on = Math.floor(this.time * 2) % 2 === 0;
       r.sprite('icons', panel.x + panel.w - 12, panel.y + panel.h - 11, on ? 28 : 25);

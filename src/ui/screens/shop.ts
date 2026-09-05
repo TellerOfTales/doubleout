@@ -449,13 +449,17 @@ export class ShopScreen implements Scene {
     const trebles = lib.filter((c) => c.target.region === 'T').length;
     const infoX = this.portrait ? 6 : chips[chips.length - 1].x + 30;
     const infoY = this.portrait ? 272 : 132;
+    r.dither(infoX - 3, infoY - 2, 130, 21, P.INK, 11);
     r.text(`${lib.length} CARDS · AVG ${mean}`, infoX, infoY, { color: P.MIST });
     r.text(`${trebles} TREBLES · ${doubles} DOUBLES`, infoX, infoY + 9, { color: P.PEWTER });
     // detail strip: selected slot blurb or chalk tip
     const detailY = this.portrait ? 282 - 40 : 156 - 12;
     const detail = this.detailText();
-    if (detail && !this.portrait) r.textWrap(detail.text, 6, detailY + 2, this.w - 12, { color: detail.color });
-    if (detail && this.portrait) r.textWrap(detail.text, 6, 226, this.w - 12, { color: detail.color });
+    if (detail) {
+      const dy = this.portrait ? 226 : detailY + 2;
+      r.dither(3, dy - 2, this.w - 6, 20, P.INK, 11);
+      r.textWrap(detail.text, 6, dy, this.w - 12, { color: detail.color });
+    }
     this.buttons.draw(r, this.keyboardFocus);
     for (const p of this.particles.list) r.sprite(p.sprite, Math.round(p.x), Math.round(p.y), p.frame);
     this.bar.draw(r, this.barRect());

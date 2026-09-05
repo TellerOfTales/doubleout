@@ -17,16 +17,22 @@ making sense. Eight legs make a night. A night can be won, and when it is, the g
 npm install
 npm run dev        # Vite dev server
 npm run build      # genart → typecheck → bundle → dist/doubleout.html (single file, works offline)
-npm test           # engine, determinism, bust table, art, audio, barks, balance (reduced)
-npm run test:balance   # the full 10,000-night balance simulation
+npm test           # 506 tests: engine, determinism, bust table, audio, barks, balance
+npm run balance    # the §15 balance simulation (add :pairs for the 276-combination sweep)
 npm run genart     # regenerate assets/generated/*.png + manifest
+npm run screenshots    # drive the built game in Chromium and capture every screen
 ```
 
 Open `dist/doubleout.html` directly from disk — it needs no server.
 
 **Controls.** Flick a card upward at the board to throw it (touch or mouse). Tap a card to
-select, tap again to throw. Keyboard: `1–4` pick a card, `←/→` move, `Enter`/`Space` throw,
-`H` toggles the checkout hint, `Esc` pauses.
+select, tap again to throw. When every card in hand would bust, hit **MISS** to throw at the
+wall on purpose — no score, no bust, and it costs you the dart. Keyboard: `1–4` pick a card,
+`←/→` move, `Enter`/`Space` throw, `M` miss, `H` toggles the checkout hint, `Esc` pauses.
+
+New to darts? The **TUTORIAL** on the menu is a real, playable leg that teaches the rules by
+having you throw them — dealt cards, the double finish, busting, the miss, the shop and a
+chalk chain — in about three minutes.
 
 ## Layout
 
