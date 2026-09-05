@@ -183,6 +183,28 @@ async function main(): Promise<void> {
     await d.shot('02_flick_landed');
   });
 
+  await run('pocketdemo', land, async (d) => {
+    await d.evalApp("app.startNight(31415, 'local')");
+    await d.wait(900);
+    await d.shot('01_visit_hand');
+    await d.key('1');
+    await d.wait(150);
+    await d.key('p');
+    await d.wait(400);
+    await d.shot('02_kept');
+    await d.key('2');
+    await d.key('Enter');
+    await d.wait(2200);
+    await d.shot('03_after_throw');
+    await d.key('1');
+    await d.key('Enter');
+    await d.wait(2200);
+    await d.key('1');
+    await d.key('Enter');
+    await d.wait(2600);
+    await d.shot('04_next_visit_kept_returns');
+  });
+
   await run('chalk', land, async (d) => {
     await d.evalApp("(function(){app.startNight(4242,'local'); const s=window.__do.state; for (const id of ['heavy_tips','hot_twenty','oiled','split_tips','last_orders']) s.addChalk(app.night,id); app.scenes.current.refreshHints();})()");
     await d.wait(900);
@@ -290,17 +312,23 @@ async function main(): Promise<void> {
     await d.shot('03_throw_prompt');
     await d.key('1');
     await d.key('Enter');
-    await d.wait(2500);
-    await d.shot('04_after_throw');
-    await d.key('Enter');
-    await d.wait(300);
-    await d.key('1');
-    await d.key('Enter');
-    await d.wait(2200);
-    await d.key('1');
-    await d.key('Enter');
     await d.wait(2600);
-    await d.shot('05_finish_intro');
+    await d.shot('04_leaves');
+    await d.key('Enter');
+    await d.wait(500);
+    await d.shot('05_keep');
+    await d.key('Enter');
+    await d.wait(400);
+    await d.key('1');
+    await d.key('Enter');
+    await d.wait(2400);
+    await d.key('1');
+    await d.key('Enter');
+    await d.wait(2800);
+    await d.shot('06_heat');
+    await d.key('Enter');
+    await d.wait(700);
+    await d.shot('07_finish_intro');
     await d.key('Enter');
     await d.wait(300);
     await d.key('1');

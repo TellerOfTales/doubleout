@@ -2,11 +2,15 @@
  * Base ruleset helpers (TDD §3, §4): pot rewards and the unmodified
  * bust/checkout law used as the reference table in tests.
  */
-import { LEGS } from '../content/legs';
+import { HEAT_CAP, LEGS } from '../content/legs';
 import { baseValue, isDoubleRegion } from './board';
 import type { LegState, PotBreakdown, Target } from './types';
 
-/** Pot for a checked-out leg (TDD §4). */
+/**
+ * Pot for a checked-out leg (TDD §4), plus the two additions this build makes:
+ * the "left it right" bonuses banked during the leg, and the crowd heat, which
+ * scales everything by up to ×2 and is wiped by a single bust.
+ */
 export function potReward(leg: LegState): PotBreakdown {
   const def = LEGS[leg.index];
   const visitsUsed = leg.visits.length;
@@ -17,13 +21,21 @@ export function potReward(leg: LegState): PotBreakdown {
   const bigFinish = checkoutFrom >= 100 ? 2 : 0;
   const cleanLeg = leg.bustsThisLeg === 0 ? 3 : 0;
   const nineDarter = visitsUsed === 3 ? 5 : 0;
+  const setup = leg.setupBonuses;
+  const subtotal = base + unusedVisits + bigFinish + cleanLeg + nineDarter + setup;
+  const heat = Math.min(HEAT_CAP, leg.heat);
+  // ×1 at heat 0 rising to ×2 at the cap, in quarters so it stays integer.
+  const heatBonus = Math.floor((subtotal * heat) / HEAT_CAP);
   return {
     base,
     unusedVisits,
     bigFinish,
     cleanLeg,
     nineDarter,
-    total: base + unusedVisits + bigFinish + cleanLeg + nineDarter,
+    setup,
+    heat,
+    heatBonus,
+    total: subtotal + heatBonus,
     checkoutFrom,
     visitsUsed,
   };

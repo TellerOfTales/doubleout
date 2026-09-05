@@ -45,50 +45,80 @@ export function cardCost(defId: string): number {
 }
 
 /** Starting library: 24 deliberately mediocre cards (TDD §6.1 with a ladder of small doubles — DECISIONS.md #45). */
+/**
+ * Starting library: 24 cards. Trebles carry the scoring, a ladder of small
+ * doubles makes every finish reachable, and the singles are the filler you
+ * want to buy your way out of. Tuned by simulation for the per-visit hand —
+ * see docs/decisions/balance.md.
+ */
 export const STARTING_LIBRARY: [string, number][] = [
-  ['s20', 3],
+  ['s20', 2],
   ['s19', 2],
-  ['s18', 2],
-  ['s16', 2],
-  ['s12', 2],
-  ['s7', 1],
-  ['s5', 1],
-  ['s3', 1],
-  ['s1', 1],
-  ['t20', 1],
-  ['t19', 1],
+  ['s18', 1],
+  ['s16', 1],
+  ['s12', 1],
+  ['t20', 2],
+  ['t19', 2],
+  ['t18', 1],
+  ['t17', 1],
+  ['t16', 1],
+  ['t14', 1],
   ['d20', 1],
   ['d16', 1],
+  ['d10', 1],
   ['d8', 1],
   ['d4', 1],
   ['d2', 1],
   ['d1', 1],
   ['ob', 1],
+  ['ib', 1],
 ];
 
-/** The Thin: a 12-card library (DECISIONS.md). */
+/** The Thin: a 12-card library — every card comes round again. */
 export const THIN_LIBRARY: [string, number][] = [
-  ['s20', 2],
+  ['s20', 1],
   ['s19', 1],
   ['s16', 1],
-  ['s12', 1],
-  ['s3', 1],
-  ['t20', 1],
+  ['t20', 2],
   ['t19', 1],
+  ['t17', 1],
   ['d20', 1],
   ['d16', 1],
   ['d8', 1],
   ['d2', 1],
+  ['ib', 1],
 ];
 
-/** Library composition for an oche, as [defId, copies]. */
+/**
+ * Library composition for an oche, as [defId, copies]. The Sharp trades its two
+ * weakest singles for two trebles, found by value rather than by name so the
+ * oche keeps working when the starting list is retuned.
+ */
 export function libraryFor(oche: OcheId): [string, number][] {
-  if (oche === 'thin') return THIN_LIBRARY.map((x) => [x[0], x[1]]);
-  const lib: [string, number][] = STARTING_LIBRARY.map((x) => [x[0], x[1]]);
+  if (oche === 'thin') return THIN_LIBRARY.map((x) => [x[0], x[1]] as [string, number]);
+  const lib: [string, number][] = STARTING_LIBRARY.map((x) => [x[0], x[1]] as [string, number]);
   if (oche === 'sharp') {
-    // Start with T18, T17 instead of two S1.
-    const i = lib.findIndex((x) => x[0] === 's1');
-    lib.splice(i, 1, ['t18', 1], ['t17', 1]);
+    for (const upgrade of ['t18', 't17']) {
+      // drop one copy of the cheapest single we still hold
+      let worstIndex = -1;
+      let worstValue = Infinity;
+      lib.forEach(([defId, copies], i) => {
+        if (copies <= 0) return;
+        const d = cardDef(defId);
+        if (d.target.region !== 'S') return;
+        if (d.value < worstValue) {
+          worstValue = d.value;
+          worstIndex = i;
+        }
+      });
+      if (worstIndex >= 0) {
+        lib[worstIndex] = [lib[worstIndex][0], lib[worstIndex][1] - 1];
+        if (lib[worstIndex][1] === 0) lib.splice(worstIndex, 1);
+      }
+      const existing = lib.findIndex((x) => x[0] === upgrade);
+      if (existing >= 0) lib[existing] = [upgrade, lib[existing][1] + 1];
+      else lib.push([upgrade, 1]);
+    }
   }
   return lib;
 }

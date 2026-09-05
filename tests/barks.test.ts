@@ -7,9 +7,9 @@
 import { describe, expect, it } from 'vitest';
 import { BARKS, allBarkLines } from '../src/content/barks.ts';
 import { Commentary, buildBarkContext, describeChalkChain, type Bark } from '../src/core/commentary.ts';
-import { addChalk, beginLeg, commitCard, createNight, currentLeg, shopBuy, shopLeave, shopRefresh } from '../src/core/state.ts';
+import { addChalk, beginLeg, commitCard, commitMiss, createNight, currentLeg, pocketCard, shopBuy, shopLeave, shopRefresh } from '../src/core/state.ts';
 import type { BarkContext, BarkTrigger, EngineEvent, NightState, ThrowResult } from '../src/core/types.ts';
-import { play, playAll, setScore, smartPickCard } from './helpers.ts';
+import { dealFromPool, play, playAll, setScore, smartPickCard } from './helpers.ts';
 
 const LINES = allBarkLines();
 const BY_ID = new Map(BARKS.map((t) => [t.id, t]));
@@ -177,7 +177,10 @@ function snap(n: NightState, event: BarkContext['event'], tr?: ThrowResult): Bar
  * 200+ engine events with every required trigger reachable: a 180, a 26,
  * a landing on 170 and on 1, a bust chain of four, a 100+ checkout, shops
  * with and without Pot, idle, a chalk-heavy leg, a leg-8 timeout, a leg-8
- * win and a nine-darter.
+ * win and a nine-darter — plus the events the per-visit rework added: a
+ * pocketed card, heat lost to a bust, a visit ended at the wall and a
+ * setup bonus. One hand now covers a whole visit, so a visit is three
+ * commits and a single HAND_DEALT, not three of each.
  */
 function buildSequence(): BarkContext[] {
   const seq: BarkContext[] = [];
@@ -263,6 +266,35 @@ function buildSequence(): BarkContext[] {
   for (const c of ['t20', 't20', 't20', 't20', 't20', 't20', 't20', 't19']) pushNine(play(nine, c).events);
   pushNine(playAll(nine, ['d12']).events);
   seq.push(snap(nine, { type: 'SHOP_ENTER', pot: nine.pot }));
+  // a fifth night for the reworked visit: a card kept in the pocket, heat built
+  // over whole visits and then wiped by a bust, a visit walked away from at the
+  // wall, and a setup bonus for leaving a score the deck can finish.
+  const kept = createNight(81);
+  const pushKept = (events: EngineEvent[]) => {
+    for (const e of events) seq.push(snap(kept, e));
+  };
+  pushKept(beginLeg(kept));
+  const keeper = currentLeg(kept).hand[currentLeg(kept).hand.length - 1];
+  pushKept(pocketCard(kept, keeper.id).events);
+  setScore(kept, 100000);
+  const legRunning = () => kept.status === 'ACTIVE' && kept.phase === 'LEG';
+  // whole visits thrown out from the hand the engine dealt: the heat climbs
+  for (let v = 0; v < 5 && legRunning(); v++) {
+    for (let d = 0; d < 3 && legRunning(); d++) pushKept(commitCard(kept, currentLeg(kept).hand[0].id).events);
+  }
+  // a visit walked away from at the wall: the heat is held, not raised
+  if (legRunning()) pushKept(commitMiss(kept).events);
+  // a bust: the crowd goes cold again
+  if (legRunning()) {
+    setScore(kept, 10);
+    pushKept(play(kept, 't20').events);
+  }
+  // and a visit that leaves 80 on the board — a score the deck can still finish
+  if (legRunning()) {
+    setScore(kept, 140);
+    for (const card of dealFromPool(kept, ['t20'])) pushKept(commitCard(kept, card.id).events);
+    if (legRunning()) pushKept(commitMiss(kept).events);
+  }
   // an empty-pot shop, whichever way the legs above happened to fall
   const broke = createNight(80);
   broke.pot = 0;
@@ -283,7 +315,7 @@ describe('the scripted event sequence', () => {
   it('has at least 200 varied events', () => {
     expect(SEQUENCE.length).toBeGreaterThanOrEqual(200);
     const types = new Set(SEQUENCE.map((c) => c.event.type as string));
-    for (const t of ['LEG_START', 'HAND_DEALT', 'THROW', 'VISIT_END', 'ONE_EIGHTY', 'CHECKOUT', 'LEG_TIMEOUT', 'NIGHT_LOST', 'NIGHT_WON', 'SHOP_OPEN', 'SHOP_BUY', 'SHOP_REFRESH', 'SHOP_ENTER', 'IDLE', 'ACHIEVEMENT']) {
+    for (const t of ['LEG_START', 'HAND_DEALT', 'THROW', 'VISIT_END', 'ONE_EIGHTY', 'CHECKOUT', 'LEG_TIMEOUT', 'NIGHT_LOST', 'NIGHT_WON', 'SHOP_OPEN', 'SHOP_BUY', 'SHOP_REFRESH', 'SHOP_ENTER', 'IDLE', 'ACHIEVEMENT', 'POCKETED', 'HEAT_LOST', 'SETUP_BONUS']) {
       expect(types.has(t), t).toBe(true);
     }
   });
@@ -460,7 +492,7 @@ describe('Commentary engine (src/core/commentary.ts)', () => {
     expect(ctx.chalkFiredCount).toBe(0);
     expect(ctx.leg).toBe(currentLeg(n));
     expect(ctx.consecutiveBusts).toBe(0);
-    const ve = buildBarkContext(n, { type: 'VISIT_END', visit: currentLeg(n).visits[0], total: 123, busted: false });
+    const ve = buildBarkContext(n, { type: 'VISIT_END', visit: currentLeg(n).visits[0], total: 123, busted: false, missed: false, heat: 0 });
     expect(ve.visitTotal).toBe(123);
   });
 });

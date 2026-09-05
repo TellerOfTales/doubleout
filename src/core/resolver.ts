@@ -51,6 +51,22 @@ export function handSizeFor(chalk: Chalk[]): number {
   return size;
 }
 
+/** Spare cards over the dart count. Tuned by simulation — see docs/decisions/balance.md. */
+export const VISIT_HAND_SPARE = 2;
+
+/**
+ * Cards dealt at the start of a visit, to be spent across its darts.
+ * One spare over the dart count, so there is always a choice to make and
+ * spending the big card early costs you the later darts. Wide Grip adds a
+ * card, Tunnel Vision takes one away (and pays for it in value).
+ */
+export function visitHandSizeFor(chalk: Chalk[]): number {
+  let size = throwsPerVisitFor(chalk) + VISIT_HAND_SPARE;
+  if (has(chalk, 'wide_grip')) size += 1;
+  if (has(chalk, 'tunnel_vision')) size -= 1;
+  return Math.max(1, size);
+}
+
 /** Throws per visit after DEAL chalk. */
 export function throwsPerVisitFor(chalk: Chalk[]): number {
   return has(chalk, 'fourth_dart') ? 4 : 3;
@@ -286,7 +302,10 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
   let forgivenessConsumed = false;
 
   if (scoreAfter < 0) {
-    if (has(chalk, 'overshoot') && scoreAfter >= -2) {
+    // Overshoot forgives 1 or 2 too many, but only on a finishing throw:
+    // removing the double requirement entirely is straight_out's job, and
+    // letting any card close the leg made overshoot dominant (§15.3).
+    if (has(chalk, 'overshoot') && scoreAfter >= -2 && countsAsDouble) {
       outcome = 'CHECKOUT';
       fired.push('overshoot');
       note('overshoot', 'RULE', targets, values, `${scoreAfter} counts as out`);

@@ -132,7 +132,7 @@ export const BARKS: BarkTrigger[] = [
       speaker: 'NOCK',
       lines: [
         "Five hundred and one. A prime number… no. It is 3 times 167. Carry on.",
-        "Twelve visits for the first leg. That is 36 darts. I shall count every one of them.",
+        "Thirteen visits for the first leg. I shall count every dart. Nobody asked me to.",
         "Good evening. I have brought a calculator. Barrel has brought a whistle.",
         "Good evening. The board has been hung straight. It is the last straight thing tonight.",
       ],
@@ -1119,6 +1119,66 @@ export const BARKS: BarkTrigger[] = [
   },
 
   // ------------------------------------------------------------ idle
+  {
+    id: 'heat_max',
+    speaker: 'BARREL',
+    priority: 88,
+    cooldown: 12,
+    when: (ctx) => ctx.event.type === 'VISIT_END' && !ctx.event.busted && ctx.event.heat >= 4,
+    lines: [
+      'THE CROWD IS UP! They are ON THEIR FEET! Gerald is on a CHAIR!',
+      "That is the room at full volume and the Pot has DOUBLED! Do not bust! DO NOT BUST!",
+      'Four clean visits! The place has gone! I can hear my own heartbeat and I like it!',
+      'Double money on this leg! Somebody hold my clipboard! I do not have a clipboard!',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'Four visits without a bust. The multiplier is at its ceiling. One error removes it.',
+        'The crowd cannot affect the arithmetic. It is, however, affecting me.',
+        'Statistically the room has no bearing on the board. Statistically I am shouting.',
+      ],
+    },
+  },
+  {
+    id: 'heat_lost',
+    speaker: 'NOCK',
+    priority: 86,
+    cooldown: 8,
+    when: (ctx) => ctx.event.type === 'HEAT_LOST' && ctx.event.from >= 2,
+    lines: [
+      'And the room sits down. That multiplier took four visits and one dart to lose.',
+      'The crowd has cooled. I have seen weather change slower than that.',
+      'Gone. All of it. The arithmetic is unchanged, which is the cruellest part.',
+      'That is the trouble with a crowd. They are only ever as good as your last visit.',
+    ],
+  },
+  {
+    id: 'setup_bonus',
+    speaker: 'NOCK',
+    priority: 55,
+    cooldown: 9,
+    when: (ctx) => ctx.event.type === 'SETUP_BONUS',
+    lines: [
+      'Left on {score}, and the deck can close it. That is the whole game, done quietly.',
+      '{score}. A finishable number, chosen on purpose. I could weep.',
+      'That is not luck. That is arithmetic done three darts early.',
+      'Left it right. The Pot notices. Nobody else does, but the Pot notices.',
+    ],
+  },
+  {
+    id: 'pocketed',
+    speaker: 'BARREL',
+    priority: 45,
+    cooldown: 10,
+    when: (ctx) => ctx.event.type === 'POCKETED',
+    lines: [
+      "Into the pocket! He's saving that one for later! Like a crisp!",
+      'Kept back! That is FORWARD PLANNING and I do not care for it!',
+      'One up the sleeve! Legal! I checked! Nobody checked!',
+      'Pocketed! It will come back every visit until he throws it! Like a bad memory!',
+    ],
+  },
   {
     id: 'idle_15',
     speaker: 'BARREL',

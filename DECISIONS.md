@@ -142,3 +142,44 @@ tests and the code can refer to them. Per-area worker notes live in `docs/decisi
 50. **Bot policies use the miss** (`checkout` and `optimal` only). `greedy` deliberately does
     not: it is the model of a player who does not engage with the arithmetic, and it must be
     allowed to bust.
+
+---
+
+## The loop rework (second playtest pass — `docs/decisions/balance.md`)
+
+Playtesting the first build found the scoring phase had no decision and the endgame
+was a free reroll. These five changes are the response; the first two deviate from
+TDD §3.3, deliberately and with measurements.
+
+51. **One hand per visit, not per dart.** TDD §3.3 deals `HAND_SIZE` cards at the
+    start of every *throw*, discarding the rest. Instead a visit is dealt
+    `throwsPerVisit + 2` cards (five normally; `wide_grip` +1, `tunnel_vision` −1)
+    and spends them across its darts; leftovers are binned at visit end (or routed
+    under the deck by `practice_board`). This is the change that makes the scoring
+    phase a plan: the big card spent now is not there for the third dart.
+52. **The deliberate miss ends the visit.** It still scores nothing and cannot bust,
+    but the remaining darts are forfeited, so cycling hands to fish for a card costs
+    visits rather than nothing.
+53. **Heat.** `leg.heat` counts consecutive visits ended without a bust, capped at 4,
+    and scales the leg's Pot by `1 + heat/4` (up to ×2). A bust wipes it to 0 and
+    emits `HEAT_LOST`. A visit ended by a miss holds heat but does not raise it —
+    walking away is safe, not rewarded. Heat resets each leg.
+54. **"Left it right".** +1 Pot (max 4 a leg) whenever a visit ends on a score the
+    deck can still finish, paid immediately via `SETUP_BONUS`. Every card in hand
+    shows the score it would *leave*, coloured: brass for a finish, green for a
+    position you can close, claret for a dead end, ember for a bust. This is the
+    tactical counterweight to heat — score big, or leave it right.
+55. **The pocket.** `pocketCard` sets one card aside; it rejoins the hand every visit
+    until thrown, and is not binned at visit end. Free, one card, cleared when
+    thrown, and it does not survive the leg. Without it the per-visit hand made the
+    finish pure luck (see the balance notes); with it, banking the double you intend
+    to finish on is the central long-range decision of a leg.
+56. **`overshoot` requires a finishing double.** Going 1–2 below zero still counts,
+    but only on a throw that already counts as a double — otherwise every card
+    closed a leg and it won leg 8 83% of the time on its own (§15.3).
+57. **Visit limits recalibrated** to `13 12 11 10 9 8 6 4`. One hand of five spent
+    across three darts scores far less than a fresh best-of-three every dart did, so
+    the TDD's `12…5` ramp no longer describes the same game. The Decider drops to 4
+    to keep it the wall §4 intends.
+58. **Starting library retuned again** to 24 cards where trebles carry the scoring
+    (T20×2, T19×2, T18, T17, T16, T14) with the double ladder and both bulls intact.

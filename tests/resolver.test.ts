@@ -540,25 +540,33 @@ describe('straight_out (RULE)', () => {
 });
 
 describe('overshoot (RULE)', () => {
-  it('-1 is a checkout', () => {
-    const r = resolve('t20', 59, ['overshoot']);
+  // The throw must already count as a double: overshoot forgives 1 or 2 too
+  // many on a finishing dart, it does not remove the double rule (DECISIONS #56).
+  it('-1 on a double is a checkout', () => {
+    const r = resolve('d20', 39, ['overshoot']);
     expect(r.scoreAfter).toBe(-1);
     expect(r.outcome).toBe('CHECKOUT');
     expect(r.scoreCommitted).toBe(0);
     expect(r.firedChalk).toEqual(['overshoot']);
   });
-  it('-2 is a checkout', () => expect(resolve('t20', 58, ['overshoot']).outcome).toBe('CHECKOUT'));
-  it('-3 is a bust that reverts', () => {
-    const r = resolve('t20', 57, ['overshoot'], { scoreAtVisitStart: 90 });
+  it('-2 on a double is a checkout', () => expect(resolve('d20', 38, ['overshoot']).outcome).toBe('CHECKOUT'));
+  it('-3 on a double is a bust that reverts', () => {
+    const r = resolve('d20', 37, ['overshoot'], { scoreAtVisitStart: 90 });
     expect(r.outcome).toBe('BUST');
     expect(r.scoreCommitted).toBe(90);
     expect(r.firedChalk).toEqual([]);
   });
+  it('the bull counts, being a double', () => expect(resolve('ib', 49, ['overshoot']).outcome).toBe('CHECKOUT'));
+  it('a treble overshooting by 1 still busts', () => expect(resolve('t20', 59, ['overshoot']).outcome).toBe('BUST'));
+  it('a single overshooting by 1 still busts', () => expect(resolve('s20', 19, ['overshoot']).outcome).toBe('BUST'));
   it('does not make an exact non-double zero legal', () => expect(resolve('t20', 60, ['overshoot']).outcome).toBe('BUST'));
   it('does not make 1 legal', () => expect(resolve('t20', 61, ['overshoot']).outcome).toBe('BUST'));
   it('an exact double checkout does not fire overshoot', () => expect(resolve('d20', 40, ['overshoot']).firedChalk).toEqual([]));
-  it('the overshoot checkout does not need a double (engine choice, see decisions)', () => {
-    expect(resolve('s20', 19, ['overshoot']).outcome).toBe('CHECKOUT');
+  it('with straight_out any card may overshoot, since every throw counts as a double', () => {
+    expect(resolve('s20', 19, ['overshoot', 'straight_out']).outcome).toBe('CHECKOUT');
+  });
+  it('with wide_doubles a 20-bed throw may overshoot', () => {
+    expect(resolve('t20', 59, ['overshoot', 'wide_doubles']).outcome).toBe('CHECKOUT');
   });
 });
 
@@ -777,7 +785,7 @@ describe('§7 ordering hazards', () => {
   });
   it('bust conditions are evaluated in order: below zero before exactly-1 before non-double zero', () => {
     // overshoot (below zero) wins over chalk_dust at -1
-    const a = resolve('t20', 59, ['chalk_dust', 'overshoot']);
+    const a = resolve('d20', 39, ['chalk_dust', 'overshoot']);
     expect(a.outcome).toBe('CHECKOUT');
     expect(a.firedChalk).toEqual(['overshoot']);
     // exactly 1 with chalk_dust is a CONTINUE even with straight_out held

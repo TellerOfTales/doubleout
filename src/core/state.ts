@@ -5,11 +5,12 @@
  */
 import { CHALK_DEFS, chalkDef } from '../content/chalkdefs';
 import { SHOP_CARD_POOL, cardCost, cardDef, libraryFor, makeCard, sharpenedDefId } from '../content/cards';
-import { DEFAULT_CHALK_SLOTS, LEGS, LEG_COUNT, SERVICE_COST, SHOP_REFRESH_COST, STARTING_SCORE } from '../content/legs';
-import { commitFromHand, discardHand, drawHand } from './deck';
+import { DEFAULT_CHALK_SLOTS, HEAT_CAP, LEGS, LEG_COUNT, SERVICE_COST, SETUP_BONUS, SETUP_BONUS_CAP, SHOP_REFRESH_COST, STARTING_SCORE } from '../content/legs';
+import { computeCheckoutHints } from './checkout';
+import { discardHand, drawHand, takeFromHand } from './deck';
 import { WALL_CARD_ID } from './board';
 import { createRng, nextInt, pickWeighted, shuffle } from './rng';
-import { handSizeFor, resolveThrow, throwsPerVisitFor } from './resolver';
+import { handSizeFor, resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
 import { potReward } from './rules';
 import type {
   Chalk,
@@ -59,6 +60,8 @@ export function createNight(seed: number, oche: OcheId = 'local'): NightState {
       cleanLegs: 0,
       maxChalkHeld: 0,
       misses: 0,
+      setups: 0,
+      bestHeat: 0,
     },
     achievements: [],
     consecutiveBusts: 0,
@@ -104,6 +107,11 @@ export function handSize(n: NightState): number {
   return handSizeFor(n.chalk);
 }
 
+/** Cards dealt at the start of a visit, spent across its darts. */
+export function visitHandSize(n: NightState): number {
+  return visitHandSizeFor(n.chalk);
+}
+
 export function throwsPerVisit(n: NightState): number {
   return throwsPerVisitFor(n.chalk);
 }
@@ -126,6 +134,9 @@ export function beginLeg(n: NightState): EngineEvent[] {
     forgivenessUsed: false,
     status: 'ACTIVE',
     peek: [],
+    pocket: null,
+    heat: 0,
+    setupBonuses: 0,
   };
   n.legs.push(leg);
   n.phase = 'LEG';
@@ -143,10 +154,40 @@ function startVisit(n: NightState, leg: LegState): EngineEvent[] {
   return deal(n, leg);
 }
 
+/**
+ * One hand per VISIT, not per dart: the cards are a resource spent across the
+ * visit's throws, so taking the big number early is a real cost later.
+ */
 function deal(n: NightState, leg: LegState): EngineEvent[] {
   const visit = currentVisit(leg);
-  const hand = drawHand(leg, n.rng, handSize(n));
-  return [{ type: 'HAND_DEALT', hand: hand.slice(), visitIndex: visit.index, throwIndex: visit.throws.length }];
+  drawHand(leg, n.rng, visitHandSize(n));
+  // The pocketed card comes back out every visit until it is thrown: keeping
+  // it is what lets you plan a finish several visits ahead.
+  if (leg.pocket) leg.hand.push(leg.pocket);
+  return [{ type: 'HAND_DEALT', hand: leg.hand.slice(), visitIndex: visit.index, throwIndex: visit.throws.length }];
+}
+
+/**
+ * Set one card aside for a later visit. Free, but the pocket holds one card,
+ * so choosing what to keep is the decision. Returns false if it cannot be done.
+ */
+export function pocketCard(n: NightState, cardId: string): { ok: boolean; events: EngineEvent[] } {
+  if (n.status !== 'ACTIVE' || n.phase !== 'LEG') return { ok: false, events: [] };
+  const leg = currentLeg(n);
+  if (leg.status !== 'ACTIVE' || leg.pocket) return { ok: false, events: [] };
+  const i = leg.hand.findIndex((c) => c.id === cardId);
+  if (i < 0) return { ok: false, events: [] };
+  const card = leg.hand[i];
+  leg.pocket = card;
+  return { ok: true, events: [{ type: 'POCKETED', card }] };
+}
+
+/** Take the card back out of the pocket and leave it in the hand for this visit. */
+export function unpocketCard(n: NightState): boolean {
+  const leg = currentLeg(n);
+  if (!leg || !leg.pocket) return false;
+  leg.pocket = null;
+  return true;
 }
 
 /**
@@ -160,13 +201,14 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
   const visit = currentVisit(leg);
   const throwIndex = visit.throws.length as 0 | 1 | 2 | 3;
   let card: DartCard | null;
-  if (cardId === WALL_CARD_ID) {
-    // Deliberate miss: the whole hand is spent, the dart hits the wall.
-    discardHand(leg, hasChalk(n, 'practice_board'));
+  const missed = cardId === WALL_CARD_ID;
+  if (missed) {
+    // Deliberate miss: the dart goes into the wall and the visit ends there.
     card = { id: WALL_CARD_ID, defId: WALL_CARD_ID, target: { region: 'W' }, flight: 0 };
     n.stats.misses++;
   } else {
-    card = commitFromHand(leg, cardId, hasChalk(n, 'practice_board'));
+    card = takeFromHand(leg, cardId);
+    if (card && leg.pocket && leg.pocket.id === card.id) leg.pocket = null;
   }
   if (!card) throw new Error(`card ${cardId} not in hand`);
 
@@ -190,7 +232,9 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
 
   if (result.outcome === 'CHECKOUT') {
     visit.busted = false;
-    endVisit(n, leg, visit, events);
+    leg.heat = Math.min(HEAT_CAP, leg.heat + 1);
+    n.stats.bestHeat = Math.max(n.stats.bestHeat, leg.heat);
+    endVisit(n, leg, visit, events, false);
     leg.status = 'CHECKED_OUT';
     n.stats.legsWon++;
     n.consecutiveBusts = 0;
@@ -232,32 +276,55 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
     leg.bustsThisLeg++;
     n.stats.busts++;
     n.consecutiveBusts++;
-    endVisit(n, leg, visit, events);
-    if (leg.visits.length >= leg.visitLimit) {
-      timeOut(n, leg, events);
-    } else {
-      events.push(...startVisit(n, leg));
+    // A bust wipes the crowd: this is what makes the big score a gamble.
+    if (leg.heat > 0) {
+      events.push({ type: 'HEAT_LOST', from: leg.heat });
+      leg.heat = 0;
     }
+    endVisit(n, leg, visit, events, false);
+    if (leg.visits.length >= leg.visitLimit) timeOut(n, leg, events);
+    else events.push(...startVisit(n, leg));
     return { result, events };
   }
 
-  // CONTINUE
-  if (visit.throws.length >= perVisit) {
+  // CONTINUE — the visit ends when the darts run out, or on a deliberate miss.
+  if (missed || visit.throws.length >= perVisit) {
     n.consecutiveBusts = 0;
-    endVisit(n, leg, visit, events);
-    if (leg.visits.length >= leg.visitLimit) {
-      timeOut(n, leg, events);
-    } else {
-      events.push(...startVisit(n, leg));
-    }
-  } else {
-    events.push(...deal(n, leg));
+    // Heat only builds on a visit actually thrown out; walking away holds it.
+    if (!missed) leg.heat = Math.min(HEAT_CAP, leg.heat + 1);
+    n.stats.bestHeat = Math.max(n.stats.bestHeat, leg.heat);
+    awardSetupBonus(n, leg, events);
+    endVisit(n, leg, visit, events, missed);
+    if (leg.visits.length >= leg.visitLimit) timeOut(n, leg, events);
+    else events.push(...startVisit(n, leg));
   }
   return { result, events };
 }
 
-function endVisit(n: NightState, leg: LegState, visit: LegState['visits'][number], events: EngineEvent[]): void {
-  leg.hand = [];
+/**
+ * "Left it right": paid the moment a visit ends on a score the deck can
+ * actually finish. This is the tactical counterweight to heat — the biggest
+ * number is not always the one that leaves you somewhere useful.
+ */
+function awardSetupBonus(n: NightState, leg: LegState, events: EngineEvent[]): void {
+  if (leg.score <= 0 || leg.setupBonuses >= SETUP_BONUS_CAP) return;
+  let route = null;
+  try {
+    route = computeCheckoutHints(n, leg).best;
+  } catch {
+    route = null;
+  }
+  if (!route) return;
+  leg.setupBonuses += SETUP_BONUS;
+  n.stats.setups++;
+  events.push({ type: 'SETUP_BONUS', score: leg.score, pot: SETUP_BONUS });
+}
+
+function endVisit(n: NightState, leg: LegState, visit: LegState['visits'][number], events: EngineEvent[], missed: boolean): void {
+  // Unspent cards go back where the chalk says — except the pocketed one,
+  // which is being kept on purpose.
+  if (leg.pocket) leg.hand = leg.hand.filter((c) => c.id !== leg.pocket?.id);
+  discardHand(leg, hasChalk(n, 'practice_board'));
   const total = visitTotal(visit);
   if (!visit.busted) {
     n.stats.bestVisit = Math.max(n.stats.bestVisit, total);
@@ -265,7 +332,7 @@ function endVisit(n: NightState, leg: LegState, visit: LegState['visits'][number
       n.stats.oneEighties++;
     }
   }
-  events.push({ type: 'VISIT_END', visit, total, busted: visit.busted });
+  events.push({ type: 'VISIT_END', visit, total, busted: visit.busted, missed, heat: leg.heat });
   if (!visit.busted && total >= 180) events.push({ type: 'ONE_EIGHTY', total });
 }
 

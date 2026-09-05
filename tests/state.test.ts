@@ -1,31 +1,64 @@
 /**
  * The night state machine (TDD §2, §3.3, §3.4, §4, §4.1, §6.1, §9): library
- * per oche, legs and visit limits, dealing and the discard, bust, timeout,
+ * per oche, legs and visit limits, the per-visit hand and the discard, the
+ * pocket, the deliberate miss, heat and the setup bonus, bust, timeout,
  * checkout and the Pot breakdown, the shop, night end, achievements, stats.
  */
 import { describe, expect, it } from 'vitest';
-import { STARTING_LIBRARY, THIN_LIBRARY, cardCost, SHOP_CARD_POOL } from '../src/content/cards.ts';
+import { STARTING_LIBRARY, THIN_LIBRARY, cardCost, libraryFor, SHOP_CARD_POOL } from '../src/content/cards.ts';
 import { CHALK_DEFS, chalkDef } from '../src/content/chalkdefs.ts';
-import { LEGS, LEG_COUNT, SERVICE_COST, SHOP_REFRESH_COST, STARTING_SCORE } from '../src/content/legs.ts';
+import {
+  HEAT_CAP,
+  LEGS,
+  LEG_COUNT,
+  SERVICE_COST,
+  SETUP_BONUS,
+  SETUP_BONUS_CAP,
+  SHOP_REFRESH_COST,
+  STARTING_SCORE,
+} from '../src/content/legs.ts';
 import { OCHES } from '../src/content/oches.ts';
+import { WALL_CARD_ID } from '../src/core/board.ts';
+import { VISIT_HAND_SPARE } from '../src/core/resolver.ts';
+import { potReward } from '../src/core/rules.ts';
 import {
   generateShop,
   addChalk,
   beginLeg,
   cardPrice,
   commitCard,
+  commitMiss,
   createNight,
   currentLeg,
   currentVisit,
   hasChalk,
   legName,
+  pocketCard,
   shopBuy,
   shopLeave,
   shopRefresh,
+  throwsPerVisit,
+  unpocketCard,
+  visitHandSize,
   visitTotal,
 } from '../src/core/state.ts';
-import type { EngineEvent, NightState, OcheId, ShopSlot } from '../src/core/types.ts';
-import { composition, dealFromPool, eventTypes, play, playAll, setScore, startNight } from './helpers.ts';
+import type { EngineEvent, NightState, OcheId, PotBreakdown, ShopSlot } from '../src/core/types.ts';
+import {
+  baseOf,
+  composition,
+  dealFromPool,
+  eventTypes,
+  handDefIds,
+  handIds,
+  play,
+  playAll,
+  playHeld,
+  playPoolThenMiss,
+  playVisit,
+  poolIds,
+  setScore,
+  startNight,
+} from './helpers.ts';
 
 function expand(lib: [string, number][]): { defId: string }[] {
   const out: { defId: string }[] = [];
@@ -33,10 +66,47 @@ function expand(lib: [string, number][]): { defId: string }[] {
   return out;
 }
 
+/** How many copies of a def id a card list holds. */
+function countOf(cards: { defId: string }[], defId: string): number {
+  return cards.filter((c) => c.defId === defId).length;
+}
+
+/** Throw the first card in hand that is not `keepId` — for spending a visit around a pocketed card. */
+function throwOther(n: NightState, keepId: string): { events: EngineEvent[] } {
+  const card = currentLeg(n).hand.find((c) => c.id !== keepId);
+  if (!card) throw new Error('nothing else in hand');
+  return commitCard(n, card.id);
+}
+
 function ev<T extends EngineEvent['type']>(events: EngineEvent[], type: T): Extract<EngineEvent, { type: T }> {
   const e = events.find((x) => x.type === type);
   if (!e) throw new Error(`no ${type} in [${eventTypes(events)}]`);
   return e as Extract<EngineEvent, { type: T }>;
+}
+
+/** The parts of a Pot breakdown before the heat multiplier. */
+function subtotalOf(r: PotBreakdown): number {
+  return r.base + r.unusedVisits + r.bigFinish + r.cleanLeg + r.nineDarter + r.setup;
+}
+
+/** Every breakdown must add up: subtotal, then × (1 + heat/HEAT_CAP), floored. */
+function expectAddsUp(r: PotBreakdown): void {
+  expect(r.heat).toBeGreaterThanOrEqual(0);
+  expect(r.heat).toBeLessThanOrEqual(HEAT_CAP);
+  expect(r.heatBonus).toBe(Math.floor((subtotalOf(r) * r.heat) / HEAT_CAP));
+  expect(r.total).toBe(subtotalOf(r) + r.heatBonus);
+}
+
+/**
+ * The Pot for a leg checked out on its first visit with no bust and no setup
+ * bonus: base + every unused visit + the clean leg, warmed by the single visit
+ * of heat the finishing visit itself earns. Derived from LEGS so retuning the
+ * table cannot rot the expectation.
+ */
+function firstVisitPot(legIndex: number): number {
+  const def = LEGS[legIndex];
+  const subtotal = def.reward + (def.visitLimit - 1) + 3;
+  return subtotal + Math.floor(subtotal / HEAT_CAP);
 }
 
 /** A night in the shop after a one-visit D20 checkout from 40 on leg 1, with `pot` Pot. */
@@ -56,30 +126,39 @@ function setSlot(n: NightState, i: number, slot: ShopSlot): void {
 // ---------------------------------------------------------------- creation / oches
 
 describe('starting library per oche (TDD §6.1, §9.4)', () => {
-  it('The Local: the 24-card starting library (DECISIONS.md #45)', () => {
+  it('The Local: one card instance per copy in STARTING_LIBRARY (DECISIONS.md #45)', () => {
     const n = createNight(1, 'local');
+    // Derived from the table, not a frozen string: the list is a tuning knob.
+    expect(n.library).toHaveLength(expand(STARTING_LIBRARY).length);
     expect(n.library).toHaveLength(24);
     expect(composition(n.library)).toBe(composition(expand(STARTING_LIBRARY)));
-    expect(composition(n.library)).toBe('d1×1 d16×1 d2×1 d20×1 d4×1 d8×1 ob×1 s1×1 s12×2 s16×2 s18×2 s19×2 s20×3 s3×1 s5×1 s7×1 t19×1 t20×1');
+    // It has to be able to score and to finish: trebles, a ladder of doubles, a bull.
+    expect(n.library.some((c) => c.defId === 't20')).toBe(true);
+    expect(n.library.filter((c) => c.defId.startsWith('d')).length).toBeGreaterThanOrEqual(4);
+    expect(n.library.some((c) => c.defId === 'ib')).toBe(true);
   });
   it('the default oche is The Local', () => {
     const n = createNight(1);
     expect(n.oche).toBe('local');
     expect(composition(n.library)).toBe(composition(createNight(1, 'local').library));
   });
-  it('The Sharp: T18 and T17 replace the S1 (25 cards)', () => {
+  it('The Sharp: trebles in place of the weakest singles', () => {
     const n = createNight(1, 'sharp');
-    expect(n.library).toHaveLength(25);
+    const expected = expand(libraryFor('sharp'));
+    expect(n.library).toHaveLength(expected.length);
+    expect(composition(n.library)).toBe(composition(expected));
     const c = composition(n.library);
-    expect(c).not.toContain('s1×');
-    expect(c).toContain('t18×1');
-    expect(c).toContain('t17×1');
-    const expected = expand(STARTING_LIBRARY).filter((x) => x.defId !== 's1').concat([{ defId: 't18' }, { defId: 't17' }]);
-    expect(c).toBe(composition(expected));
+    expect(c).toContain('t18×');
+    expect(c).toContain('t17×');
+    const trebles = (lib: { defId: string }[]) => lib.filter((x) => x.defId.startsWith('t')).length;
+    const singles = (lib: { defId: string }[]) => lib.filter((x) => x.defId.startsWith('s')).length;
+    expect(trebles(n.library)).toBeGreaterThan(trebles(expand(STARTING_LIBRARY)));
+    expect(singles(n.library)).toBeLessThan(singles(expand(STARTING_LIBRARY)));
   });
-  it('The Thin: 12 cards', () => {
+  it('The Thin: a short library, every card comes round again', () => {
     const n = createNight(1, 'thin');
-    expect(n.library).toHaveLength(12);
+    expect(n.library).toHaveLength(expand(THIN_LIBRARY).length);
+    expect(n.library.length).toBeLessThan(createNight(1, 'local').library.length);
     expect(composition(n.library)).toBe(composition(expand(THIN_LIBRARY)));
     expect(n.library.some((c) => c.defId === 'd16')).toBe(true);
     expect(n.library.some((c) => c.defId === 'd20')).toBe(true);
@@ -90,7 +169,7 @@ describe('starting library per oche (TDD §6.1, §9.4)', () => {
     expect(hasChalk(n, 'forgiving_oche')).toBe(true);
     expect(n.chalk[0].order).toBe(1);
     expect(n.chalkSlots).toBe(5);
-    expect(n.library).toHaveLength(24);
+    expect(composition(n.library)).toBe(composition(createNight(1, 'local').library));
   });
   it('The Wide: 6 chalk slots and +2 on every card price', () => {
     const n = createNight(1, 'wide');
@@ -135,12 +214,21 @@ describe('starting library per oche (TDD §6.1, §9.4)', () => {
 // ---------------------------------------------------------------- legs
 
 describe('legs and visit limits (TDD §4)', () => {
-  it('the LEGS table is the TDD table', () => {
+  it('the LEGS table: eight named legs, tightening visit limits, rising rewards, nothing for the last', () => {
     expect(LEG_COUNT).toBe(8);
-    expect(LEGS.map((l) => l.visitLimit)).toEqual([12, 11, 10, 9, 8, 7, 6, 5]);
-    expect(LEGS.map((l) => l.reward)).toEqual([4, 6, 8, 9, 11, 13, 15, 0]);
+    expect(LEGS).toHaveLength(8);
     expect(LEGS.map((l) => l.name)).toEqual(['First Round', 'Second Round', 'Quarter', 'Interval', 'Semi', 'Last Four', 'Final', 'The Decider']);
     expect(STARTING_SCORE).toBe(501);
+    // The numbers themselves are tuning (they moved with the per-visit hand);
+    // what must hold is the shape: every leg is tighter and worth more than
+    // the last, and the win is its own reward on The Decider.
+    for (let i = 1; i < LEG_COUNT; i++) {
+      expect(LEGS[i].visitLimit, LEGS[i].name).toBeLessThanOrEqual(LEGS[i - 1].visitLimit);
+      if (i < LEG_COUNT - 1) expect(LEGS[i].reward, LEGS[i].name).toBeGreaterThan(LEGS[i - 1].reward);
+    }
+    expect(LEGS[LEG_COUNT - 1].visitLimit).toBeLessThan(LEGS[0].visitLimit);
+    expect(LEGS[LEG_COUNT - 1].reward).toBe(0);
+    for (const l of LEGS) expect(l.visitLimit).toBeGreaterThanOrEqual(3);
   });
   it.each([0, 1, 2, 3, 4, 5, 6, 7])('leg %i takes its visit limit and name from LEGS', (i) => {
     const n = createNight(1);
@@ -151,7 +239,7 @@ describe('legs and visit limits (TDD §4)', () => {
     expect(leg.visitLimit).toBe(LEGS[i].visitLimit);
     expect(legName(i)).toBe(LEGS[i].name);
   });
-  it('beginLeg: 501, one visit, a 3-card hand from a 24-card shuffled copy of the library', () => {
+  it('beginLeg: 501, one visit, one visit hand from a shuffled copy of the library, no heat and an empty pocket', () => {
     const n = createNight(5);
     const events = beginLeg(n);
     const leg = currentLeg(n);
@@ -164,12 +252,15 @@ describe('legs and visit limits (TDD §4)', () => {
     expect(leg.score).toBe(501);
     expect(leg.visits).toHaveLength(1);
     expect(leg.visits[0]).toMatchObject({ index: 0, scoreAtVisitStart: 501, throws: [], busted: false });
-    expect(leg.hand).toHaveLength(3);
-    expect(leg.deck).toHaveLength(21);
+    expect(leg.hand).toHaveLength(visitHandSize(n));
+    expect(leg.deck).toHaveLength(n.library.length - visitHandSize(n));
     expect(leg.discard).toEqual([]);
     expect(leg.status).toBe('ACTIVE');
     expect(leg.bustsThisLeg).toBe(0);
     expect(leg.forgivenessUsed).toBe(false);
+    expect(leg.pocket).toBeNull();
+    expect(leg.heat).toBe(0);
+    expect(leg.setupBonuses).toBe(0);
     expect(composition([...leg.deck, ...leg.hand])).toBe(composition(n.library));
     expect(new Set([...leg.deck, ...leg.hand].map((c) => c.id))).toEqual(new Set(n.library.map((c) => c.id)));
     expect(n.stats.visitsPlayed).toBe(1);
@@ -183,10 +274,22 @@ describe('legs and visit limits (TDD §4)', () => {
     card.target.bed = 1;
     expect(lib.target.bed).not.toBe(1);
   });
-  it('hand size follows DEAL chalk: wide_grip 4, tunnel_vision 2', () => {
-    expect(currentLeg(startNight(1, 'local', ['wide_grip'])).hand).toHaveLength(4);
-    expect(currentLeg(startNight(1, 'local', ['tunnel_vision'])).hand).toHaveLength(2);
-    expect(currentLeg(startNight(1, 'local', ['wide_grip', 'tunnel_vision'])).hand).toHaveLength(2);
+  it('the visit hand is throwsPerVisit + VISIT_HAND_SPARE, and DEAL chalk moves it', () => {
+    const n = startNight(1);
+    expect(VISIT_HAND_SPARE).toBe(2);
+    expect(throwsPerVisit(n)).toBe(3);
+    expect(visitHandSize(n)).toBe(throwsPerVisit(n) + VISIT_HAND_SPARE);
+    expect(currentLeg(n).hand).toHaveLength(5);
+    const dealt = (chalk: string[]) => currentLeg(startNight(1, 'local', chalk)).hand.length;
+    expect(dealt(['wide_grip'])).toBe(6);
+    expect(dealt(['tunnel_vision'])).toBe(4);
+    // Unlike the old per-dart hand these two no longer overrule each other: the
+    // extra card and the missing one cancel out.
+    expect(dealt(['wide_grip', 'tunnel_vision'])).toBe(5);
+    expect(dealt(['tunnel_vision', 'wide_grip'])).toBe(5);
+    // A fourth dart brings a fourth card with it, keeping the same spare.
+    expect(dealt(['fourth_dart'])).toBe(6);
+    expect(visitHandSize(startNight(1, 'local', ['fourth_dart']))).toBe(throwsPerVisit(startNight(1, 'local', ['fourth_dart'])) + VISIT_HAND_SPARE);
   });
   it('the deck is reshuffled at the start of each leg', () => {
     const n = startNight(9);
@@ -207,59 +310,144 @@ describe('legs and visit limits (TDD §4)', () => {
 
 // ---------------------------------------------------------------- dealing
 
-describe('dealing and the discard (TDD §3.3)', () => {
-  it('commit removes the card; the uncommitted cards go to the discard; a new hand is dealt', () => {
+describe('the per-visit hand and the discard (TDD §3.3)', () => {
+  it('commit takes only that card: the rest of the hand stays for the next dart and nothing is dealt', () => {
     const n = startNight(2);
     const leg = currentLeg(n);
-    const [a, b, c] = leg.hand;
+    const dealt = handIds(n);
+    const deckBefore = leg.deck.length;
+    const b = leg.hand[1];
     const { events } = commitCard(n, b.id);
-    expect(eventTypes(events)).toEqual(['THROW', 'HAND_DEALT']);
-    expect(ev(events, 'HAND_DEALT').throwIndex).toBe(1);
-    expect(leg.discard.map((x) => x.id).sort()).toEqual([a.id, b.id, c.id].sort());
-    expect(leg.hand).toHaveLength(3);
-    expect(leg.deck).toHaveLength(18);
-    expect(leg.hand.some((x) => x.id === b.id)).toBe(false);
-    expect(composition([...leg.deck, ...leg.hand, ...leg.discard])).toBe(composition(n.library));
+    // No HAND_DEALT: the hand is a visit-long resource, not a per-dart draw.
+    expect(eventTypes(events)).toEqual(['THROW']);
+    expect(handIds(n)).toEqual(dealt.filter((id) => id !== b.id));
+    expect(leg.hand).toHaveLength(visitHandSize(n) - 1);
+    expect(leg.discard.map((x) => x.id)).toEqual([b.id]);
+    expect(leg.deck).toHaveLength(deckBefore);
     expect(currentVisit(leg).throws[0].intent.card.id).toBe(b.id);
+    // the second dart comes out of the same hand
+    const c = leg.hand[0];
+    expect(eventTypes(commitCard(n, c.id).events)).toEqual(['THROW']);
+    expect(leg.hand).toHaveLength(visitHandSize(n) - 2);
+    expect(leg.deck).toHaveLength(deckBefore);
+    expect(leg.discard.map((x) => x.id)).toEqual([b.id, c.id]);
+    expect(composition([...leg.deck, ...leg.hand, ...leg.discard])).toBe(composition(n.library));
   });
-  it('practice_board: the uncommitted cards go under the deck in hand order; only the committed card is discarded', () => {
+  it('spending the big card early costs the later darts: the hand only shrinks', () => {
+    const n = startNight(2);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    const sizes: number[] = [leg.hand.length];
+    for (let i = 0; i < throwsPerVisit(n) - 1; i++) {
+      commitCard(n, leg.hand[0].id);
+      sizes.push(leg.hand.length);
+    }
+    expect(sizes).toEqual([visitHandSize(n), visitHandSize(n) - 1, visitHandSize(n) - 2]);
+    // the last dart is thrown from what is left: exactly VISIT_HAND_SPARE + 1 cards
+    expect(leg.hand).toHaveLength(VISIT_HAND_SPARE + 1);
+  });
+  it('the unspent cards are binned when the visit ends and one fresh hand is dealt', () => {
+    const n = startNight(2);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    const dealt = handIds(n);
+    const thrown: string[] = [];
+    let last: { events: EngineEvent[] } | null = null;
+    for (let i = 0; i < throwsPerVisit(n); i++) {
+      thrown.push(leg.hand[0].id);
+      last = commitCard(n, leg.hand[0].id);
+    }
+    const spare = dealt.filter((id) => !thrown.includes(id));
+    expect(spare).toHaveLength(VISIT_HAND_SPARE);
+    expect(eventTypes((last as { events: EngineEvent[] }).events)).toEqual(['THROW', 'VISIT_END', 'HAND_DEALT']);
+    // thrown and unspent alike: the whole hand is in the bin
+    expect(leg.discard.map((x) => x.id).sort()).toEqual([...dealt].sort());
+    expect(leg.visits).toHaveLength(2);
+    expect(leg.hand).toHaveLength(visitHandSize(n));
+    for (const id of dealt) expect(handIds(n)).not.toContain(id);
+    expect(composition([...leg.deck, ...leg.hand, ...leg.discard])).toBe(composition(n.library));
+  });
+  it('HAND_DEALT fires once per visit, not once per dart', () => {
+    const n = startNight(2);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    const events: EngineEvent[] = [];
+    for (let i = 0; i < throwsPerVisit(n) * 2; i++) events.push(...commitCard(n, leg.hand[0].id).events);
+    const dealt = events.filter((e) => e.type === 'HAND_DEALT') as Extract<EngineEvent, { type: 'HAND_DEALT' }>[];
+    expect(dealt).toHaveLength(2); // one at the end of each of the two visits
+    expect(dealt.map((e) => e.visitIndex)).toEqual([1, 2]);
+    expect(dealt.every((e) => e.throwIndex === 0)).toBe(true);
+    expect(dealt.every((e) => e.hand.length === visitHandSize(n))).toBe(true);
+    expect(leg.visits).toHaveLength(3);
+  });
+  it('practice_board: the unspent cards go under the deck in hand order at visit end; thrown cards are binned', () => {
     const n = startNight(2, 'local', ['practice_board']);
     const leg = currentLeg(n);
-    const [a, b, c] = leg.hand;
-    commitCard(n, a.id);
-    expect(leg.discard.map((x) => x.id)).toEqual([a.id]);
-    expect(leg.deck.slice(-2).map((x) => x.id)).toEqual([b.id, c.id]);
-    expect(leg.deck).toHaveLength(20);
-    expect(leg.hand).toHaveLength(3);
+    setScore(n, 100000);
+    const dealt = handIds(n);
+    const thrown: string[] = [];
+    for (let i = 0; i < throwsPerVisit(n) - 1; i++) {
+      thrown.push(leg.hand[0].id);
+      commitCard(n, leg.hand[0].id);
+    }
+    // mid-visit nothing has been routed anywhere yet but the thrown cards
+    expect(leg.discard.map((x) => x.id)).toEqual(thrown);
+    const spare = leg.hand.slice(1).map((c) => c.id);
+    thrown.push(leg.hand[0].id);
+    commitCard(n, leg.hand[0].id);
+    expect(leg.discard.map((x) => x.id)).toEqual(thrown);
+    expect(spare).toEqual(dealt.filter((id) => !thrown.includes(id)));
+    expect(leg.deck.slice(-VISIT_HAND_SPARE).map((x) => x.id)).toEqual(spare);
+    for (const id of spare) expect(handIds(n)).not.toContain(id);
+    // nothing is lost: the pool is still the library, only the routing differs
+    expect(leg.deck).toHaveLength(n.library.length - leg.hand.length - leg.discard.length);
+    expect(composition([...leg.deck, ...leg.hand, ...leg.discard])).toBe(composition(n.library));
   });
   it('the hand is dealt from the front of the deck', () => {
     const n = startNight(2);
     const leg = currentLeg(n);
-    const next = leg.deck.slice(0, 3).map((x) => x.id);
-    commitCard(n, leg.hand[0].id);
-    expect(leg.hand.map((x) => x.id)).toEqual(next);
+    setScore(n, 100000);
+    for (let i = 0; i < throwsPerVisit(n) - 1; i++) commitCard(n, leg.hand[0].id);
+    const next = leg.deck.slice(0, visitHandSize(n)).map((x) => x.id);
+    commitCard(n, leg.hand[0].id); // ends the visit and deals the next hand
+    expect(handIds(n)).toEqual(next);
   });
   it('the deck persists across visits and is reshuffled from the discard when it empties', () => {
     const n = startNight(2);
     const leg = currentLeg(n);
     setScore(n, 100000);
-    let sawEmpty = false;
+    const size = n.library.length;
+    let sawShort = false;
     let reshuffled = false;
     let prevDeck = leg.deck.length;
-    for (let i = 0; i < 12; i++) {
-      commitCard(n, leg.hand[0].id);
-      if (leg.status !== 'ACTIVE') break;
+    for (let v = 0; v < 6 && leg.status === 'ACTIVE'; v++) {
+      if (leg.deck.length < visitHandSize(n)) sawShort = true;
+      playVisit(n);
       const pool = [...leg.deck, ...leg.hand, ...leg.discard];
-      expect(pool).toHaveLength(24);
-      expect(new Set(pool.map((c) => c.id)).size).toBe(24);
+      expect(pool).toHaveLength(size);
+      expect(new Set(pool.map((c) => c.id)).size).toBe(size);
       if (leg.deck.length > prevDeck) reshuffled = true; // the discard came back
-      if (leg.deck.length < 3) sawEmpty = true;
       prevDeck = leg.deck.length;
     }
-    expect(sawEmpty).toBe(true);
+    expect(sawShort).toBe(true);
     expect(reshuffled).toBe(true);
-    // 8 throws × 3 cards = 24 dealt: the discard was shuffled in exactly when needed
-    expect(leg.deck.length + leg.hand.length + leg.discard.length).toBe(24);
+    expect(leg.deck.length + leg.hand.length + leg.discard.length).toBe(size);
+  });
+  it('a visit hand dealt from the pool is spent card by card across the visit', () => {
+    const n = startNight(26);
+    const leg = currentLeg(n);
+    const pool = poolIds(n);
+    setScore(n, 100);
+    dealFromPool(n, ['t20', 'd20', 's20']);
+    expect(handDefIds(n)).toEqual(['t20', 'd20', 's20']);
+    expect(poolIds(n)).toEqual(pool); // dealt from the deck, not conjured
+    playHeld(n, 't20');
+    expect(leg.score).toBe(40);
+    expect(handDefIds(n)).toEqual(['d20', 's20']);
+    expect(() => playHeld(n, 't20')).toThrow(); // spent, and there is no second one this visit
+    playHeld(n, 'd20');
+    expect(leg.status).toBe('CHECKED_OUT');
+    expect(leg.score).toBe(0);
   });
   it('committing a card that is not in the hand throws', () => {
     const n = startNight(2);
@@ -273,16 +461,198 @@ describe('dealing and the discard (TDD §3.3)', () => {
     play(n, 'd20');
     expect(currentLeg(n).hand).toEqual([]);
   });
-  it('a tiny library still deals what it has', () => {
-    const n = startNight(2, 'local', ['practice_board']);
+  it('a tiny pool still deals what it has', () => {
+    const n = startNight(2);
     const leg = currentLeg(n);
+    setScore(n, 100000);
+    // Two cards in the whole leg: the visit hand can only be as big as the pool.
     leg.deck = [];
     leg.discard = [];
     leg.hand = leg.hand.slice(0, 2);
-    setScore(n, 100000);
+    const ids = handIds(n).sort();
     commitCard(n, leg.hand[0].id);
+    commitCard(n, leg.hand[0].id);
+    commitMiss(n); // ends the visit, so a new hand is dealt from a two-card pool
     expect(leg.hand.length).toBeGreaterThanOrEqual(1);
-    expect(leg.hand.length).toBeLessThanOrEqual(3);
+    expect(leg.hand.length).toBeLessThanOrEqual(visitHandSize(n));
+    expect(leg.hand).toHaveLength(2);
+    expect(handIds(n).sort()).toEqual(ids);
+  });
+});
+
+// ---------------------------------------------------------------- the pocket
+
+describe('the pocket: one card kept for a later visit', () => {
+  it('pocketCard sets a card aside for free and says so; the card is still in the hand for this visit', () => {
+    const n = startNight(21);
+    const leg = currentLeg(n);
+    const card = leg.hand[2];
+    const { ok, events } = pocketCard(n, card.id);
+    expect(ok).toBe(true);
+    expect(eventTypes(events)).toEqual(['POCKETED']);
+    expect(ev(events, 'POCKETED').card).toBe(card);
+    expect(leg.pocket).toBe(card);
+    // free: no dart spent, nothing dealt, the hand is untouched
+    expect(currentVisit(leg).throws).toEqual([]);
+    expect(leg.hand).toHaveLength(visitHandSize(n));
+    expect(handIds(n)).toContain(card.id);
+    expect(poolIds(n)).toEqual(n.library.map((c) => c.id).sort());
+  });
+  it('the pocket holds one card: a second is refused, and unpocketCard hands it back', () => {
+    const n = startNight(21);
+    const leg = currentLeg(n);
+    const first = leg.hand[0];
+    const second = leg.hand[1];
+    expect(pocketCard(n, first.id).ok).toBe(true);
+    expect(pocketCard(n, second.id)).toEqual({ ok: false, events: [] });
+    expect(leg.pocket).toBe(first);
+    expect(unpocketCard(n)).toBe(true);
+    expect(leg.pocket).toBeNull();
+    expect(unpocketCard(n)).toBe(false);
+    // with the pocket empty the choice can be made again
+    expect(pocketCard(n, second.id).ok).toBe(true);
+    expect(leg.pocket).toBe(second);
+  });
+  it('only a card in the hand can be pocketed, and only during a leg', () => {
+    const n = startNight(21);
+    const leg = currentLeg(n);
+    expect(pocketCard(n, 'nope')).toEqual({ ok: false, events: [] });
+    expect(pocketCard(n, leg.deck[0].id)).toEqual({ ok: false, events: [] }); // in the deck, not the hand
+    expect(leg.pocket).toBeNull();
+    const shopping = inShop(21, 10);
+    expect(pocketCard(shopping, 'anything')).toEqual({ ok: false, events: [] });
+  });
+  it('the kept card is not binned at visit end: it comes back every visit, one card bigger', () => {
+    const n = startNight(21);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    const kept = leg.hand[leg.hand.length - 1];
+    pocketCard(n, kept.id);
+    let last: { events: EngineEvent[] } | null = null;
+    for (let i = 0; i < throwsPerVisit(n); i++) last = throwOther(n, kept.id);
+    // the rest of the hand went to the bin; the kept card did not
+    expect(leg.discard.some((c) => c.id === kept.id)).toBe(false);
+    expect(leg.deck.some((c) => c.id === kept.id)).toBe(false);
+    expect(leg.pocket).toBe(kept);
+    expect(handIds(n)).toContain(kept.id);
+    expect(leg.hand).toHaveLength(visitHandSize(n) + 1);
+    expect(leg.hand[leg.hand.length - 1]).toBe(kept);
+    expect(ev((last as { events: EngineEvent[] }).events, 'HAND_DEALT').hand.map((c) => c.id)).toContain(kept.id);
+    // and again the visit after that
+    for (let i = 0; i < throwsPerVisit(n); i++) throwOther(n, kept.id);
+    expect(leg.pocket).toBe(kept);
+    expect(leg.hand).toHaveLength(visitHandSize(n) + 1);
+    expect(poolIds(n)).toEqual(n.library.map((c) => c.id).sort());
+  });
+  it('throwing the kept card empties the pocket and the hand goes back to normal', () => {
+    const n = startNight(21);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    const kept = leg.hand[0];
+    pocketCard(n, kept.id);
+    commitCard(n, kept.id);
+    expect(leg.pocket).toBeNull();
+    expect(leg.discard.map((c) => c.id)).toContain(kept.id);
+    expect(handIds(n)).not.toContain(kept.id);
+    for (let i = 0; i < throwsPerVisit(n) - 1; i++) commitCard(n, leg.hand[0].id);
+    expect(leg.hand).toHaveLength(visitHandSize(n));
+  });
+  it('the pocket survives to the next visit but never into the next leg', () => {
+    const n = startNight(21);
+    const kept = currentLeg(n).hand[0];
+    expect(pocketCard(n, kept.id).ok).toBe(true);
+    setScore(n, 40);
+    play(n, 'd20');
+    expect(n.phase).toBe('SHOP');
+    shopLeave(n);
+    const next = currentLeg(n);
+    expect(next.index).toBe(1);
+    expect(next.pocket).toBeNull();
+    // a fresh deck, a normal-sized hand: nothing carried over but the library itself
+    expect(next.hand).toHaveLength(visitHandSize(n));
+    expect(next.deck).toHaveLength(n.library.length - visitHandSize(n));
+    // the pocket belongs to the leg that filled it
+    expect(n.legs[0].pocket).toBe(kept);
+  });
+});
+
+// ---------------------------------------------------------------- the deliberate miss
+
+describe('the deliberate miss: the wall ends the visit', () => {
+  it('commitMiss scores nothing and forfeits the rest of the visit', () => {
+    const n = startNight(22);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    const { result, events } = commitMiss(n);
+    expect(result.miss).toBe(true);
+    expect(result.totalValue).toBe(0);
+    expect(result.outcome).toBe('CONTINUE');
+    expect(result.firedChalk).toEqual([]);
+    expect(leg.score).toBe(100000);
+    expect(eventTypes(events)).toEqual(['THROW', 'VISIT_END', 'HAND_DEALT']);
+    const end = ev(events, 'VISIT_END');
+    expect(end.missed).toBe(true);
+    expect(end.busted).toBe(false);
+    expect(end.total).toBe(0);
+    expect(end.visit.throws).toHaveLength(1); // the other darts are gone
+    expect(leg.visits).toHaveLength(2);
+    expect(n.stats.misses).toBe(1);
+    expect(n.stats.throwsMade).toBe(1);
+  });
+  it('a miss after a scoring dart keeps what was scored and stops there', () => {
+    const n = startNight(22);
+    const leg = currentLeg(n);
+    setScore(n, 400);
+    play(n, 't20');
+    const { events } = commitMiss(n);
+    expect(leg.score).toBe(340);
+    expect(ev(events, 'VISIT_END').total).toBe(60);
+    expect(ev(events, 'VISIT_END').visit.throws).toHaveLength(2);
+    expect(leg.visits).toHaveLength(2);
+    expect(leg.visits[1].scoreAtVisitStart).toBe(340);
+  });
+  it('a miss cannot bust, however tight the score', () => {
+    const n = startNight(22);
+    const leg = currentLeg(n);
+    setScore(n, 1);
+    const { result, events } = commitMiss(n);
+    expect(result.outcome).toBe('CONTINUE');
+    expect(leg.score).toBe(1);
+    expect(leg.bustsThisLeg).toBe(0);
+    expect(n.stats.busts).toBe(0);
+    expect(ev(events, 'VISIT_END').busted).toBe(false);
+  });
+  it('commitCard with the wall card id is the same throw', () => {
+    const n = startNight(22);
+    setScore(n, 100000);
+    const { result } = commitCard(n, WALL_CARD_ID);
+    expect(result.miss).toBe(true);
+    expect(result.intent.card.defId).toBe(WALL_CARD_ID);
+    expect(currentLeg(n).visits).toHaveLength(2);
+    expect(n.stats.misses).toBe(1);
+  });
+  it('the unspent hand of a missed visit is binned like any other', () => {
+    const n = startNight(22);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    const dealt = handIds(n);
+    commitMiss(n);
+    expect(leg.discard.map((c) => c.id).sort()).toEqual([...dealt].sort());
+    expect(leg.hand).toHaveLength(visitHandSize(n));
+    for (const id of dealt) expect(handIds(n)).not.toContain(id);
+  });
+  it('a missed visit still counts against the visit limit', () => {
+    const n = startNight(22);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    for (let v = 0; v < LEGS[0].visitLimit; v++) {
+      expect(n.status).toBe('ACTIVE');
+      commitMiss(n);
+    }
+    expect(leg.visits).toHaveLength(LEGS[0].visitLimit);
+    expect(leg.status).toBe('TIMED_OUT');
+    expect(n.status).toBe('LOST');
+    expect(n.stats.misses).toBe(LEGS[0].visitLimit);
   });
 });
 
@@ -331,17 +701,18 @@ describe('bust (TDD §3.4)', () => {
       expect(currentLeg(n).score).toBe(score);
     }
   });
-  it('twelve busts on leg 1 use up the visit limit and lose the night', () => {
+  it('a bust every visit uses up the visit limit and loses the night', () => {
     const n = startNight(5);
     const leg = currentLeg(n);
+    const limit = LEGS[0].visitLimit;
     let last: { events: EngineEvent[] } | null = null;
-    for (let v = 0; v < 12; v++) {
+    for (let v = 0; v < limit; v++) {
       expect(leg.visits).toHaveLength(v + 1);
       setScore(n, 10);
       last = play(n, 't20');
     }
-    expect(leg.visits).toHaveLength(12);
-    expect(leg.bustsThisLeg).toBe(12);
+    expect(leg.visits).toHaveLength(limit);
+    expect(leg.bustsThisLeg).toBe(limit);
     expect(n.status).toBe('LOST');
     expect(eventTypes((last as { events: EngineEvent[] }).events)).toEqual(['THROW', 'VISIT_END', 'LEG_TIMEOUT', 'NIGHT_LOST']);
   });
@@ -355,7 +726,7 @@ describe('bust (TDD §3.4)', () => {
     expect(result.forgiven).toBe(true);
     expect(leg.forgivenessUsed).toBe(true);
     expect(leg.score).toBe(40);
-    expect(eventTypes(events)).toEqual(['THROW', 'HAND_DEALT']);
+    expect(eventTypes(events)).toEqual(['THROW']); // the visit carries on with the hand it has
     expect(leg.visits).toHaveLength(1);
     expect(currentVisit(leg).throws).toHaveLength(2);
     expect(n.stats.busts).toBe(0);
@@ -393,6 +764,174 @@ describe('bust (TDD §3.4)', () => {
   });
 });
 
+// ---------------------------------------------------------------- heat
+
+describe('heat: the crowd warms up, a bust wipes it', () => {
+  it('a visit thrown out without a bust is one heat, reported on VISIT_END', () => {
+    const n = startNight(23);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    expect(leg.heat).toBe(0);
+    const { events } = playVisit(n);
+    expect(ev(events, 'VISIT_END').heat).toBe(1);
+    expect(leg.heat).toBe(1);
+    expect(n.stats.bestHeat).toBe(1);
+  });
+  it('heat builds one per visit and stops at HEAT_CAP', () => {
+    const n = startNight(23);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    const seen: number[] = [];
+    for (let v = 0; v < HEAT_CAP + 2; v++) {
+      playVisit(n);
+      seen.push(leg.heat);
+    }
+    const climbing = Array.from({ length: HEAT_CAP }, (_, i) => i + 1);
+    expect(seen).toEqual([...climbing, HEAT_CAP, HEAT_CAP]);
+    expect(n.stats.bestHeat).toBe(HEAT_CAP);
+  });
+  it('a bust wipes the heat and says so with HEAT_LOST', () => {
+    const n = startNight(23);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    playVisit(n);
+    playVisit(n);
+    expect(leg.heat).toBe(2);
+    setScore(n, 10);
+    const { events } = play(n, 't20');
+    expect(eventTypes(events)).toEqual(['THROW', 'HEAT_LOST', 'VISIT_END', 'HAND_DEALT']);
+    expect(ev(events, 'HEAT_LOST').from).toBe(2);
+    expect(leg.heat).toBe(0);
+    expect(ev(events, 'VISIT_END').heat).toBe(0);
+    expect(n.stats.bestHeat).toBe(2); // the night remembers the best
+  });
+  it('a bust from cold has nothing to lose and says nothing', () => {
+    const n = startNight(23);
+    setScore(n, 10);
+    const { events } = play(n, 't20');
+    expect(eventTypes(events)).not.toContain('HEAT_LOST');
+    expect(currentLeg(n).heat).toBe(0);
+  });
+  it('walking away at the wall holds the heat where it is', () => {
+    const n = startNight(23);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    playVisit(n);
+    expect(leg.heat).toBe(1);
+    const { events } = commitMiss(n);
+    expect(ev(events, 'VISIT_END').missed).toBe(true);
+    expect(ev(events, 'VISIT_END').heat).toBe(1);
+    expect(leg.heat).toBe(1); // held, not raised
+    playVisit(n);
+    expect(leg.heat).toBe(2); // and it climbs again on a visit actually thrown out
+  });
+  it('heat multiplies the whole leg subtotal: ×2 at the cap', () => {
+    const n = startNight(23);
+    const leg = currentLeg(n);
+    setScore(n, 100000);
+    for (let v = 0; v < HEAT_CAP - 1; v++) playVisit(n);
+    expect(leg.heat).toBe(HEAT_CAP - 1);
+    setScore(n, 40);
+    play(n, 'd20'); // the finishing visit takes it to the cap
+    const r = currentLeg(n).reward as PotBreakdown;
+    expect(r.heat).toBe(HEAT_CAP);
+    expect(r.heatBonus).toBe(subtotalOf(r));
+    expect(r.total).toBe(subtotalOf(r) * 2);
+    expect(r.visitsUsed).toBe(HEAT_CAP);
+    expectAddsUp(r);
+    expect(r).toEqual(potReward(currentLeg(n)));
+    expect(n.pot).toBe(r.total);
+    expect(n.stats.bestHeat).toBe(HEAT_CAP);
+  });
+  it('every leg starts cold', () => {
+    const n = startNight(23);
+    setScore(n, 100000);
+    playVisit(n);
+    setScore(n, 40);
+    play(n, 'd20');
+    expect(currentLeg(n).heat).toBe(2);
+    shopLeave(n);
+    expect(currentLeg(n).heat).toBe(0);
+    expect(n.stats.bestHeat).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------- the setup bonus
+
+describe('the setup bonus: leaving it right', () => {
+  it('a visit that ends on a score the deck can still finish banks SETUP_BONUS', () => {
+    const n = startNight(24);
+    const leg = currentLeg(n);
+    setScore(n, 140);
+    const { events } = playPoolThenMiss(n, ['t20']); // leaves 80: D20, D20 finishes it
+    expect(leg.score).toBe(80);
+    const bonus = ev(events, 'SETUP_BONUS');
+    expect(bonus.score).toBe(80);
+    expect(bonus.pot).toBe(SETUP_BONUS);
+    expect(leg.setupBonuses).toBe(SETUP_BONUS);
+    expect(n.stats.setups).toBe(1);
+    // banked, not paid on the spot: the Pot only moves when the leg is won
+    expect(n.pot).toBe(0);
+    const types = eventTypes(events);
+    expect(types.indexOf('SETUP_BONUS')).toBeLessThan(types.indexOf('VISIT_END'));
+  });
+  it('nothing is banked when the score is out of reach', () => {
+    const n = startNight(24);
+    setScore(n, 400);
+    const { events } = playPoolThenMiss(n, ['t20']); // 340 finishes nothing
+    expect(currentLeg(n).score).toBe(340);
+    expect(eventTypes(events)).not.toContain('SETUP_BONUS');
+    expect(currentLeg(n).setupBonuses).toBe(0);
+    expect(n.stats.setups).toBe(0);
+  });
+  it('a busted visit banks nothing, even though the reverted score is finishable', () => {
+    const n = startNight(24);
+    const leg = currentLeg(n);
+    setScore(n, 40);
+    const { events } = play(n, 't20'); // bust: back to 40, which D20 would finish
+    expect(leg.score).toBe(40);
+    expect(eventTypes(events)).not.toContain('SETUP_BONUS');
+    expect(leg.setupBonuses).toBe(0);
+    expect(n.stats.setups).toBe(0);
+  });
+  it('the bonus is capped at SETUP_BONUS_CAP per leg', () => {
+    const n = startNight(24);
+    const leg = currentLeg(n);
+    const awards = SETUP_BONUS_CAP / SETUP_BONUS;
+    for (let v = 0; v < awards + 2; v++) {
+      setScore(n, 140);
+      playPoolThenMiss(n, ['t20']);
+    }
+    expect(leg.setupBonuses).toBe(SETUP_BONUS_CAP);
+    expect(n.stats.setups).toBe(awards);
+  });
+  it('the banked bonuses are paid inside the Pot at the checkout', () => {
+    const n = startNight(24);
+    const leg = currentLeg(n);
+    setScore(n, 140);
+    playPoolThenMiss(n, ['t20']); // banks one, leaves 80
+    expect(leg.setupBonuses).toBe(SETUP_BONUS);
+    playAll(n, ['d20', 'd20']); // 80 → 40 → 0
+    const r = currentLeg(n).reward as PotBreakdown;
+    expect(r.setup).toBe(SETUP_BONUS);
+    expect(r.visitsUsed).toBe(2);
+    expect(r.cleanLeg).toBe(3);
+    expectAddsUp(r);
+    expect(r).toEqual(potReward(currentLeg(n)));
+    expect(n.pot).toBe(r.total);
+    expect(n.stats.setups).toBe(1);
+    // the same leg without the setup is worth exactly SETUP_BONUS less, before heat
+    expect(subtotalOf(r) - SETUP_BONUS).toBe(r.base + r.unusedVisits + r.bigFinish + r.cleanLeg + r.nineDarter);
+  });
+  it('a leg won without ever leaving a finishable score pays no setup', () => {
+    const n = startNight(24);
+    setScore(n, 40);
+    play(n, 'd20');
+    expect((currentLeg(n).reward as PotBreakdown).setup).toBe(0);
+    expect(n.stats.setups).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------- timeout
 
 describe('timeout (TDD §9.1)', () => {
@@ -406,8 +945,8 @@ describe('timeout (TDD §9.1)', () => {
       throws++;
     }
     const leg = currentLeg(n);
-    expect(throws).toBe(36);
-    expect(leg.visits).toHaveLength(12);
+    expect(throws).toBe(LEGS[0].visitLimit * throwsPerVisit(n));
+    expect(leg.visits).toHaveLength(LEGS[0].visitLimit);
     expect(leg.status).toBe('TIMED_OUT');
     expect(n.status).toBe('LOST');
     expect(n.phase).toBe('OVER');
@@ -424,7 +963,7 @@ describe('timeout (TDD §9.1)', () => {
     beginLeg(n);
     setScore(n, 100000);
     while (n.status === 'ACTIVE') play(n, 's1');
-    expect(currentLeg(n).visits).toHaveLength(10);
+    expect(currentLeg(n).visits).toHaveLength(LEGS[2].visitLimit);
     expect(n.status).toBe('LOST');
     expect(n.stats.legsWon).toBe(0);
   });
@@ -432,8 +971,8 @@ describe('timeout (TDD §9.1)', () => {
     const n = startNight(6);
     const leg = currentLeg(n);
     setScore(n, 100000);
-    for (let i = 0; i < 33; i++) play(n, 's1');
-    expect(leg.visits).toHaveLength(12);
+    for (let i = 0; i < (LEGS[0].visitLimit - 1) * throwsPerVisit(n); i++) play(n, 's1');
+    expect(leg.visits).toHaveLength(LEGS[0].visitLimit);
     expect(n.status).toBe('ACTIVE');
     setScore(n, 40);
     play(n, 'd20');
@@ -445,7 +984,7 @@ describe('timeout (TDD §9.1)', () => {
 // ---------------------------------------------------------------- checkout and the pot
 
 describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
-  it('D20 from 40 on visit 1 of leg 1: CHECKED_OUT, pot 4 + 11 unused + 3 clean = 18, shop opens', () => {
+  it('D20 from 40 on visit 1 of leg 1: CHECKED_OUT, base + unused + clean, warmed by the finishing visit, shop opens', () => {
     const n = startNight(7);
     setScore(n, 40);
     const { result, events } = play(n, 'd20');
@@ -455,14 +994,29 @@ describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
     expect(leg.score).toBe(0);
     expect(eventTypes(events)).toEqual(['THROW', 'VISIT_END', 'CHECKOUT', 'ACHIEVEMENT', 'SHOP_OPEN']);
     expect(ev(events, 'VISIT_END').busted).toBe(false);
-    expect(leg.reward).toEqual({ base: 4, unusedVisits: 11, bigFinish: 0, cleanLeg: 3, nineDarter: 0, total: 18, checkoutFrom: 40, visitsUsed: 1 });
+    const subtotal = LEGS[0].reward + (LEGS[0].visitLimit - 1) + 3;
+    expect(leg.reward).toEqual({
+      base: LEGS[0].reward,
+      unusedVisits: LEGS[0].visitLimit - 1,
+      bigFinish: 0,
+      cleanLeg: 3,
+      nineDarter: 0,
+      setup: 0,
+      heat: 1, // the checkout visit itself is a visit ended without a bust
+      heatBonus: Math.floor(subtotal / HEAT_CAP),
+      total: firstVisitPot(0),
+      checkoutFrom: 40,
+      visitsUsed: 1,
+    });
+    expect(leg.reward).toEqual(potReward(leg));
+    expectAddsUp(leg.reward as PotBreakdown);
     expect(ev(events, 'CHECKOUT').reward).toEqual(leg.reward);
     expect(ev(events, 'CHECKOUT').legIndex).toBe(0);
-    expect(n.pot).toBe(18);
+    expect(n.pot).toBe(firstVisitPot(0));
     expect(n.phase).toBe('SHOP');
     expect(n.status).toBe('ACTIVE');
     expect(n.stats.legsWon).toBe(1);
-    expect(n.stats.potEarned).toBe(18);
+    expect(n.stats.potEarned).toBe(firstVisitPot(0));
     expect(n.stats.bestCheckout).toBe(40);
     expect(n.stats.cleanLegs).toBe(1);
     expect(n.stats.bigFinishes).toBe(0);
@@ -472,8 +1026,12 @@ describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
     setScore(n, 100);
     play(n, 't20');
     play(n, 'd20');
-    expect(currentLeg(n).reward).toMatchObject({ base: 4, unusedVisits: 11, bigFinish: 2, cleanLeg: 3, nineDarter: 0, total: 20, checkoutFrom: 100 });
-    expect(n.pot).toBe(20);
+    const reward = currentLeg(n).reward as PotBreakdown;
+    expect(reward).toMatchObject({ base: LEGS[0].reward, unusedVisits: LEGS[0].visitLimit - 1, bigFinish: 2, cleanLeg: 3, nineDarter: 0, heat: 1, checkoutFrom: 100 });
+    expectAddsUp(reward);
+    const sub = LEGS[0].reward + (LEGS[0].visitLimit - 1) + 2 + 3;
+    expect(reward.total).toBe(sub + Math.floor(sub / HEAT_CAP));
+    expect(n.pot).toBe(reward.total);
     expect(n.stats.bigFinishes).toBe(1);
   });
   it('checkoutFrom is the score at the start of the finishing visit, not the last dart', () => {
@@ -492,7 +1050,11 @@ describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
     play(n, 't20'); // bust, visit 1
     setScore(n, 40);
     play(n, 'd20'); // visit 2
-    expect(currentLeg(n).reward).toMatchObject({ base: 4, unusedVisits: 10, bigFinish: 0, cleanLeg: 0, nineDarter: 0, total: 14, visitsUsed: 2 });
+    const reward = currentLeg(n).reward as PotBreakdown;
+    expect(reward).toMatchObject({ base: LEGS[0].reward, unusedVisits: LEGS[0].visitLimit - 2, bigFinish: 0, cleanLeg: 0, nineDarter: 0, visitsUsed: 2 });
+    expectAddsUp(reward);
+    // the bust wiped the heat, so only the finishing visit is warm
+    expect(reward.heat).toBe(1);
     expect(n.stats.cleanLegs).toBe(0);
   });
   it('a nine-darter: 501 in three visits, +5, with two ONE_EIGHTY events on the way', () => {
@@ -505,12 +1067,25 @@ describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
     expect(currentLeg(n).score).toBe(141);
     const v3 = playAll(n, ['t20', 't19', 'd12']);
     expect(eventTypes(v3.events)).toEqual(['THROW', 'VISIT_END', 'CHECKOUT', 'ACHIEVEMENT', 'ACHIEVEMENT', 'SHOP_OPEN']);
-    expect(currentLeg(n).reward).toEqual({ base: 4, unusedVisits: 9, bigFinish: 2, cleanLeg: 3, nineDarter: 5, total: 23, checkoutFrom: 141, visitsUsed: 3 });
-    expect(n.pot).toBe(23);
+    const reward = currentLeg(n).reward as PotBreakdown;
+    expect(reward).toMatchObject({
+      base: LEGS[0].reward,
+      unusedVisits: LEGS[0].visitLimit - 3,
+      bigFinish: 2,
+      cleanLeg: 3,
+      nineDarter: 5,
+      setup: 0,
+      heat: 3, // three visits, none of them busted
+      checkoutFrom: 141,
+      visitsUsed: 3,
+    });
+    expectAddsUp(reward);
+    expect(n.pot).toBe(reward.total);
     expect(n.stats.nineDarters).toBe(1);
     expect(n.stats.oneEighties).toBe(2);
     expect(n.stats.bestVisit).toBe(180);
     expect(n.stats.throwsMade).toBe(9);
+    expect(n.stats.bestHeat).toBe(3);
   });
   it.each([0, 1, 2, 3, 4, 5, 6])('leg %i: base reward from LEGS plus one unused visit per visit not used', (i) => {
     const n = createNight(9);
@@ -518,8 +1093,10 @@ describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
     beginLeg(n);
     setScore(n, 40);
     play(n, 'd20');
-    expect(currentLeg(n).reward).toMatchObject({ base: LEGS[i].reward, unusedVisits: LEGS[i].visitLimit - 1, cleanLeg: 3, total: LEGS[i].reward + LEGS[i].visitLimit - 1 + 3 });
-    expect(n.pot).toBe(LEGS[i].reward + LEGS[i].visitLimit - 1 + 3);
+    const reward = currentLeg(n).reward as PotBreakdown;
+    expect(reward).toMatchObject({ base: LEGS[i].reward, unusedVisits: LEGS[i].visitLimit - 1, cleanLeg: 3, total: firstVisitPot(i) });
+    expectAddsUp(reward);
+    expect(n.pot).toBe(firstVisitPot(i));
   });
   it('the bull checks out from 50', () => {
     const n = startNight(7);
@@ -531,12 +1108,15 @@ describe('checkout (TDD §9.2) and the Pot (TDD §4)', () => {
     const n = startNight(7);
     setScore(n, 40);
     play(n, 'd20');
+    expect(n.pot).toBe(firstVisitPot(0));
     shopLeave(n);
     setScore(n, 40);
     play(n, 'd20');
-    expect(n.pot).toBe(18 + (6 + 10 + 3));
+    expect(n.pot).toBe(firstVisitPot(0) + firstVisitPot(1));
     expect(n.stats.legsWon).toBe(2);
     expect(n.legs).toHaveLength(2);
+    // heat is a leg's own crowd: leg 2 started cold
+    expect(n.legs[1].reward?.heat).toBe(1);
   });
 });
 
@@ -580,27 +1160,24 @@ describe('the shop (TDD §4.1)', () => {
     const n = inShop(11, 50);
     const slot = (n.shop as NonNullable<NightState['shop']>).slots[0];
     if (slot.kind !== 'CARD') throw new Error('slot 0 is a card');
-    const before = composition(n.library);
+    const before = n.library.map((c) => ({ defId: c.defId }));
     const out = shopBuy(n, 0);
     expect(out.ok).toBe(true);
     expect(eventTypes(out.events)).toEqual(['SHOP_BUY']);
     expect(ev(out.events, 'SHOP_BUY').slot).toBe(slot);
     expect(slot.sold).toBe(true);
-    expect(n.library).toHaveLength(25);
-    expect(composition(n.library)).toBe(composition([...before.split(' ').flatMap((x) => {
-      const [d, k] = x.split('×');
-      return new Array(Number(k)).fill({ defId: d }) as { defId: string }[];
-    }), { defId: slot.defId }]));
+    expect(n.library).toHaveLength(before.length + 1);
+    expect(composition(n.library)).toBe(composition([...before, { defId: slot.defId }]));
     expect(n.pot).toBe(50 - slot.cost);
     expect(n.stats.potSpent).toBe(slot.cost);
     expect(n.stats.cardsBought).toBe(1);
-    expect(new Set(n.library.map((c) => c.id)).size).toBe(25);
+    expect(new Set(n.library.map((c) => c.id)).size).toBe(before.length + 1);
   });
   it('cannot buy without enough pot; the library and pot are untouched', () => {
     const n = inShop(11, 0);
     const out = shopBuy(n, 0);
     expect(out).toEqual({ ok: false, reason: 'not enough pot', events: [] });
-    expect(n.library).toHaveLength(24);
+    expect(n.library).toHaveLength(createNight(11).library.length);
     expect(n.pot).toBe(0);
     expect((n.shop as NonNullable<NightState['shop']>).slots[0].sold).toBe(false);
   });
@@ -659,15 +1236,18 @@ describe('the shop (TDD §4.1)', () => {
   it('REMOVE takes a chosen card out of the library for 2', () => {
     const n = inShop(11, 50);
     setSlot(n, 3, { kind: 'SERVICE', service: 'REMOVE', cost: SERVICE_COST.REMOVE, sold: false });
-    const s1 = n.library.find((c) => c.defId === 's1') as NonNullable<(typeof n.library)[number]>;
+    const before = n.library.length;
+    // the filler you buy your way out of: the weakest single in the library
+    const victim = n.library.filter((c) => c.defId.startsWith('s')).sort((a, b) => baseOf(a.defId) - baseOf(b.defId))[0];
+    const held = countOf(n.library, victim.defId);
     expect(shopBuy(n, 3)).toMatchObject({ ok: false, reason: 'choose a card' });
     expect(shopBuy(n, 3, { cardId: 'nope' })).toMatchObject({ ok: false, reason: 'choose a card' });
-    const out = shopBuy(n, 3, { cardId: s1.id });
+    const out = shopBuy(n, 3, { cardId: victim.id });
     expect(out.ok).toBe(true);
-    expect(n.library).toHaveLength(23);
-    expect(n.library.some((c) => c.id === s1.id)).toBe(false);
-    expect(composition(n.library)).not.toContain('s1×');
-    expect(n.pot).toBe(48);
+    expect(n.library).toHaveLength(before - 1);
+    expect(n.library.some((c) => c.id === victim.id)).toBe(false);
+    expect(countOf(n.library, victim.defId)).toBe(held - 1);
+    expect(n.pot).toBe(50 - SERVICE_COST.REMOVE);
   });
   it('REMOVE refuses to shrink the library below 7 cards (engine choice)', () => {
     const n = inShop(11, 50);
@@ -679,12 +1259,14 @@ describe('the shop (TDD §4.1)', () => {
   it('DUPLICATE adds a fresh copy of a chosen card for 4', () => {
     const n = inShop(11, 50);
     setSlot(n, 3, { kind: 'SERVICE', service: 'DUPLICATE', cost: SERVICE_COST.DUPLICATE, sold: false });
+    const before = n.library.length;
+    const held = countOf(n.library, 't20');
     const t20 = n.library.find((c) => c.defId === 't20') as NonNullable<(typeof n.library)[number]>;
     expect(shopBuy(n, 3, { cardId: t20.id }).ok).toBe(true);
-    expect(n.library).toHaveLength(25);
-    expect(composition(n.library)).toContain('t20×2');
-    expect(new Set(n.library.map((c) => c.id)).size).toBe(25);
-    expect(n.pot).toBe(46);
+    expect(n.library).toHaveLength(before + 1);
+    expect(countOf(n.library, 't20')).toBe(held + 1);
+    expect(new Set(n.library.map((c) => c.id)).size).toBe(before + 1);
+    expect(n.pot).toBe(50 - SERVICE_COST.DUPLICATE);
   });
   it('SHARPEN upgrades S → T → D and then refuses; OB → IB; IB and D refused; costs 5 only when it works', () => {
     const n = inShop(11, 50);
@@ -714,16 +1296,17 @@ describe('the shop (TDD §4.1)', () => {
     slot.sold = false;
     expect(shopBuy(n, 3, { cardId: ob.id })).toMatchObject({ ok: false, reason: 'cannot sharpen' });
     expect(n.pot).toBe(35);
-    expect(n.library).toHaveLength(24);
+    expect(n.library).toHaveLength(createNight(11).library.length); // sharpening never changes the count
   });
   it('a sharpened card carries into the next leg', () => {
     const n = inShop(11, 50);
     setSlot(n, 3, { kind: 'SERVICE', service: 'SHARPEN', cost: 5, sold: false });
+    const trebles = countOf(n.library, 't19');
     const s19 = n.library.find((c) => c.defId === 's19') as NonNullable<(typeof n.library)[number]>;
     shopBuy(n, 3, { cardId: s19.id });
     shopLeave(n);
     expect(composition([...currentLeg(n).deck, ...currentLeg(n).hand])).toBe(composition(n.library));
-    expect(composition(n.library)).toContain('t19×2');
+    expect(countOf(n.library, 't19')).toBe(trebles + 1);
   });
   it('refresh: once per shop, for 1 pot, regenerates every slot', () => {
     const n = inShop(11, 50);
@@ -767,10 +1350,11 @@ describe('the shop (TDD §4.1)', () => {
     expect(n.shop).toBeNull();
     const leg = currentLeg(n);
     expect(leg.index).toBe(1);
-    expect(leg.visitLimit).toBe(11);
+    expect(leg.visitLimit).toBe(LEGS[1].visitLimit);
     expect(leg.score).toBe(501);
+    expect(leg.hand).toHaveLength(visitHandSize(n));
     expect(composition([...leg.deck, ...leg.hand])).toBe(composition(n.library));
-    expect(leg.deck.length + leg.hand.length).toBe(25);
+    expect(leg.deck.length + leg.hand.length).toBe(n.library.length);
   });
   it('shopLeave outside the shop throws', () => {
     expect(() => shopLeave(startNight(11))).toThrow();
@@ -784,7 +1368,7 @@ describe('night end (TDD §9.3)', () => {
     const n = createNight(13);
     n.legIndex = 7;
     beginLeg(n);
-    expect(currentLeg(n).visitLimit).toBe(5);
+    expect(currentLeg(n).visitLimit).toBe(LEGS[7].visitLimit);
     setScore(n, 40);
     const { events } = play(n, 'd20');
     expect(eventTypes(events)).toEqual(['THROW', 'VISIT_END', 'CHECKOUT', 'ACHIEVEMENT', 'ACHIEVEMENT', 'NIGHT_WON']);
@@ -826,9 +1410,10 @@ describe('night end (TDD §9.3)', () => {
     expect(n.status).toBe('WON');
     expect(n.legs).toHaveLength(8);
     expect(n.stats.legsWon).toBe(8);
-    // every leg checked out on visit 1: base + (limit - 1) unused + 3 clean
-    const expectedPot = LEGS.slice(0, 7).reduce((a, d) => a + d.reward + (d.visitLimit - 1) + 3, 0);
+    // every leg checked out on visit 1: (base + unused + clean) × the one visit of heat
+    const expectedPot = LEGS.slice(0, 7).reduce((a, _d, i) => a + firstVisitPot(i), 0);
     expect(n.pot).toBe(expectedPot);
+    expect(n.stats.bestHeat).toBe(1);
   });
 });
 
@@ -866,7 +1451,7 @@ describe('achievements (TDD §9.4 unlock conditions)', () => {
     setScore(seven, 40);
     play(seven, 'd20');
     expect(seven.achievements).not.toContain('thin');
-    expect(currentLeg(seven).reward?.unusedVisits).toBe(5);
+    expect(currentLeg(seven).reward?.unusedVisits).toBe(LEGS[0].visitLimit - 7);
   });
   it('wide: holding 5 chalk at once, awarded on the shop purchase of the fifth', () => {
     const n = inShop(15, 50);
@@ -1004,27 +1589,30 @@ describe('stats counters and commentary state', () => {
     expect(leg.peek).toHaveLength(3);
     const pool = [...leg.hand, ...leg.deck];
     for (const id of leg.peek) expect(pool.some((c) => c.id === id)).toBe(true);
-    // the engine peeks before dealing: with a 3-card hand the peek is the hand about to be dealt
-    expect(leg.peek).toEqual(leg.hand.map((c) => c.id));
+    // The engine peeks before dealing, and the visit hand is dealt off the top,
+    // so the peek is the first three cards of the hand about to be dealt.
+    expect(leg.peek).toEqual(handIds(n).slice(0, 3));
     const first = leg.peek.slice();
     setScore(n, 100000);
-    // A fresh hand is dealt for every throw, so commit whatever is in hand each time.
-    for (let i = 0; i < 3; i++) commitCard(n, leg.hand[0].id);
+    // One hand covers the visit: throw from it until the visit ends.
+    playVisit(n);
     expect(leg.visits).toHaveLength(2);
     expect(leg.peek).toHaveLength(3);
     expect(leg.peek).not.toEqual(first);
-    expect(leg.peek).toEqual(leg.hand.map((c) => c.id));
+    expect(leg.peek).toEqual(handIds(n).slice(0, 3));
   });
   it('without chalked_up the peek is empty', () => {
     expect(currentLeg(startNight(16)).peek).toEqual([]);
   });
   it('pot earned and spent are tracked separately', () => {
-    const n = inShop(16, 18);
-    expect(n.stats.potEarned).toBe(18);
+    const n = inShop(16, firstVisitPot(0));
+    expect(n.stats.potEarned).toBe(firstVisitPot(0));
+    expect(n.stats.potSpent).toBe(0);
     setSlot(n, 0, { kind: 'CARD', defId: 't20', cost: 6, sold: false });
     shopBuy(n, 0);
     shopRefresh(n);
-    expect(n.stats.potSpent).toBe(7);
-    expect(n.pot).toBe(11);
+    expect(n.stats.potSpent).toBe(6 + SHOP_REFRESH_COST);
+    expect(n.pot).toBe(firstVisitPot(0) - 6 - SHOP_REFRESH_COST);
+    expect(n.stats.potEarned).toBe(firstVisitPot(0));
   });
 });

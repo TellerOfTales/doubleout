@@ -115,6 +115,9 @@ const EMPTY_LEG: LegState = {
   forgivenessUsed: false,
   status: 'ACTIVE',
   peek: [],
+  pocket: null,
+  heat: 0,
+  setupBonuses: 0,
 };
 
 export function buildBarkContext(night: NightState, event: BarkContext['event'], throwResult?: ThrowResult): BarkContext {

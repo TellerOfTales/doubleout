@@ -19,9 +19,11 @@ type Stage =
   | 'welcome'
   | 'cards'
   | 'throw1'
-  | 'after1'
+  | 'leaves'
+  | 'keep'
   | 'throw2'
   | 'throw3'
+  | 'heat'
   | 'finish_intro'
   | 'throw_t20'
   | 'decide'
@@ -274,6 +276,11 @@ class Tutorial {
     return { x: l.board.x - 2, y: l.board.y - 2, w: l.board.w + 4, h: l.board.h + 4 };
   }
 
+  private heatRect(): Rect {
+    const l = (this.game as GameScreen).layout;
+    return l.orientation === 'landscape' ? { x: l.score.x + l.score.w - 62, y: l.scoreLabel.y - 2, w: 62, h: 11 } : { x: l.w - 66, y: 130, w: 62, h: 11 };
+  }
+
   private chalkRect(): Rect {
     const l = (this.game as GameScreen).layout;
     return { x: l.chalkStrip.x, y: l.chalkStrip.y, w: 70, h: 24 };
@@ -309,8 +316,8 @@ class Tutorial {
     screen.hand.locked = true;
     switch (this.stage) {
       case 'welcome': {
-        this.setHand(['t20', 's5', 's1']);
-        this.arrangeNext(['s20', 't19', 's7']);
+        this.setHand(['t20', 's5', 's1', 's20']);
+        this.arrangeNext(['s20', 't19', 's7', 's12']);
         this.say({
           text: 'Welcome to the oche. This is your score. Get it from 501 to exactly zero. The last dart has to land on a DOUBLE.',
           target: () => this.scoreRect(),
@@ -319,17 +326,14 @@ class Tutorial {
         });
         break;
       }
-      case 'throw2': {
-        // Hand for throw 2 is already dealt by the engine (arranged earlier).
-        this.arrangeNext(['s19', 's12', 's3']);
+      case 'leaves': {
         this.say({
-          text: 'Sixty off. Three darts make a VISIT, and every leg gives you a limited number of visits: the pips up top. Throw the next two darts. Any card you like.',
-          target: () => this.pipsRect(),
-          button: 'GO',
+          text: 'Sixty off, and three cards left for two darts. The number under each card is what it LEAVES you. Green means you could finish from there. Red means a dead end your deck cannot close.',
+          target: () => this.handRect(),
+          button: 'NEXT',
           onNext: () => {
-            this.stage = 'throw2';
-            this.say({ text: 'Throw two more darts. Any card.', target: () => this.handRect() });
-            this.unlock(null);
+            this.stage = 'keep';
+            this.onReady(this.game as GameScreen);
           },
         });
         break;
@@ -339,11 +343,36 @@ class Tutorial {
         this.unlock(null);
         break;
       }
+      case 'keep': {
+        this.say({
+          text: 'One more thing. Pick a card and hit KEEP: it goes in your pocket and comes back every visit until you throw it. That is how you have the right double ready when you get down to it.',
+          target: () => (this.game as GameScreen).layout.pocket,
+          button: 'GOT IT',
+          onNext: () => {
+            this.stage = 'throw2';
+            this.say({ text: 'Two darts left. Any card you like.', target: () => this.handRect() });
+            this.unlock(null);
+          },
+        });
+        break;
+      }
+      case 'heat': {
+        this.say({
+          text: 'Visit over, and the crowd warmed up: four visits without a bust and this leg pays DOUBLE. A single bust wipes it back to nothing. That is the gamble.',
+          target: () => this.heatRect(),
+          button: 'NEXT',
+          onNext: () => {
+            this.stage = 'finish_intro';
+            this.onReady(this.game as GameScreen);
+          },
+        });
+        break;
+      }
       case 'finish_intro': {
         // New visit: jump to 100 and teach the finish.
         this.setScore(100);
-        this.setHand(['t20', 'd20', 's1']);
-        this.arrangeNext(['d20', 't20', 's20']);
+        this.setHand(['t20', 'd20', 's1', 's5']);
+        this.arrangeNext(['d20', 't20', 's20', 's1']);
         this.say({
           text: "Let's jump ahead: 100 left. The chalkboard suggests a route: T20 leaves 40, then D20 finishes. A double is the thin outer ring of the board.",
           target: () => this.checkoutRect(),
@@ -370,14 +399,14 @@ class Tutorial {
         break;
       }
       case 'busted': {
-        this.setHand(['d20', 't20', 's20']);
+        this.setHand(['d20', 't20', 's20', 's1']);
         this.say({
           text: 'BUST. Too many: the score went straight back to 40 and that visit is gone. Nothing else is lost.',
           target: () => this.scoreRect(),
           button: 'NEXT',
           onNext: () => {
             this.say({
-              text: 'When every card would bust, hit MISS: the dart goes into the wall on purpose. No score, no bust. It costs you the dart and the hand. Real players do this.',
+              text: 'When every card would bust, hit MISS: the dart goes into the wall on purpose. Your score survives, but the visit ends there. Real players do this. It is not free.',
               target: () => (this.game as GameScreen).layout.miss,
               button: 'GOT IT',
               onNext: () => {
@@ -391,7 +420,7 @@ class Tutorial {
         break;
       }
       case 'twenty': {
-        this.setHand(['d10', 's5', 's1']);
+        this.setHand(['d10', 's5', 's1', 's3']);
         this.say({
           text: '20 left. No card for 20 on a double in your deck… so we have slipped you a D10. In a real night you buy those in the shop.',
           target: () => this.cardRect('d10'),
@@ -405,7 +434,7 @@ class Tutorial {
         break;
       }
       case 'leg2': {
-        this.setHand(['t20', 's20', 's5']);
+        this.setHand(['t20', 's20', 's5', 's1']);
         this.say({
           text: `Leg 2. You hold ${hasChalk(this.night, 'hot_twenty') ? 'HOT TWENTY' : 'chalk'}: trebles in the 20 bed score x4. Chalk fires by itself. Throw the T20 and watch the chain.`,
           target: () => this.chalkRect(),
@@ -435,13 +464,13 @@ class Tutorial {
   private gotoCards(): void {
     this.stage = 'cards';
     this.say({
-      text: "You never aim. For every dart you're dealt three cards, and each card is a spot on the board. T20 is treble twenty: sixty. The other two go in the bin.",
+      text: 'You never aim. A VISIT is three darts, and you get FIVE cards to spend on them. Spend the big one now and you throw whatever is left. Spare cards are binned when the visit ends.',
       target: () => this.handRect(),
       button: 'NEXT',
       onNext: () => {
         this.stage = 'throw1';
         this.say({
-          text: this.app.input.isTouch ? 'Flick the T20 card up at the board.' : 'Flick the T20 card up at the board, or click it twice.',
+          text: this.app.input.isTouch ? 'T20 is treble twenty: sixty. Flick it up at the board.' : 'T20 is treble twenty: sixty. Flick it up at the board, or click it twice.',
           target: () => this.cardRect('t20'),
         });
         this.unlock(['t20']);
@@ -459,14 +488,13 @@ class Tutorial {
     switch (e.type) {
       case 'THROW': {
         if (this.stage === 'throw1') {
-          this.stage = 'throw2';
-          this.prompt = null;
-          this.buildButtons();
+          this.stage = 'leaves';
+          this.onReady(screen);
         } else if (this.stage === 'throw2') {
           this.stage = 'throw3';
-          this.prompt = null;
+          this.onReady(screen);
         } else if (this.stage === 'throw3') {
-          this.stage = 'finish_intro';
+          this.stage = 'heat';
           this.prompt = null;
         } else if (this.stage === 'throw_t20') {
           this.stage = 'decide';
@@ -488,6 +516,10 @@ class Tutorial {
         }
         break;
       }
+      case 'VISIT_END':
+        // The heat lesson lands once the first full visit is thrown out.
+        if (this.stage === 'heat') this.onReady(screen);
+        break;
       case 'HAND_DEALT':
         // onReady follows and sets up the next step.
         break;

@@ -13,6 +13,7 @@ import {
   addChalk,
   beginLeg,
   commitCard,
+  commitMiss,
   createNight,
   currentLeg,
   currentVisit,
@@ -111,7 +112,11 @@ export function startNight(seed = 1, oche: OcheId = 'local', chalk: string[] = [
   return n;
 }
 
-/** Replace the current hand with fresh cards of the given def ids (bypasses the deck). */
+/**
+ * Replace the visit's hand with fresh cards of the given def ids (bypasses the
+ * deck). One hand now covers a whole visit, so this is the hand the remaining
+ * darts of this visit are thrown from.
+ */
 export function forceHand(n: NightState, defIds: string[]): DartCard[] {
   const leg = currentLeg(n);
   leg.hand = defIds.map((d) => newCard(n, d));
@@ -119,9 +124,11 @@ export function forceHand(n: NightState, defIds: string[]): DartCard[] {
 }
 
 /**
- * Put the current hand back on top of the deck, then pull one card per def id
- * out of the leg pool (deck first, then discard) into the hand. Unlike
- * forceHand this keeps the leg pool intact. Throws if a def id is not held.
+ * Set up the whole VISIT hand from the leg pool: the current hand goes back on
+ * top of the deck, then one card per def id is pulled out of the pool (deck
+ * first, then discard) into the hand. Unlike forceHand this keeps the leg pool
+ * intact, so the deck/discard bookkeeping stays honest. Throws if a def id is
+ * not held.
  */
 export function dealFromPool(n: NightState, defIds: string[]): DartCard[] {
   const leg = currentLeg(n);
@@ -151,18 +158,79 @@ export function setScore(n: NightState, score: number): void {
   if (v.throws.length === 0) v.scoreAtVisitStart = score;
 }
 
-/** Force a one-card hand of `defId` and commit it. */
+/**
+ * Force a one-card hand of `defId` and commit it: the scripted way to throw an
+ * exact card. The rest of the visit's hand is replaced, so use `playHeld` when
+ * the point of the test is the hand the engine actually dealt.
+ */
 export function play(n: NightState, defId: string): { result: ThrowResult; events: EngineEvent[] } {
   const [c] = forceHand(n, [defId]);
   return commitCard(n, c.id);
 }
 
-/** Force and commit a sequence of cards; returns the last commit's output. */
+/** Force and commit a sequence of cards, one per dart; returns the last commit's output. */
 export function playAll(n: NightState, defIds: string[]): { result: ThrowResult; events: EngineEvent[] } {
   let last: { result: ThrowResult; events: EngineEvent[] } | null = null;
   for (const d of defIds) last = play(n, d);
   if (!last) throw new Error('nothing played');
   return last;
+}
+
+/** Commit the first card in the dealt hand with this def id, leaving the rest of the hand alone. */
+export function playHeld(n: NightState, defId: string): { result: ThrowResult; events: EngineEvent[] } {
+  const leg = currentLeg(n);
+  const card = leg.hand.find((c) => c.defId === defId);
+  if (!card) throw new Error(`no ${defId} in hand [${leg.hand.map((c) => c.defId).join(',')}]`);
+  return commitCard(n, card.id);
+}
+
+/**
+ * Throw whatever the engine dealt until the current visit ends, re-reading the
+ * hand after every dart (one hand is spent across the whole visit now).
+ * Returns the last commit's output.
+ */
+export function playVisit(n: NightState): { result: ThrowResult; events: EngineEvent[] } {
+  const leg = currentLeg(n);
+  const visits = leg.visits.length;
+  let last: { result: ThrowResult; events: EngineEvent[] } | null = null;
+  while (n.phase === 'LEG' && leg.status === 'ACTIVE' && leg.visits.length === visits) {
+    if (leg.hand.length === 0) throw new Error('empty hand');
+    last = commitCard(n, leg.hand[0].id);
+  }
+  if (!last) throw new Error('nothing played');
+  return last;
+}
+
+/**
+ * Deal `defIds` out of the leg's own pool as this visit's hand, throw them in
+ * order, then end the visit at the wall. Unlike `play` this leaves the pool
+ * intact, so anything that reads the deck — the checkout hints, and the setup
+ * bonus that depends on them — still sees the whole library.
+ */
+export function playPoolThenMiss(n: NightState, defIds: string[]): { result: ThrowResult; events: EngineEvent[] } {
+  for (const card of dealFromPool(n, defIds)) commitCard(n, card.id);
+  return commitMiss(n);
+}
+
+/** The def ids of the hand the engine dealt, in hand order. */
+export function handDefIds(n: NightState): string[] {
+  return currentLeg(n).hand.map((c) => c.defId);
+}
+
+/** The ids of the cards dealt for the current visit, for before/after comparisons. */
+export function handIds(n: NightState): string[] {
+  return currentLeg(n).hand.map((c) => c.id);
+}
+
+/**
+ * The whole leg pool (deck + hand + discard, plus the pocketed card, which the
+ * engine also keeps in the hand while the leg runs) as sorted unique ids: it
+ * must stay constant within a leg.
+ */
+export function poolIds(n: NightState): string[] {
+  const leg = currentLeg(n);
+  const pocket = leg.pocket ? [leg.pocket] : [];
+  return [...new Set([...leg.deck, ...leg.hand, ...leg.discard, ...pocket].map((c) => c.id))].sort();
 }
 
 export function eventTypes(events: EngineEvent[]): string[] {

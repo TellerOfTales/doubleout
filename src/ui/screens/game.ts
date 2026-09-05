@@ -9,9 +9,10 @@ import { CHALK_DEFS, chalkDef } from '../../content/chalkdefs';
 import { OCHE_BY_ID } from '../../content/oches';
 import { baseValue, targetNotation } from '../../core/board';
 import { computeCheckoutHints, type CheckoutHints } from '../../core/checkout';
+import { HEAT_CAP } from '../../content/legs';
 import { buildBarkContext } from '../../core/commentary';
 import { resolveThrow } from '../../core/resolver';
-import { commitCard, commitMiss, currentLeg, currentVisit, legName, throwsPerVisit, visitTotal } from '../../core/state';
+import { commitCard, commitMiss, currentLeg, currentVisit, legName, pocketCard, throwsPerVisit, visitTotal } from '../../core/state';
 import type { DartCard, EngineEvent, LegState, NightState, ThrowResult } from '../../core/types';
 import type { App } from '../app';
 import { BoardView } from '../boardview';
@@ -86,6 +87,8 @@ export class GameScreen implements Scene {
   keyboardFocus = false;
   crowd: { x: number; y: number; frame: number; tint: number; phase: number }[] = [];
   crowdJump = new Pulse();
+  heatPulse = new Pulse();
+  heatLost = new Pulse();
   tension = 0;
   time = 0;
   idleBarked = false;
@@ -211,12 +214,16 @@ export class GameScreen implements Scene {
   refreshHints(): void {
     const leg = this.leg;
     if (!leg || leg.status !== 'ACTIVE') return;
+    this.hand.pocketId = leg.pocket ? leg.pocket.id : null;
     this.hints = computeCheckoutHints(this.night, leg);
     this.hand.routeStarts.clear();
     this.hand.bustIds.clear();
     this.hand.values.clear();
+    this.hand.leaves.clear();
+    this.hand.leaveKind.clear();
     const visit = currentVisit(leg);
     const ti = (visit ? visit.throws.length : 0) as 0 | 1 | 2 | 3;
+    const dartsLeft = throwsPerVisit(this.night) - (visit ? visit.throws.length : 0);
     for (const c of leg.hand) {
       const r = resolveThrow(c, {
         chalk: this.night.chalk,
@@ -229,10 +236,56 @@ export class GameScreen implements Scene {
       this.hand.values.set(c.id, r.totalValue);
       if (r.outcome === 'BUST') this.hand.bustIds.add(c.id);
       if (this.hints.byHandCard.get(c.id)) this.hand.routeStarts.add(c.id);
+      // What this card leaves, and whether that is somewhere worth being.
+      this.hand.leaves.set(c.id, r.scoreCommitted);
+      this.hand.leaveKind.set(c.id, this.judgeLeave(r, dartsLeft));
     }
   }
 
+  /**
+   * Rate the position a card would leave: a finish now, a finish still on this
+   * visit, a live score, or a dead end the deck cannot close out. This is the
+   * read the whole scoring phase turns on.
+   */
+  private judgeLeave(r: ThrowResult, dartsLeft: number): 'finish' | 'route' | 'live' | 'dead' | 'bust' {
+    if (r.outcome === 'BUST') return 'bust';
+    if (r.outcome === 'CHECKOUT') return 'finish';
+    const after = r.scoreCommitted;
+    const probe: LegState = { ...this.leg, score: after, hand: [] };
+    let hints: CheckoutHints;
+    try {
+      hints = computeCheckoutHints(this.night, probe);
+    } catch {
+      return 'live';
+    }
+    if (!hints.inRange) return 'live';
+    if (!hints.best) return 'dead';
+    return hints.best.defIds.length <= Math.max(1, dartsLeft - 1) ? 'route' : 'live';
+  }
+
   // ---------------------------------------------------------------- throwing
+
+  /** Set the selected card aside for a later visit. Free, and the pocket holds one. */
+  pocketSelected(): void {
+    const leg = this.leg;
+    if (this.busy || this.hand.locked || leg.status !== 'ACTIVE') return;
+    const sel = this.hand.selected;
+    if (!sel || leg.pocket) {
+      this.app.sfx('error');
+      return;
+    }
+    const out = pocketCard(this.night, sel.card.id);
+    if (!out.ok) {
+      this.app.sfx('error');
+      return;
+    }
+    this.app.sfx('card_flip');
+    this.hand.pocketId = sel.card.id;
+    this.readout = `${targetNotation(sel.card.target)} KEPT FOR LATER.`;
+    this.readoutColor = P.BRASS_LIT;
+    this.float('KEPT', sel.x + sel.slot.w / 2, sel.y - 6, P.BRASS_LIT, 1, 1.2);
+    this.refreshHints();
+  }
 
   /** Deliberately throw at the wall: spends the dart and the hand, scores nothing. */
   throwAtWall(): void {
@@ -344,6 +397,9 @@ export class GameScreen implements Scene {
       const p2 = this.board.landing(result.hits[1].target);
       this.impact(p2, result.intent.card.flight, 0.6);
     }
+    // The visit hand persists: drop the spent card and re-slot the rest.
+    this.hand.sync(this.leg.hand);
+    this.refreshHints();
     this.hooks.onEvent?.({ type: 'THROW', result }, this);
 
     // value label + chalk chain
@@ -440,7 +496,14 @@ export class GameScreen implements Scene {
           this.float(txt, l.score.x + l.score.w / 2, l.score.y + l.score.h + 2, e.total >= 100 ? P.BRASS_LIT : P.MIST, 1, 1.3);
           if (e.total >= 100 && e.total < 180) this.app.audio.crowdRoar(0.35 + (e.total - 100) / 200);
         }
-        if (e.total < 180 && !e.busted) this.bark(e, result);
+        if (e.missed) {
+          this.readout = 'INTO THE WALL. VISIT OVER, SCORE SAFE.';
+          this.readoutColor = P.MIST;
+        } else if (!e.busted && e.heat > 0) {
+          this.heatPulse.fire(0.6);
+          this.app.audio.setCrowdTension(0.25 + (e.heat / HEAT_CAP) * 0.55);
+        }
+        if (e.total < 180 && !e.busted && !e.missed) this.bark(e, result);
         this.hooks.onEvent?.(e, this);
         break;
       }
@@ -451,14 +514,14 @@ export class GameScreen implements Scene {
         break;
       }
       case 'HAND_DEALT': {
-        // discard the remaining cards then deal the new hand
+        // A fresh hand for the whole visit.
         this.hand.clear();
         yield 0.12;
         this.hand.deal(e.hand);
         this.refreshHints();
-        if (this.leg.visits.length > 1 && e.throwIndex === 0) {
+        if (this.leg.visits.length > 1) {
           const v = this.leg.visits[this.leg.visits.length - 1];
-          this.readout = `VISIT ${v.index + 1} OF ${this.leg.visitLimit}`;
+          this.readout = `VISIT ${v.index + 1} OF ${this.leg.visitLimit} · ${e.hand.length} CARDS, ${throwsPerVisit(this.night)} DARTS`;
           this.readoutColor = this.leg.visitLimit - v.index <= 2 ? P.EMBER : P.MIST;
         }
         if (this.leg.peek.length) this.float('PEEK', l.chalkStrip.x + 60, l.chalkStrip.y - 6, P.BAIZE_LIT, 1, 1);
@@ -477,6 +540,23 @@ export class GameScreen implements Scene {
         if (this.hooks.ownsFlow) break;
         yield 0.6;
         if (e.legIndex < 7) this.openCheckoutOverlay();
+        break;
+      }
+      case 'SETUP_BONUS': {
+        this.app.sfx('pot');
+        this.float(`LEFT IT RIGHT +${e.pot}`, l.score.x + l.score.w / 2, l.score.y + 4, P.BAIZE_LIT, 1, 1.4);
+        this.readout = `${e.score} LEFT, AND YOU CAN FINISH IT. +${e.pot} POT.`;
+        this.readoutColor = P.BAIZE_LIT;
+        yield 0.5;
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'HEAT_LOST': {
+        this.heatLost.fire(1.1);
+        this.app.sfx('lose_sting', { volume: 0.5 });
+        this.float('CROWD COOLS', l.orientation === 'landscape' ? 240 : l.w / 2, l.orientation === 'landscape' ? 18 : 126, P.EMBER, 1, 1.3);
+        yield 0.3;
+        this.hooks.onEvent?.(e, this);
         break;
       }
       case 'ACHIEVEMENT': {
@@ -589,10 +669,10 @@ export class GameScreen implements Scene {
     this.checkoutPanelT = 0;
     this.buttons.clear();
     const l = this.layout;
-    const pw = l.orientation === 'landscape' ? 200 : 164;
-    const ph = 118;
+    const pw = l.orientation === 'landscape' ? 210 : 168;
+    const ph = 138;
     const px = Math.floor((l.w - pw) / 2);
-    const py = Math.floor((l.h - ph) / 2) - (l.orientation === 'landscape' ? 4 : 20);
+    const py = Math.floor((l.h - ph) / 2) - (l.orientation === 'landscape' ? 8 : 24);
     this.buttons.add({
       id: 'continue',
       rect: { x: px + Math.floor(pw / 2) - 48, y: py + ph - 22, w: 96, h: 16 },
@@ -676,6 +756,10 @@ export class GameScreen implements Scene {
         return;
       }
     }
+    if (inRect(p.x, p.y, this.layout.pocket)) {
+      this.pocketSelected();
+      return;
+    }
     if (inRect(p.x, p.y, this.layout.miss)) {
       this.throwAtWall();
       return;
@@ -731,6 +815,8 @@ export class GameScreen implements Scene {
     else if (key === 'Enter' || key === ' ' || key === 'ArrowUp') {
       if (!this.hand.selected) this.hand.selectIndex(0);
       else this.hand.throwSelected();
+    } else if (key === 'p' || key === 'P') {
+      this.pocketSelected();
     } else if (key === 'm' || key === 'M' || key === '0') {
       this.throwAtWall();
     } else if (key === 'h' || key === 'H') {
@@ -756,6 +842,8 @@ export class GameScreen implements Scene {
     this.bustStamp.update(dt);
     this.scoreBump.update(dt);
     this.crowdJump.update(dt);
+    this.heatPulse.update(dt);
+    this.heatLost.update(dt);
     this.hintPulse += dt;
     for (const p of this.chalkPulse.values()) p.update(dt);
     if (this.bigText) {
@@ -896,6 +984,7 @@ export class GameScreen implements Scene {
     const cx = l.score.x + Math.floor(l.score.w / 2);
     const bump = this.scoreBump.active ? Math.round(this.scoreBump.value * 2) : 0;
     if (l.orientation === 'landscape') r.text('REMAINING', l.scoreLabel.x, l.scoreLabel.y, { color: P.MIST });
+    this.drawHeat(r);
     r.text(String(shown), cx, l.score.y - bump, { font: 9, scale, color, align: 'center', shadow: P.INK });
     // checkout hint line
     const hintOn = this.app.save.data.settings.checkoutHint;
@@ -931,6 +1020,32 @@ export class GameScreen implements Scene {
         r.text(`${total}`, vl.x + vl.w - measureText(5, darts) - 5, vl.y, { color: P.BRASS, align: 'right' });
       }
     }
+  }
+
+  /**
+   * The crowd gauge: four pips that fill as visits land without a bust, and
+   * the Pot multiplier they are worth. A bust empties it in one go.
+   */
+  private drawHeat(r: Renderer): void {
+    const l = this.layout;
+    const leg = this.leg;
+    const heat = Math.min(HEAT_CAP, leg.heat);
+    // Portrait has no room beside the big number, so the gauge sits just above
+    // the score panel where the board's shadow ends.
+    const x = l.orientation === 'landscape' ? l.score.x + l.score.w - 4 : l.w - 6;
+    const y = l.orientation === 'landscape' ? l.scoreLabel.y : 121;
+    const mult = `x${(1 + heat / HEAT_CAP).toFixed(2).replace(/0$/, '').replace(/\.$/, '')}`;
+    const hot = heat >= HEAT_CAP;
+    const bump = this.heatPulse.active ? 1 : 0;
+    const lost = this.heatLost.active && Math.floor(this.time * 12) % 2 === 0;
+    r.text(heat > 0 ? mult : 'x1', x, y - bump, { color: lost ? P.EMBER : hot ? P.BRASS_LIT : heat > 0 ? P.BRASS : P.STONE, align: 'right' });
+    let px2 = x - measureText(5, heat > 0 ? mult : 'x1') - 3 - HEAT_CAP * 4;
+    for (let i = 0; i < HEAT_CAP; i++) {
+      const lit = i < heat;
+      r.rect(px2, y + 1 - (lit ? bump : 0), 3, 5, lost ? P.EMBER : lit ? (hot ? P.BRASS_LIT : P.BRASS) : P.SHADE);
+      px2 += 4;
+    }
+    r.text('CROWD', px2 - HEAT_CAP * 4 - 38, y, { color: P.PEWTER, align: 'left' });
   }
 
   private drawChalkStrip(r: Renderer): void {
@@ -971,7 +1086,26 @@ export class GameScreen implements Scene {
       const lines = r.wrap(this.readout, ro.w).slice(0, maxLines);
       lines.forEach((line, i) => r.text(line, ro.x, ro.y + 1 + i * 9, { color: this.readoutColor }));
     }
+    this.drawPocketButton(r);
     this.drawMissButton(r);
+  }
+
+  private drawPocketButton(r: Renderer): void {
+    const b = this.layout.pocket;
+    const leg = this.leg;
+    const full = !!leg.pocket;
+    const canPocket = !full && !!this.hand.selected && !this.hand.locked;
+    r.nineSlice('button', b.x, b.y, b.w, b.h, canPocket ? 1 : 0);
+    if (canPocket) {
+      const on = Math.floor(this.time * 4) % 2 === 0;
+      r.rectOutline(b.x - 1, b.y - 1, b.w + 2, b.h + 2, on ? P.BRASS_LIT : P.BRASS);
+    }
+    const label = full ? 'KEPT' : 'KEEP';
+    r.text(label, b.x + Math.floor(b.w / 2), b.y + Math.floor((b.h - 7) / 2), {
+      color: full ? P.BRASS : canPocket ? P.BRASS_LIT : P.PEWTER,
+      align: 'center',
+      shadow: P.INK,
+    });
   }
 
   private drawMissButton(r: Renderer): void {
@@ -989,6 +1123,10 @@ export class GameScreen implements Scene {
       align: 'center',
       shadow: P.INK,
     });
+    if (urgent && !this.readout) {
+      this.readout = 'EVERY CARD BUSTS. MISS ENDS THE VISIT AND SAVES THE SCORE.';
+      this.readoutColor = P.EMBER;
+    }
   }
 
   private drawDart(r: Renderer): void {
@@ -1086,10 +1224,10 @@ export class GameScreen implements Scene {
     const l = this.layout;
     const leg = this.leg;
     const rw = leg.reward;
-    const pw = l.orientation === 'landscape' ? 200 : 164;
-    const ph = 118;
+    const pw = l.orientation === 'landscape' ? 210 : 168;
+    const ph = 138;
     const px = Math.floor((l.w - pw) / 2);
-    const py = Math.floor((l.h - ph) / 2) - (l.orientation === 'landscape' ? 4 : 20);
+    const py = Math.floor((l.h - ph) / 2) - (l.orientation === 'landscape' ? 8 : 24);
     r.dither(0, 0, l.w, l.h, P.INK, 8);
     const t = ease.outBack(this.checkoutPanelT);
     r.offset(0, Math.round((1 - t) * 40), () => {
@@ -1105,8 +1243,10 @@ export class GameScreen implements Scene {
           [`BIG FINISH (${rw.checkoutFrom})`, rw.bigFinish, rw.bigFinish > 0],
           ['CLEAN LEG', rw.cleanLeg, rw.cleanLeg > 0],
           ['NINE-DARTER', rw.nineDarter, rw.nineDarter > 0],
+          ['LEFT IT RIGHT', rw.setup, rw.setup > 0],
+          [`CROWD ×${(1 + rw.heat / HEAT_CAP).toFixed(2).replace(/0$/, '').replace(/\.$/, '')}`, rw.heatBonus, rw.heatBonus > 0],
         ];
-        const shown = Math.floor(this.checkoutPanelT * 5 + 0.5);
+        const shown = Math.floor(this.checkoutPanelT * rows.length + 0.5);
         rows.forEach((row, i) => {
           if (i >= shown) return;
           const on = row[2];

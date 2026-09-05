@@ -25,6 +25,18 @@ export function drawHand(leg: LegState, rng: Rng, n: number): DartCard[] {
 }
 
 /**
+ * Take one card out of the hand and discard it, leaving the rest of the hand
+ * in place for the remaining darts of the visit. Returns null if not in hand.
+ */
+export function takeFromHand(leg: LegState, cardId: string): DartCard | null {
+  const i = leg.hand.findIndex((c) => c.id === cardId);
+  if (i < 0) return null;
+  const card = leg.hand.splice(i, 1)[0];
+  leg.discard.push(card);
+  return card;
+}
+
+/**
  * Remove the committed card from the hand; route the rest.
  * Returns the committed card or null if the id is not in hand.
  */

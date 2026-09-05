@@ -123,6 +123,19 @@ export interface LegState {
   status: 'ACTIVE' | 'CHECKED_OUT' | 'TIMED_OUT';
   /** Cards peeked by chalked_up at the start of the current visit (ids). */
   peek: string[];
+  /**
+   * The pocket: one card set aside for later. It joins the hand every visit
+   * until it is thrown, which is how you plan a finish several visits out
+   * instead of waiting for the right card to be dealt.
+   */
+  pocket: DartCard | null;
+  /**
+   * Consecutive visits ended without a bust, capped at HEAT_CAP. The crowd
+   * warms up and the leg's Pot reward scales with it; a bust wipes it to 0.
+   */
+  heat: number;
+  /** "Left it right" bonuses banked this leg (score left finishable). */
+  setupBonuses: number;
   /** Pot awarded for this leg once checked out. */
   reward?: PotBreakdown;
 }
@@ -133,6 +146,12 @@ export interface PotBreakdown {
   bigFinish: number;
   cleanLeg: number;
   nineDarter: number;
+  /** "Left it right" bonuses banked during the leg. */
+  setup: number;
+  /** Heat at checkout (0..HEAT_CAP). */
+  heat: number;
+  /** Extra Pot the heat multiplier added. */
+  heatBonus: number;
   total: number;
   /** Score at the start of the finishing visit (the darts sense of "a 100 checkout"). */
   checkoutFrom: number;
@@ -173,6 +192,10 @@ export interface NightStats {
   maxChalkHeld: number;
   /** Deliberate wall throws. */
   misses: number;
+  /** "Left it right" bonuses earned. */
+  setups: number;
+  /** Highest heat reached in the night. */
+  bestHeat: number;
 }
 
 export interface Rng {
@@ -213,7 +236,10 @@ export type EngineEvent =
   | { type: 'LEG_START'; legIndex: number }
   | { type: 'HAND_DEALT'; hand: DartCard[]; visitIndex: number; throwIndex: number }
   | { type: 'THROW'; result: ThrowResult }
-  | { type: 'VISIT_END'; visit: VisitState; total: number; busted: boolean }
+  | { type: 'VISIT_END'; visit: VisitState; total: number; busted: boolean; missed: boolean; heat: number }
+  | { type: 'SETUP_BONUS'; score: number; pot: number }
+  | { type: 'POCKETED'; card: DartCard }
+  | { type: 'HEAT_LOST'; from: number }
   | { type: 'ONE_EIGHTY'; total: number }
   | { type: 'CHECKOUT'; legIndex: number; reward: PotBreakdown | null }
   | { type: 'LEG_TIMEOUT'; legIndex: number }

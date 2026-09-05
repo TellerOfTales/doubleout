@@ -24,6 +24,7 @@ import {
   beginLeg,
   commitCard,
   commitMiss,
+  pocketCard,
   createNight,
   currentLeg,
   currentVisit,
@@ -494,27 +495,116 @@ function evaluate(ctx: LegCtx, leg: LegState, visit: VisitState, card: DartCard,
   return u;
 }
 
+/**
+ * Plan the whole visit, not one dart.
+ *
+ * The hand now lasts a visit, so the real decision is which cards to spend and
+ * in what order — exactly what a player does when they look at the row and
+ * work backwards from the finish. Search every ordering of the remaining
+ * darts over the remaining hand (at most 6·5·4 = 120 lines) and play the first
+ * card of the best one.
+ */
 function chooseOptimal(n: NightState, leg: LegState): DartCard {
   const ctx = legCtx(n, leg);
   const visit = currentVisit(leg);
   const ti = visit.throws.length;
+  const dartsLeft = ctx.perVisit - ti;
   const preferLow = hasChalk(n, 'practice_board');
-  let best = leg.hand[0];
-  let bestU = -Infinity;
-  let bestV = -Infinity;
-  for (const c of leg.hand) {
-    const u = evaluate(ctx, leg, visit, c, ti);
-    const v = cardDef(c.defId).value * (preferLow ? -1 : 1);
-    if (u > bestU + 1e-9 || (Math.abs(u - bestU) <= 1e-9 && v > bestV)) {
-      best = c;
-      bestU = u;
-      bestV = v;
+
+  type Line = { first: DartCard; score: number };
+  let best: Line | null = null;
+
+  const walk = (score: number, throwIndex: number, remaining: DartCard[], first: DartCard | null, spent: number): void => {
+    const dartsGone = throwIndex - ti;
+    if (dartsGone >= dartsLeft || remaining.length === 0) {
+      if (first) consider(first, visitValue(ctx, score, spent, false));
+      return;
     }
-  }
-  return best;
+    for (let i = 0; i < remaining.length; i++) {
+      const card = remaining[i];
+      const r = resolveThrow(card, {
+        chalk: n.chalk,
+        rng: null,
+        scoreBefore: score,
+        scoreAtVisitStart: visit.scoreAtVisitStart,
+        visitThrowIndex: throwIndex as 0 | 1 | 2 | 3,
+        forgivenessUsed: leg.forgivenessUsed,
+      }).result;
+      const head = first ?? card;
+      if (r.outcome === 'CHECKOUT') {
+        // Nothing beats finishing the leg.
+        consider(head, 1e9 - dartsGone);
+        continue;
+      }
+      if (r.outcome === 'BUST') {
+        // Only worth considering if there is no alternative at all.
+        consider(head, -1e6);
+        continue;
+      }
+      const rest = remaining.slice(0, i).concat(remaining.slice(i + 1));
+      walk(r.scoreCommitted, throwIndex + 1, rest, head, spent + r.totalValue);
+    }
+  };
+
+  const consider = (first: DartCard, value: number): void => {
+    const tie = cardDef(first.defId).value * (preferLow ? -1 : 1) * 1e-6;
+    if (!best || value + tie > best.score) best = { first, score: value + tie };
+  };
+
+  walk(leg.score, ti, leg.hand.slice(), null, 0);
+  return best ? (best as Line).first : leg.hand[0];
+}
+
+/**
+ * How good a position is at the end of a planned visit: the points banked, plus
+ * a large premium for leaving a score the deck can actually finish from.
+ */
+function visitValue(ctx: LegCtx, score: number, banked: number, busted: boolean): number {
+  if (busted) return -1e6;
+  let v = banked;
+  if (score <= 1) return v - 500;
+  const outs = routeLen(ctx, score, 0);
+  if (outs > 0 && outs <= ctx.perVisit) v += 400 - outs * 60;
+  else if (outs === 0) v -= 120;
+  return v;
 }
 
 // ---------------------------------------------------------------- public: card choice
+
+/**
+ * Bank a finisher for later. A card is worth pocketing when it can close the
+ * leg on its own from a score we are plausibly heading for, and we are not
+ * about to use it this visit anyway.
+ */
+export function considerPocket(n: NightState, leg: LegState): void {
+  if (leg.pocket || leg.hand.length === 0) return;
+  const ctx = legCtx(n, leg);
+  const visit = currentVisit(leg);
+  if (!visit || visit.throws.length > 0) return;
+  // Only worth a pocket while the finish is still out of reach this visit.
+  if (routeLen(ctx, leg.score, 0) > 0) return;
+  let best: DartCard | null = null;
+  let bestValue = 0;
+  for (const c of leg.hand) {
+    const r = resolveThrow(c, {
+      chalk: n.chalk,
+      rng: null,
+      scoreBefore: FAR,
+      scoreAtVisitStart: FAR,
+      visitThrowIndex: 0,
+      forgivenessUsed: true,
+    }).result;
+    const last = r.hits[r.hits.length - 1];
+    if (!last || !last.countsAsDouble) continue;
+    // Prefer a small, flexible finisher: it closes the most positions.
+    const value = 100 - r.totalValue;
+    if (value > bestValue) {
+      best = c;
+      bestValue = value;
+    }
+  }
+  if (best) pocketCard(n, best.id);
+}
 
 /** True if committing this card resolves to a bust from the current position. */
 export function wouldBust(n: NightState, leg: LegState, card: DartCard): boolean {
@@ -826,6 +916,7 @@ export function playNight(seed: number, policy: Policy, opts: PlayOptions = {}):
   for (let guard = 0; guard < 100000 && n.status === 'ACTIVE'; guard++) {
     if (n.phase === 'LEG') {
       const leg = currentLeg(n);
+      if (policy !== 'greedy') considerPocket(n, leg);
       const card = chooseCard(n, leg, policy);
       // Every card would bust: throw at the wall instead of wrecking the visit.
       if (policy !== 'greedy' && wouldBust(n, leg, card)) commitMiss(n);

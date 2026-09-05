@@ -128,3 +128,86 @@ two whole legs of income, against five slots competing for the same coins.
 Chalk *effects* are exactly as TDD §5 specifies, and only one chalk *cost* moved
 (`overshoot`, above). Card prices, the shop offer pool weights and the leg reward column
 are the other tuning knobs touched.
+
+
+---
+
+# Second pass: the loop rework (after playtest)
+
+The first build shipped a loop the player could beat without thinking: *"All I do
+is select every big number until I get down to around 10 left and then I just keep
+missing over and over until I get the card I need."* That is an accurate reading of
+what the build did, and two of its causes were choices made in the first balance
+pass above.
+
+## Diagnosis
+
+1. **Nothing was ever spent.** TDD §3.3 deals `HAND_SIZE` fresh cards for *every
+   dart*, so the hand was a slot pull, not a resource. Taking the biggest number
+   never cost anything later, so there was never a reason not to.
+2. **The endgame was a free reroll.** The double ladder (#45) made almost every
+   score finishable and the free miss (#46) let you cycle hands until the right
+   card appeared. Between them they turned "can I steer somewhere I can finish?"
+   into "mash until it shows up".
+3. **No push-your-luck.** The bust is the folk ruleset's built-in gamble and the
+   free miss had neutralised it.
+
+## What changed
+
+| Change | Effect |
+|---|---|
+| **Per-visit hand** (DECISIONS #51) | One hand of five is dealt per visit and spent across its three darts. Spending T20 on the first dart means darts two and three are whatever is left, so the scoring phase is a plan, not a reflex. |
+| **The miss ends the visit** (#52) | Still saves the score, but you forfeit the rest of the visit, so fishing for a card burns the visit limit fast. |
+| **Heat** (#53) | Consecutive bust-free visits fill a four-pip crowd gauge that scales the leg's Pot up to ×2. One bust wipes it. |
+| **"Left it right"** (#54) | +1 Pot, up to 4 a leg, every time a visit ends on a score the deck can actually finish — and every card now shows what it *leaves*, colour-coded. |
+| **The pocket** (#55) | Keep one card; it returns every visit until thrown. |
+
+## Why the pocket had to exist
+
+Per-visit hands alone made the game unwinnable, and measurement showed why: the
+bottleneck was never scoring, it was *drawing the finisher on the visit you need
+it*. Making the deck stronger did not help — the stronger the deck, the more you
+overshoot the double.
+
+| Configuration (optimal bot, 150 nights) | leg 1 | night |
+|---|---|---|
+| per-visit hand of 4, no pocket | 51% | 0.0% |
+| per-visit hand of 5, no pocket | 75% | 2.7% |
+| hand of 5, stronger deck, no pocket | 73% | 0.7% |
+| hand of 5, much stronger deck, no pocket | 52% | 1.3% |
+| **hand of 5 + pocket** | **81%** | **6.7%** |
+| hand of 6 + pocket | 91% | 16.7% |
+
+The pocket converts the endgame from waiting into planning: you see D16 on visit
+two and bank it for the 32 you intend to leave on visit six. Six cards measured
+better still, but six readable cards do not fit the 192px hand panel, so the build
+takes five and pays for it in the visit limits.
+
+## Where it lands now
+
+Retuned together: starting library (trebles carry the scoring, ladder intact),
+visit limits `13 12 11 10 9 8 6 4`, and `overshoot` now requires a finishing
+double.
+
+| metric | measured | note |
+|---|---|---|
+| leg 1, greedy | 38% | plays every big number, never plans a finish |
+| leg 1, checkout-aware | 83% | |
+| leg 1, visit-planning | 84% | |
+| mean legs won: greedy / checkout / planning | **0.60 / 1.77 / 2.57** | the skill gap, four times wider than the first build |
+| full night, greedy | 0.0% | |
+| full night, planning | 7.2% | a human planning the pocket and the crowd does better |
+| the Decider, starting deck, no chalk | 9.0% | TDD §4's "unwinnable without a modifier engine" |
+| the Decider, in a full night with a build | ~75% | the payoff for building one |
+| busts per night, planning | 0.0 | the miss still buys them out; see the first pass |
+
+The ramp is `84 68 69 68 69 74 71 75`: leg 1 is a gentle open, the middle legs are
+the squeeze, and the Decider is a wall unless you arrive with an engine.
+
+## The one anti-target that moved
+
+Under the new loop `overshoot` alone won leg 8 **83%** of the time against a field
+mean of 49% — a two-point tolerance below zero meant *any* card could close a leg,
+which is `straight_out`'s job. §15.3 sanctions an anti-synergy, so overshoot now
+forgives 1 or 2 too many **only on a throw that already counts as a double**. It
+keeps its flavour and stops replacing the double rule.

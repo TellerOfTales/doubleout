@@ -32,6 +32,8 @@ export interface GameLayout {
   readout: Rect; // pipeline readout / hint text
   /** The deliberate-miss button (throw at the wall). */
   miss: Rect;
+  /** The pocket button: set one card aside for a later visit. */
+  pocket: Rect;
   commentary: Rect;
   /** Where the dart launches from when thrown (above the hand). */
   launch: { x: number; y: number };
@@ -62,7 +64,8 @@ export function gameLayout(w: number, h: number): GameLayout {
       cardW: CARD_W,
       cardH: CARD_H,
       chalkStrip: { x: 2, y: 132, w: 132, h: 24 },
-      readout: { x: 138, y: 140, w: 138, h: 18 },
+      readout: { x: 138, y: 140, w: 94, h: 18 },
+      pocket: { x: 236, y: 140, w: 40, h: 16 },
       miss: { x: 280, y: 140, w: 38, h: 16 },
       commentary: { x: 0, y: 160, w, h: 20 },
       launch: { x: 220, y: 80 },
@@ -89,19 +92,25 @@ export function gameLayout(w: number, h: number): GameLayout {
     cardH: CARD_H,
     chalkStrip: { x: 4, y: 248, w: 172, h: 24 },
     readout: { x: 4, y: 270, w: 172, h: 12 },
+    pocket: { x: 88, y: 248, w: 44, h: 18 },
     miss: { x: 134, y: 248, w: 42, h: 18 },
     commentary: { x: 0, y: 284, w, h: 36 },
     launch: { x: 90, y: 190 },
   };
 }
 
-/** Card slot rects for a hand of n cards, centred in the hand area. */
+/**
+ * Card slots, centred in the hand area. Cards shrink to fit as the hand grows,
+ * so a pocketed sixth card never pushes the row off the panel.
+ */
 export function cardSlots(l: GameLayout, n: number): Rect[] {
-  const gap = n >= 4 ? 4 : 8;
-  const total = n * l.cardW + (n - 1) * gap;
+  if (n <= 0) return [];
+  const gap = n >= 6 ? 2 : n >= 4 ? 3 : 8;
+  const w = Math.min(l.cardW, Math.floor((l.hand.w - (n - 1) * gap) / n));
+  const total = n * w + (n - 1) * gap;
   const start = l.hand.x + Math.floor((l.hand.w - total) / 2);
   const out: Rect[] = [];
-  for (let i = 0; i < n; i++) out.push({ x: start + i * (l.cardW + gap), y: l.hand.y, w: l.cardW, h: l.cardH });
+  for (let i = 0; i < n; i++) out.push({ x: start + i * (w + gap), y: l.hand.y, w, h: l.cardH });
   return out;
 }
 

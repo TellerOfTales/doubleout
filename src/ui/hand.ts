@@ -49,11 +49,17 @@ export class Hand {
   bustIds = new Set<string>();
   /** Card values after chalk, by id (for the value label). */
   values = new Map<string, number>();
+  /** What the score becomes if this card is thrown, by id. */
+  leaves = new Map<string, number>();
+  /** How good that leave is: a finish, a live position, or a dead end. */
+  leaveKind = new Map<string, 'finish' | 'route' | 'live' | 'dead' | 'bust'>();
+  /** The card currently set aside, drawn with a brass tag. */
+  pocketId: string | null = null;
   tapToThrow = true;
   hintOn = true;
   time = 0;
 
-  private drag: {
+  drag: {
     id: string;
     startX: number;
     startY: number;
@@ -77,6 +83,28 @@ export class Hand {
       c.x = c.slot.x;
       c.y = c.slot.y;
     });
+  }
+
+  /**
+   * Keep the views for cards still in hand, drop the spent one, and slide the
+   * rest into their new slots. Called after every throw of a visit.
+   */
+  sync(cards: DartCard[]): void {
+    const byId = new Map(this.cards.map((c) => [c.card.id, c]));
+    const slots = cardSlots(this.layout, cards.length);
+    this.cards = cards.map((card, i) => {
+      const existing = byId.get(card.id);
+      if (existing) {
+        existing.slot = slots[i];
+        existing.gone = false;
+        existing.snapFrom = { x: existing.x, y: existing.y };
+        existing.snapT = 0;
+        return existing;
+      }
+      return { card, slot: slots[i], x: slots[i].x, y: slots[i].y + 40, dealT: 0, dealDelay: i * 0.05, snapT: 1, snapFrom: null, gone: false };
+    });
+    if (this.selectedId && !cards.some((c) => c.id === this.selectedId)) this.selectedId = null;
+    this.drag = null;
   }
 
   /** Replace the hand with freshly dealt cards (with a staggered deal animation). */
@@ -114,7 +142,7 @@ export class Hand {
     for (let i = order.length - 1; i >= 0; i--) {
       const c = order[i];
       if (c.gone) continue;
-      const rect = { x: c.x, y: c.y - 4, w: this.layout.cardW, h: this.layout.cardH + 4 };
+        const rect = { x: c.x, y: c.y - 4, w: c.slot.w, h: c.slot.h + 4 };
       if (inRect(x, y, rect)) return c;
     }
     return null;
@@ -160,7 +188,7 @@ export class Hand {
   private launch(c: CardView, v: { vx: number; vy: number }): void {
     c.gone = true;
     this.drag = null;
-    const from = { x: c.x + this.layout.cardW / 2, y: c.y + 8 };
+    const from = { x: c.x + c.slot.w / 2, y: c.y + 8 };
     this.selectedId = null;
     this.cb.sound('whoosh');
     this.cb.onThrow(c.card, from, v);
@@ -289,7 +317,8 @@ export class Hand {
   }
 
   private drawCard(r: Renderer, c: CardView): void {
-    const { cardW, cardH } = this.layout;
+    const cardW = c.slot.w;
+    const cardH = c.slot.h;
     const selected = c.card.id === this.selectedId;
     const disallowed = this.allowed !== null && !this.allowed.has(c.card.id);
     const dragging = this.drag?.id === c.card.id && this.drag.moved;
@@ -305,27 +334,47 @@ export class Hand {
     const isRoute = this.hintOn && this.routeStarts.has(c.card.id);
     const isBust = this.hintOn && this.bustIds.has(c.card.id);
     // region band colour: treble brass, double sky-lit, bull claret-lit, single mist
-    const band = t.region === 'T' ? P.BRASS : t.region === 'D' ? P.SKY_LIT : t.region === 'IB' ? P.CLARET_LIT : t.region === 'OB' ? P.BAIZE_LIT : P.MIST;
+    const kept = this.pocketId === c.card.id;
+    const band = kept ? P.BRASS_LIT : t.region === 'T' ? P.BRASS : t.region === 'D' ? P.SKY_LIT : t.region === 'IB' ? P.CLARET_LIT : t.region === 'OB' ? P.BAIZE_LIT : P.MIST;
     r.rect(x + 4, y + 4, cardW - 8, 3, band);
-    const regionWord = t.region === 'T' ? 'TREBLE' : t.region === 'D' ? 'DOUBLE' : t.region === 'IB' ? 'BULL' : t.region === 'OB' ? 'OUTER' : 'SINGLE';
-    r.text(regionWord, x + cardW / 2, y + 9, { color: disallowed ? P.PEWTER : P.MIST, align: 'center' });
-    // big notation (5x7 at 2x)
+    // A kept card wears a brass edge all visit, so it reads at a glance.
+    if (kept) r.rectOutline(x, y, cardW, cardH, P.BRASS_LIT);
+    // The target, large — the notation already says single, double or treble.
     const big = t.region === 'IB' ? 'BULL' : t.region === 'OB' ? 'O·B' : notation;
-    const scale = big.length > 3 ? 1 : 2;
-    r.text(big, x + cardW / 2, y + 20, { color: disallowed ? P.PEWTER : P.CHALK, align: 'center', scale, shadow: P.INK });
-    // flight colour dots
-    const flightCol = [P.SKY, P.CLARET_LIT, P.BAIZE_LIT, P.BRASS][c.card.flight];
-    r.rect(x + 5, y + cardH - 8, 2, 2, flightCol);
-    r.rect(x + cardW - 7, y + cardH - 8, 2, 2, flightCol);
-    // value
+    const bigScale = big.length <= 3 && cardW >= 36 ? 2 : 1;
+    r.text(big, x + cardW / 2, y + (bigScale === 2 ? 9 : 11), { color: disallowed ? P.PEWTER : P.CHALK, align: 'center', scale: bigScale, shadow: P.INK });
+    // What it scores — the number you are doing arithmetic on.
     const vcol = disallowed ? P.PEWTER : isBust ? P.EMBER : isRoute ? P.BRASS_LIT : P.CHALK;
-    r.text(String(value), x + cardW / 2, y + cardH - 13, { color: vcol, align: 'center', shadow: P.INK });
+    const vs = String(value);
+    const vScale = vs.length * 12 - 1 <= cardW - 8 ? 2 : 1;
+    r.text(vs, x + cardW / 2, y + (bigScale === 2 ? 25 : 21), { color: vcol, align: 'center', scale: vScale, shadow: P.INK });
+
+    // What it leaves you — the whole tactical read, on the card.
+    const leaves = this.leaves.get(c.card.id);
+    const kind = this.leaveKind.get(c.card.id);
+    if (leaves !== undefined && this.hintOn) {
+      for (let i = 4; i < cardW - 4; i += 2) r.pixel(x + i, y + 41, P.SHADE);
+      const label = kind === 'bust' ? 'BUST' : kind === 'finish' ? 'OUT!' : `→${leaves}`;
+      const col = disallowed
+        ? P.PEWTER
+        : kind === 'bust'
+          ? P.EMBER
+          : kind === 'finish'
+            ? P.BRASS_LIT
+            : kind === 'route'
+              ? P.BAIZE_LIT
+              : kind === 'dead'
+                ? P.CLARET_LIT
+                : P.MIST;
+      r.text(label, x + cardW / 2, y + 45, { color: col, align: 'center', shadow: P.INK });
+    }
+    // flight colour, tucked into the band corners so the numbers keep the room
+    const flightCol = [P.SKY, P.CLARET_LIT, P.BAIZE_LIT, P.BRASS][c.card.flight];
+    r.rect(x + 2, y + 4, 2, 3, flightCol);
+    r.rect(x + cardW - 4, y + 4, 2, 3, flightCol);
     if (isRoute && !disallowed) {
       const on = Math.floor(this.time * 3) % 2 === 0;
       r.rectOutline(x - 1, y - 1, cardW + 2, cardH + 2, on ? P.BRASS_LIT : P.BRASS);
-    }
-    if (isBust && !disallowed && !isRoute) {
-      r.text('BUST', x + cardW / 2, y + 36, { color: P.EMBER, align: 'center' });
     }
   }
 
