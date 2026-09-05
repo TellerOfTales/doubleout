@@ -470,4 +470,24 @@ than that. It is a jackpot, and it is priced like one.
 
 ## Where it lands (1000 nights)
 
-FIFTH_PASS_TABLE
+| metric | target | measured | |
+|---|---|---|---|
+| leg 1, greedy | > 97% | **39.1%** | miss — the skill gap, see the first pass |
+| leg 1, checkout-aware | — | 76.9% | the short game: median four visits to the first win |
+| leg 8, no chalk | < 5% | **11.1%** | the pocket raised the floor; the Pot flood no longer adds to it |
+| leg 8, five strong chalk | 45–60% | **79.7%** | a curated build is meant to pay |
+| leg 8, twenty random five-chalk sets | 45–60% | **28.3%** | an average build |
+| full night (optimal) | 18–28% | **8.4%** | a working economy costs the bot three points |
+| full night (greedy) | < 8% | **0.0%** | ok |
+| median 180s (3+ chalk) | 4–9 | **5** | ok |
+| busts per night | 3–7 | **0.0** | the bot always takes the wall; see pass one |
+| mean legs won, optimal / greedy | — | **2.73 / 0.63** | |
+
+Conditional leg win rates: `76 74 77 75 77 78 74 59`. The Decider is back to being a
+wall (59%, against 72% when the sheet was flooding the Pot), which is what §4 asks
+for; the middle legs sit level, which is what a run should feel like before the
+wall.
+
+The chalk over §15.3's 35% line on leg 8 alone: `fourth_dart` (50.3%), `wide_grip`
+(38.0%) and `last_orders` (35.3%). The guarded test (no chalk far above the field)
+passes; Fourth Dart's price stays the knob if playtesting says it is a must-buy.
