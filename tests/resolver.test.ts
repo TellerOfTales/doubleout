@@ -978,3 +978,107 @@ describe('pipeline invariants', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------- the aim (DECISIONS.md #68)
+
+import { AIM_BASE, AIM_CAP, STEADY_PER_HEAT, hitChance, landingDistribution, rollLanding } from '../src/core/resolver.ts';
+import { createRng } from '../src/core/rng.ts';
+import { parseTarget } from '../src/core/board.ts';
+
+describe('the aim: every target has odds', () => {
+  const sum = (t: string, steady = 0) => landingDistribution(parseTarget(t), steady).reduce((a, l) => a + l.p, 0);
+  it.each(['s20', 't20', 'd16', 'ob', 'ib', 's1', 'd20', 't5'])('%s: the landings sum to 1 and the hit comes first at its base chance', (t) => {
+    expect(sum(t)).toBeCloseTo(1, 9);
+    const dist = landingDistribution(parseTarget(t));
+    expect(dist[0].kind).toBe('hit');
+    expect(targetNotation(dist[0].target)).toBe(targetNotation(parseTarget(t)));
+    expect(dist[0].p).toBeCloseTo(AIM_BASE[parseTarget(t).region as keyof typeof AIM_BASE] / 100, 9);
+  });
+  it('singles are big, doubles thin, trebles thinner, the bull smallest', () => {
+    expect(AIM_BASE.S).toBeGreaterThan(AIM_BASE.D);
+    expect(AIM_BASE.D).toBeGreaterThan(AIM_BASE.T);
+    expect(AIM_BASE.T).toBeGreaterThan(AIM_BASE.IB);
+    expect(hitChance(parseTarget('s20'))).toBe(AIM_BASE.S);
+    expect(hitChance(parseTarget('ib'))).toBe(AIM_BASE.IB);
+  });
+  it('a treble that misses mostly drops into its own single; a double can go in the wall; a single can find its treble', () => {
+    const t = landingDistribution(parseTarget('t20'));
+    expect(targetNotation(t[1].target)).toBe('S20');
+    expect(t[1].p).toBeGreaterThan(t[2].p + t[3].p);
+    expect(t.map((l) => targetNotation(l.target)).sort()).toEqual(['S20', 'T1', 'T20', 'T5']);
+    const d = landingDistribution(parseTarget('d16'));
+    expect(d.some((l) => l.kind === 'wall' && l.target.region === 'W')).toBe(true);
+    expect(d.filter((l) => l.target.region !== 'W').map((l) => targetNotation(l.target)).sort()).toEqual(['D16', 'D7', 'D8', 'S16']);
+    const s = landingDistribution(parseTarget('s20'));
+    const lucky = s.find((l) => l.kind === 'lucky');
+    expect(lucky && targetNotation(lucky.target)).toBe('T20');
+    expect(s.map((l) => targetNotation(l.target)).sort()).toEqual(['S1', 'S20', 'S5', 'T20']);
+  });
+  it('the bull strays to the top of the board, and the outer bull can drop in', () => {
+    const ob = landingDistribution(parseTarget('ob'));
+    expect(ob.find((l) => l.kind === 'lucky')?.target.region).toBe('IB');
+    expect(ob.filter((l) => l.target.region === 'S').map((l) => l.target.bed).sort()).toEqual([1, 20, 5]);
+    const ib = landingDistribution(parseTarget('ib'));
+    expect(ib.find((l) => l.target.region === 'OB')?.kind).toBe('drift');
+  });
+  it('steadiness raises every hit chance by its points, never past the cap, never below zero', () => {
+    expect(hitChance(parseTarget('t20'), 12)).toBe(AIM_BASE.T + 12);
+    expect(hitChance(parseTarget('s20'), 40)).toBe(AIM_CAP);
+    expect(hitChance(parseTarget('d16'), -50)).toBe(AIM_BASE.D);
+    expect(sum('t20', 12)).toBeCloseTo(1, 9);
+    expect(STEADY_PER_HEAT * 4).toBeLessThan(AIM_CAP - AIM_BASE.T);
+  });
+  it('the wall lands in the wall', () => {
+    expect(landingDistribution({ region: 'W' })).toEqual([{ target: { region: 'W' }, p: 1, kind: 'wall' }]);
+  });
+  it('rolling consumes one float and follows the distribution over many rolls', () => {
+    const rng = createRng(7);
+    const counts = new Map<string, number>();
+    const N = 4000;
+    for (let i = 0; i < N; i++) {
+      const before = rng.s;
+      const l = rollLanding(parseTarget('t20'), 0, rng);
+      expect(rng.s).not.toBe(before);
+      counts.set(targetNotation(l.target), (counts.get(targetNotation(l.target)) ?? 0) + 1);
+    }
+    const hit = (counts.get('T20') ?? 0) / N;
+    expect(hit).toBeGreaterThan(AIM_BASE.T / 100 - 0.04);
+    expect(hit).toBeLessThan(AIM_BASE.T / 100 + 0.04);
+    expect((counts.get('S20') ?? 0) / N).toBeGreaterThan((1 - AIM_BASE.T / 100) * 0.6 - 0.04);
+    expect(counts.size).toBe(4);
+  });
+  it('a hypothetical (no RNG) lands where it is aimed; a forced landing resolves that target through the chalk', () => {
+    const plain = resolve('t20', 501);
+    expect(plain.aim).toBe('hit');
+    expect(targetNotation(plain.hits[0].target)).toBe('T20');
+    const forced = resolveThrow(mkCard('t20'), { chalk: mkChalk(['heavy_tips']), rng: null, scoreBefore: 501, scoreAtVisitStart: 501, visitThrowIndex: 0, forgivenessUsed: true, landing: parseTarget('s20') }).result;
+    expect(forced.aim).toBe('drift');
+    expect(targetNotation(forced.aimed)).toBe('T20');
+    expect(targetNotation(forced.hits[0].target)).toBe('S20');
+    expect(forced.totalValue).toBe(25); // S20 + heavy tips
+    expect(forced.firedChalk).toEqual(['heavy_tips']);
+  });
+  it('a dart in the wall scores nothing, fires no chalk, and is not a deliberate miss', () => {
+    const r = resolveThrow(mkCard('d16'), { chalk: mkChalk(['heavy_tips', 'split_tips']), rng: null, scoreBefore: 32, scoreAtVisitStart: 32, visitThrowIndex: 0, forgivenessUsed: true, landing: { region: 'W' } }).result;
+    expect(r.aim).toBe('wall');
+    expect(r.hits).toEqual([]);
+    expect(r.totalValue).toBe(0);
+    expect(r.outcome).toBe('CONTINUE');
+    expect(r.scoreCommitted).toBe(32);
+    expect(r.firedChalk).toEqual([]);
+    expect(r.miss).toBe(false);
+  });
+  it('true aim skips the roll and leaves the RNG alone', () => {
+    const rng = createRng(3);
+    const before = rng.s;
+    const r = resolveThrow(mkCard('t20'), { chalk: [], rng, trueAim: true, scoreBefore: 501, scoreAtVisitStart: 501, visitThrowIndex: 0, forgivenessUsed: true }).result;
+    expect(r.aim).toBe('hit');
+    expect(rng.s).toBe(before);
+  });
+  it('with the RNG the roll is seeded: the same seed lands the same way, and the steadiness is recorded', () => {
+    const a = resolveThrow(mkCard('d16'), { chalk: [], rng: createRng(11), steadiness: 9, scoreBefore: 100, scoreAtVisitStart: 100, visitThrowIndex: 0, forgivenessUsed: true }).result;
+    const b = resolveThrow(mkCard('d16'), { chalk: [], rng: createRng(11), steadiness: 9, scoreBefore: 100, scoreAtVisitStart: 100, visitThrowIndex: 0, forgivenessUsed: true }).result;
+    expect(targetNotation(a.hits[0]?.target ?? { region: 'W' })).toBe(targetNotation(b.hits[0]?.target ?? { region: 'W' }));
+    expect(a.steadiness).toBe(9);
+  });
+});

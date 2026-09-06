@@ -12,20 +12,22 @@ export interface LegDef {
 }
 
 /**
- * Visit limits: the two 301 legs get ten, the 501 legs step down from eleven
- * to the Decider's four. Tuned by simulation — docs/decisions/balance.md.
+ * Visit limits, tuned by simulation twice: for the per-visit hand, and again
+ * for the aim, under which a dart can miss and a finish is a matter of
+ * chances. The two 301 legs get fourteen, the 501 legs step down from
+ * eighteen to the Decider's six. See docs/decisions/balance.md, sixth pass.
  */
-const LIMITS = [10, 10, 11, 10, 9, 8, 6, 4];
+const LIMITS = [14, 14, 18, 17, 16, 15, 11, 6];
 const STARTS = [301, 301, 501, 501, 501, 501, 501, 501];
 
 export const LEGS: LegDef[] = [
-  { name: 'First Round', visitLimit: LIMITS[0], reward: 4, start: STARTS[0] },
-  { name: 'Second Round', visitLimit: LIMITS[1], reward: 6, start: STARTS[1] },
-  { name: 'Quarter', visitLimit: LIMITS[2], reward: 8, start: STARTS[2] },
-  { name: 'Interval', visitLimit: LIMITS[3], reward: 9, start: STARTS[3] },
-  { name: 'Semi', visitLimit: LIMITS[4], reward: 11, start: STARTS[4] },
-  { name: 'Last Four', visitLimit: LIMITS[5], reward: 13, start: STARTS[5] },
-  { name: 'Final', visitLimit: LIMITS[6], reward: 15, start: STARTS[6] },
+  { name: 'First Round', visitLimit: LIMITS[0], reward: 5, start: STARTS[0] },
+  { name: 'Second Round', visitLimit: LIMITS[1], reward: 8, start: STARTS[1] },
+  { name: 'Quarter', visitLimit: LIMITS[2], reward: 10, start: STARTS[2] },
+  { name: 'Interval', visitLimit: LIMITS[3], reward: 12, start: STARTS[3] },
+  { name: 'Semi', visitLimit: LIMITS[4], reward: 14, start: STARTS[4] },
+  { name: 'Last Four', visitLimit: LIMITS[5], reward: 17, start: STARTS[5] },
+  { name: 'Final', visitLimit: LIMITS[6], reward: 20, start: STARTS[6] },
   { name: 'The Decider', visitLimit: LIMITS[7], reward: 0, start: STARTS[7] },
 ];
 

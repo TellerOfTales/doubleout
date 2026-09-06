@@ -40,6 +40,8 @@ export function mkCard(defId: string): DartCard {
 }
 
 export interface ResolveOpts {
+  /** Play the aim's odds instead of landing where aimed (default true aim). */
+  trueAim?: boolean;
   /** Gameplay RNG; null (default) disables wired deflection. */
   rng?: Rng | null;
   /** Defaults to `score`. */
@@ -57,6 +59,8 @@ export function resolve(defId: string, score: number, chalkIds: string[] = [], o
   const out = resolveThrow(mkCard(defId), {
     chalk: mkChalk(chalkIds),
     rng: opts.rng === undefined ? null : opts.rng,
+    // These tests pin chalk arithmetic; the aim's odds have their own tests.
+    trueAim: opts.trueAim ?? true,
     scoreBefore: score,
     scoreAtVisitStart: opts.scoreAtVisitStart ?? score,
     visitThrowIndex: opts.throwIndex ?? 0,
@@ -105,8 +109,12 @@ export function sha256(s: string): string {
 // ---------------------------------------------------------------- night helpers
 
 /** A fresh night with its first leg begun. Chalk ids are added (in order) before the leg starts. */
-export function startNight(seed = 1, oche: OcheId = 'local', chalk: string[] = []): NightState {
-  const n = createNight(seed, oche);
+/**
+ * A night at the oche. True aim by default: the state tests pin arithmetic and
+ * event order, not luck. Pass `trueAim = false` to play the real odds.
+ */
+export function startNight(seed = 1, oche: OcheId = 'local', chalk: string[] = [], trueAim = true): NightState {
+  const n = createNight(seed, oche, { trueAim });
   for (const id of chalk) addChalk(n, id);
   beginLeg(n);
   return n;
@@ -395,10 +403,10 @@ export function continueScripted(n: NightState, stopWhen?: (n: NightState) => bo
 
 /** Play a whole night from a seed with the scripted bot. */
 export function playScripted(seed: number, oche: OcheId = 'local'): NightState {
-  return continueScripted(startNight(seed, oche));
+  return continueScripted(startNight(seed, oche, [], false));
 }
 
 /** Play a whole night from a seed with the checkout-aware bot, optionally with starting chalk. */
 export function playSmart(seed: number, chalk: string[] = [], oche: OcheId = 'local'): NightState {
-  return continueScripted(startNight(seed, oche, chalk), undefined, true);
+  return continueScripted(startNight(seed, oche, chalk, false), undefined, true);
 }

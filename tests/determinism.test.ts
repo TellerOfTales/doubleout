@@ -10,10 +10,12 @@ import { describe, expect, it } from 'vitest';
 import { chooseCard } from '../src/core/bot.ts';
 import { createRng, nextFloat, nextInt, parseSeed, seedToString, shuffle } from '../src/core/rng.ts';
 import { beginLeg, commitCard, createNight, currentLeg, deserialiseNight, serialiseNight } from '../src/core/state.ts';
-import type { NightState } from '../src/core/types.ts';
+import type { OcheId, NightState } from '../src/core/types.ts';
 import { botPickCard, continueScripted, playScripted, playSmart, sha256, smartPickCard, startNight } from './helpers.ts';
 
 const SEED = 12345;
+/** A night that plays the real odds: determinism has to hold with the aim roll in the RNG order. */
+const aimNight = (seed: number, oche: OcheId = 'local', chalk: string[] = []) => startNight(seed, oche, chalk, false);
 const DEEP_CHALK = ['straight_out', 'overshoot', 'wide_grip', 'wired'];
 /**
  * The deep run's seed: the first from SEED upward whose checkout-aware night
@@ -87,7 +89,7 @@ describe('scripted bot: seed 12345 (TDD §17.1)', () => {
   });
 
   it('the scripted bot never consumes the night RNG when choosing', () => {
-    const n = startNight(SEED);
+    const n = aimNight(SEED);
     const before = n.rng.s;
     for (let i = 0; i < 20; i++) botPickCard(n, currentLeg(n));
     smartPickCard(n, currentLeg(n));
@@ -96,14 +98,14 @@ describe('scripted bot: seed 12345 (TDD §17.1)', () => {
 
   it('a night is a pure function of seed and inputs: replaying the recorded input script reproduces it', () => {
     const script: string[] = [];
-    const n = startNight(SEED);
+    const n = aimNight(SEED);
     while (n.status === 'ACTIVE' && n.phase === 'LEG') {
       const c = botPickCard(n, currentLeg(n));
       script.push(c.id);
       commitCard(n, c.id);
       if (script.length > 60) break;
     }
-    const m = startNight(SEED);
+    const m = aimNight(SEED);
     for (const id of script) commitCard(m, id);
     expect(serialiseNight(m)).toBe(serialiseNight(n));
   });
@@ -134,8 +136,8 @@ describe('scripted bot: fifty random seeds', () => {
   });
 
   it('the seed is stored as a uint32 and the first deal depends on it', () => {
-    const a = startNight(1);
-    const b = startNight(2);
+    const a = aimNight(1);
+    const b = aimNight(2);
     expect(a.seed).toBe(1);
     expect(b.seed).toBe(2);
     expect(createNight(-1).seed).toBe(0xffffffff);
@@ -145,7 +147,7 @@ describe('scripted bot: fifty random seeds', () => {
 
 describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
   it('serialise → deserialise is a deep round trip', () => {
-    const n = startNight(SEED);
+    const n = aimNight(SEED);
     continueScripted(n, (s) => s.stats.throwsMade >= 5);
     const copy = deserialiseNight(serialiseNight(n));
     expect(copy).toEqual(n);
@@ -154,7 +156,7 @@ describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
 
   it('a mid-leg snapshot continues identically to the uninterrupted run', () => {
     const full = serialiseNight(playScripted(SEED));
-    const live = startNight(SEED);
+    const live = aimNight(SEED);
     continueScripted(live, (s) => s.stats.throwsMade >= 7);
     expect(live.status).toBe('ACTIVE');
     const snapshot = serialiseNight(live);
@@ -168,7 +170,7 @@ describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
   it('a snapshot taken in the shop continues identically', () => {
     const chalk = DEEP_CHALK;
     const full = serialiseNight(playSmart(DEEP_SEED, chalk));
-    const live = startNight(DEEP_SEED, 'local', chalk);
+    const live = aimNight(DEEP_SEED, 'local', chalk);
     continueScripted(live, (s) => s.phase === 'SHOP', true);
     expect(live.phase).toBe('SHOP');
     expect(live.shop).not.toBeNull();
@@ -182,7 +184,7 @@ describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
     const reference = playSmart(DEEP_SEED, chalk);
     expect(reference.legIndex).toBeGreaterThanOrEqual(2);
     const full = serialiseNight(reference);
-    const live = startNight(DEEP_SEED, 'local', chalk);
+    const live = aimNight(DEEP_SEED, 'local', chalk);
     continueScripted(live, (s) => s.legIndex >= 2 && s.phase === 'LEG' && currentLeg(s).visits.length >= 2, true);
     expect(live.legIndex).toBeGreaterThanOrEqual(2);
     const resumed = deserialiseNight(serialiseNight(live));
@@ -193,7 +195,7 @@ describe('snapshot replay (serialiseNight / deserialiseNight)', () => {
   it('every intermediate snapshot of the deep run resumes to the same end state', () => {
     const chalk = DEEP_CHALK;
     const full = serialiseNight(playSmart(DEEP_SEED, chalk));
-    const live = startNight(DEEP_SEED, 'local', chalk);
+    const live = aimNight(DEEP_SEED, 'local', chalk);
     let checks = 0;
     while (live.status === 'ACTIVE') {
       continueScripted(live, (s) => s.stats.throwsMade % 9 === 0 && s.stats.throwsMade > 0 && s.phase === 'LEG', true);
@@ -253,7 +255,7 @@ describe('the balance bots (src/core/bot.ts) are deterministic too', () => {
     const a = serialiseNight(drive(SEED, policy));
     expect(serialiseNight(drive(SEED, policy))).toBe(a);
     expect(serialiseNight(drive(SEED, policy))).toBe(a);
-    const n = startNight(SEED);
+    const n = aimNight(SEED);
     const before = n.rng.s;
     chooseCard(n, currentLeg(n), policy);
     expect(n.rng.s).toBe(before);

@@ -65,7 +65,8 @@ class Tutorial {
   private h = 180;
 
   constructor(private app: App) {
-    this.night = createNight(TUTORIAL_SEED, 'local');
+    // Scripted throws: the tutorial's darts land where they are aimed.
+    this.night = createNight(TUTORIAL_SEED, 'local', { trueAim: true });
     beginLeg(this.night);
     app.night = this.night;
   }
@@ -328,7 +329,7 @@ class Tutorial {
       }
       case 'leaves': {
         this.say({
-          text: 'Sixty off, and three cards left for two darts. The number under each card is what it LEAVES you. Green means you could finish from there. Red means a dead end your deck cannot close.',
+          text: 'Sixty off, three cards for two darts. No dart is certain: the percentage on a card is its chance of landing, or, in red, its chance of a BUST. Under that is what it LEAVES if it lands. Green: you could finish from there. Red: a dead end.',
           target: () => this.handRect(),
           button: 'NEXT',
           onNext: () => {
@@ -358,7 +359,7 @@ class Tutorial {
       }
       case 'heat': {
         this.say({
-          text: 'Visit over, and the crowd warmed up: four visits without a bust and this leg pays DOUBLE. A single bust wipes it back to nothing. That is the gamble.',
+          text: 'Visit over, and the crowd warmed up. Every pip steadies your hand: a better chance on every dart. Four clean visits and the leg pays DOUBLE. One bust, or a walk to the wall, and it is gone. That is the gamble.',
           target: () => this.heatRect(),
           button: 'NEXT',
           onNext: () => {

@@ -18,8 +18,8 @@ import { cardDef, makeCard, sharpenedDefId } from '../content/cards';
 import { chalkDef } from '../content/chalkdefs';
 import { LEG_COUNT, SHANGHAI_RANGE, SHOP_REFRESH_COST } from '../content/legs';
 import { computeCheckoutHints } from './checkout';
-import { resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
-import { addChalk, beginLeg, commitCard, commitMiss, completesShanghai, createNight, currentLeg, currentVisit, hasChalk, newCard, pocketCard, shanghaiProgress, shopBuy, shopLeave, shopRefresh, type BuyOptions, visitTotal } from './state';
+import { landingDistribution, resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
+import { addChalk, beginLeg, commitCard, commitMiss, completesShanghai, createNight, currentLeg, currentVisit, hasChalk, newCard, pocketCard, shanghaiProgress, shopBuy, shopLeave, shopRefresh, steadinessOf, type BuyOptions, visitTotal } from './state';
 import type { Chalk, DartCard, LegState, NightState, OcheId, ThrowResult, VisitState } from './types';
 
 export type Policy = 'greedy' | 'checkout' | 'optimal';
@@ -93,6 +93,14 @@ const OPT = {
   finish: 250,
   /** Forfeited value of the rest of the visit when a ply-2 throw busts. */
   lostThrow: 25,
+  /**
+   * What a bust costs in the planner, in points: the visit, the crowd, the
+   * sheet and the visit limit. Odds make it a cost to weigh, not a veto: a
+   * one-in-twenty bust for sixty points is a throw, a coin flip is not.
+   */
+  bust: 420,
+  /** What a pip of heat is worth when the wall would spend it. */
+  heatPip: 20,
   /** Landing (ply 1) on an in-range number with no route in the pool. */
   unfinishable: 60,
   /** Route of length k reachable within the throws left in this visit. */
@@ -268,14 +276,7 @@ function legCtx(n: NightState, leg: LegState): LegCtx {
   for (const d of defs) {
     const vals: number[] = [];
     for (let ti = 0; ti < 4; ti++) {
-      const v = resolveThrow(d, {
-        chalk: n.chalk,
-        rng: null,
-        scoreBefore: FAR,
-        scoreAtVisitStart: FAR,
-        visitThrowIndex: ti as 0 | 1 | 2 | 3,
-        forgivenessUsed: true,
-      }).result.totalValue;
+      const v = expectedValue(n.chalk, d, ti as 0 | 1 | 2 | 3, 0);
       vals.push(v);
       if (v > maxPlain) maxPlain = v;
     }
@@ -335,6 +336,35 @@ function routeLen(ctx: LegCtx, score: number, ti: number): number {
   const len = !h.inRange ? -1 : h.best ? h.best.defIds.length : 0;
   ctx.routes.set(key, len);
   return len;
+}
+
+/** Expected points of a card thrown far from the endgame, under the odds. */
+function expectedValue(chalk: Chalk[], card: DartCard, ti: 0 | 1 | 2 | 3, steadiness: number): number {
+  let ev = 0;
+  for (const l of landingDistribution(card.target, steadiness)) {
+    ev +=
+      l.p *
+      resolveThrow(card, { chalk, rng: null, landing: l.target, scoreBefore: FAR, scoreAtVisitStart: FAR, visitThrowIndex: ti, forgivenessUsed: true }).result
+        .totalValue;
+  }
+  return ev;
+}
+
+/** Every way a throw can go from a position, with its chance. */
+function outcomes(n: NightState, leg: LegState, card: DartCard, score: number, ti: 0 | 1 | 2 | 3): { p: number; r: ThrowResult }[] {
+  const visit = currentVisit(leg);
+  return landingDistribution(card.target, steadinessOf(leg)).map((l) => ({
+    p: l.p,
+    r: resolveThrow(card, {
+      chalk: n.chalk,
+      rng: null,
+      landing: l.target,
+      scoreBefore: score,
+      scoreAtVisitStart: visit.scoreAtVisitStart,
+      visitThrowIndex: ti,
+      forgivenessUsed: leg.forgivenessUsed,
+    }).result,
+  }));
 }
 
 function classify(n: NightState, leg: LegState, card: DartCard, ti: number): ThrowResult {
@@ -423,68 +453,95 @@ function chooseCheckout(n: NightState, leg: LegState): DartCard {
  * darts over the remaining hand (at most 6·5·4 = 120 lines) and play the first
  * card of the best one.
  */
+/** The planner's answer: a card, or the wall. */
+export type Action = { card: DartCard } | { wall: true };
+
 function chooseOptimal(n: NightState, leg: LegState): DartCard {
+  const a = planVisit(n, leg);
+  return 'card' in a ? a.card : leg.hand[0];
+}
+
+/**
+ * Expectimax over the rest of the visit: every card, every place it can land,
+ * every card after that. A bust is a cost (OPT.bust) weighed against what the
+ * throw could earn, a Shanghai in range is a win off any dart, and the wall is
+ * on the table at every depth, priced at the crowd it spends.
+ */
+export function planVisit(n: NightState, leg: LegState): Action {
   const ctx = legCtx(n, leg);
   const visit = currentVisit(leg);
   const ti = visit.throws.length;
   const dartsLeft = ctx.perVisit - ti;
   const preferLow = hasChalk(n, 'practice_board');
+  const inRange = visit.scoreAtVisitStart <= SHANGHAI_RANGE;
+  const wallValue = visitValue(ctx, leg.score, 0, false) - leg.heat * OPT.heatPip;
 
-  type Line = { first: DartCard; score: number };
-  let best: Line | null = null;
-
-  // Shanghai: single, double and treble of the called number in one visit
-  // wins outright, even off a dart that would have bust. Track what the visit
-  // has already hit and what each planned dart adds.
-  const already = shanghaiProgress(leg);
   const pieceOf = (r: ThrowResult): 'S' | 'D' | 'T' | null => {
     const hit = r.hits[0];
-    if (!hit || hit.target.bed !== leg.shanghai) return null;
+    if (!hit || r.forgiven || hit.target.bed !== leg.shanghai) return null;
     const reg = hit.target.region;
     return reg === 'S' || reg === 'D' || reg === 'T' ? reg : null;
   };
 
-  const walk = (score: number, throwIndex: number, remaining: DartCard[], first: DartCard | null, spent: number, pieces: Set<string>): void => {
+  /**
+   * Value of the best play from a position, over the darts left. Deeper than
+   * the first dart the tree is pruned by card, never by landing: the second
+   * dart tries the three cards with the best plain expected value plus any
+   * finisher, the third tries two (a fourth dart and a wide grip would
+   * otherwise explode it). Every landing of every tried card is still weighed.
+   */
+  const best = (score: number, throwIndex: number, remaining: DartCard[], spent: number, pieces: Set<string>): number => {
     const dartsGone = throwIndex - ti;
-    if (dartsGone >= dartsLeft || remaining.length === 0) {
-      if (first) consider(first, visitValue(ctx, score, spent, false));
-      return;
+    if (dartsGone >= dartsLeft || remaining.length === 0) return visitValue(ctx, score, spent, false);
+    const keep = dartsGone >= 2 ? 2 : 3;
+    let pool = remaining;
+    if (remaining.length > keep) {
+      const ranked = remaining
+        .map((c) => ({ c, v: (ctx.plain.get(c.defId) ?? [0])[Math.min(3, throwIndex)] }))
+        .sort((a, b) => b.v - a.v)
+        .slice(0, keep)
+        .map((x) => x.c);
+      // a double that could finish from here is never pruned away
+      for (const c of remaining) if (!ranked.includes(c) && isDoubleDef(c.defId) && score <= 170) ranked.push(c);
+      pool = ranked;
     }
-    for (let i = 0; i < remaining.length; i++) {
-      const card = remaining[i];
-      const r = resolveThrow(card, {
-        chalk: n.chalk,
-        rng: null,
-        scoreBefore: score,
-        scoreAtVisitStart: visit.scoreAtVisitStart,
-        visitThrowIndex: throwIndex as 0 | 1 | 2 | 3,
-        forgivenessUsed: leg.forgivenessUsed,
-      }).result;
-      const head = first ?? card;
+    let top = -Infinity;
+    for (const card of pool) {
+      const v = expect(card, score, throwIndex, remaining.filter((x) => x !== card), spent, pieces);
+      if (v > top) top = v;
+    }
+    return top;
+  };
+
+  /** Expected value of throwing `card` from a position. */
+  const expect = (card: DartCard, score: number, throwIndex: number, rest: DartCard[], spent: number, pieces: Set<string>): number => {
+    const dartsGone = throwIndex - ti;
+    let ev = 0;
+    for (const { p, r } of outcomes(n, leg, card, score, throwIndex as 0 | 1 | 2 | 3)) {
       const piece = pieceOf(r);
       const withPiece = piece && !pieces.has(piece) ? new Set(pieces).add(piece) : pieces;
-      if ((withPiece.size === 3 && visit.scoreAtVisitStart <= SHANGHAI_RANGE) || r.outcome === 'CHECKOUT') {
-        // Nothing beats finishing the leg.
-        consider(head, 1e9 - dartsGone);
-        continue;
-      }
-      if (r.outcome === 'BUST') {
-        // Only worth considering if there is no alternative at all.
-        consider(head, -1e6);
-        continue;
-      }
-      const rest = remaining.slice(0, i).concat(remaining.slice(i + 1));
-      walk(r.scoreCommitted, throwIndex + 1, rest, head, spent + r.totalValue, withPiece);
+      let v: number;
+      if ((withPiece.size === 3 && inRange) || r.outcome === 'CHECKOUT') v = 1e6 - dartsGone;
+      else if (r.outcome === 'BUST') v = -OPT.bust;
+      else v = best(r.scoreCommitted, throwIndex + 1, rest, spent + r.totalValue, withPiece);
+      ev += p * v;
     }
+    return ev;
   };
 
-  const consider = (first: DartCard, value: number): void => {
-    const tie = cardDef(first.defId).value * (preferLow ? -1 : 1) * 1e-6;
-    if (!best || value + tie > best.score) best = { first, score: value + tie };
-  };
-
-  walk(leg.score, ti, leg.hand.slice(), null, 0, new Set(already));
-  return best ? (best as Line).first : leg.hand[0];
+  const already = shanghaiProgress(leg);
+  let choice: Action = { wall: true };
+  let choiceValue = wallValue;
+  for (let i = 0; i < leg.hand.length; i++) {
+    const card = leg.hand[i];
+    const rest = leg.hand.slice(0, i).concat(leg.hand.slice(i + 1));
+    const v = expect(card, leg.score, ti, rest, 0, new Set(already)) + cardDef(card.defId).value * (preferLow ? -1 : 1) * 1e-6;
+    if (v > choiceValue) {
+      choice = { card };
+      choiceValue = v;
+    }
+  }
+  return choice;
 }
 
 /**
@@ -592,18 +649,7 @@ function valueTable(chalk: Chalk[], defIds: Iterable<string>): Map<string, numbe
     if (table.has(id)) continue;
     const card = makeCard(id, 'x', 0);
     const vals: number[] = [];
-    for (let ti = 0; ti < perVisit; ti++) {
-      vals.push(
-        resolveThrow(card, {
-          chalk,
-          rng: null,
-          scoreBefore: FAR,
-          scoreAtVisitStart: FAR,
-          visitThrowIndex: ti as 0 | 1 | 2 | 3,
-          forgivenessUsed: true,
-        }).result.totalValue,
-      );
-    }
+    for (let ti = 0; ti < perVisit; ti++) vals.push(expectedValue(chalk, card, ti as 0 | 1 | 2 | 3, 0));
     table.set(id, vals);
   }
   return table;
@@ -973,12 +1019,19 @@ export function playNight(seed: number, policy: Policy, opts: PlayOptions = {}):
     if (n.phase === 'LEG') {
       const leg = currentLeg(n);
       if (policy !== 'greedy') considerPocket(n, leg);
-      const card = chooseCard(n, leg, policy);
-      // Every card would bust: throw at the wall instead of wrecking the visit —
-      // unless the "bust" is the third piece of an in-range Shanghai.
-      const walk = policy !== 'greedy' && wouldBust(n, leg, card) && !completesInRange(n, leg, card);
-      if (walk) commitMiss(n);
-      else commitCard(n, card.id);
+      if (policy === 'optimal') {
+        // The planner weighs every throw against the wall under the odds.
+        const a = planVisit(n, leg);
+        if ('wall' in a) commitMiss(n);
+        else commitCard(n, a.card.id);
+      } else {
+        const card = chooseCard(n, leg, policy);
+        // Every card would bust on a hit: throw at the wall instead of wrecking
+        // the visit — unless the "bust" is the third piece of an in-range Shanghai.
+        const walk = policy !== 'greedy' && wouldBust(n, leg, card) && !completesInRange(n, leg, card);
+        if (walk) commitMiss(n);
+        else commitCard(n, card.id);
+      }
       throws++;
     } else if (n.phase === 'SHOP') {
       if (opts.shop !== false) botShop(n, policy);

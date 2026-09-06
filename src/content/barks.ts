@@ -1387,7 +1387,66 @@ const PACKAGE_BARKS: BarkTrigger[] = [
   },
 ];
 
-BARKS.push(...PACKAGE_BARKS);
+const AIM_BARKS: BarkTrigger[] = [
+  {
+    id: 'dart_in_wall',
+    speaker: 'BARREL',
+    priority: 64,
+    cooldown: 6,
+    when: (ctx) => ctx.event.type === 'THROW' && ctx.event.result.aim === 'wall',
+    lines: [
+      "IN THE WALL! Not the board! The WALL! The wall has done nothing to deserve this!",
+      "Wide! Into the plaster! There's a dart in the wall and a hole in the plan!",
+      "Missed the board! The whole board! It's a big board, Nock! It's RIGHT THERE!",
+      "That's gone in the wall! Gerald's ducked! Gerald was nowhere near it! Instinct!",
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'Outside the double. The board is 45 centimetres across and the dart found none of it.',
+        'A double is thin. Miss it on the outside and there is nothing there but wall.',
+        'No score, no bust. The wall is neutral. The wall has always been neutral.',
+      ],
+    },
+  },
+  {
+    id: 'lucky_drift',
+    speaker: 'NOCK',
+    priority: 63,
+    cooldown: 6,
+    when: (ctx) => ctx.event.type === 'THROW' && ctx.event.result.aim === 'lucky',
+    lines: [
+      'Aimed at the single. Found the treble. I will note it as intended. It was not.',
+      'That drifted UP a ring. The chances allowed it. The chances allow most things, eventually.',
+      'Better than aimed. One throw in twenty-five does that. Enjoy it. Do not plan on it.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        "LUCKY! He'll take it! I'd take it! Gerald would take it and he's asleep!",
+        "Wrong ring, right answer! That's darts! That's the whole game in one dart!",
+      ],
+    },
+  },
+  {
+    id: 'drift_single',
+    speaker: 'NOCK',
+    priority: 30,
+    cooldown: 9,
+    when: (ctx) => {
+      if (ctx.event.type !== 'THROW') return false;
+      const r = ctx.event.result;
+      return r.aim === 'drift' && r.aimed.region === 'T' && r.hits[0]?.target.region === 'S' && r.hits[0]?.target.bed === r.aimed.bed;
+    },
+    lines: [
+      'Aimed at the treble, dropped into the single. The commonest miss there is. A third of it.',
+      'The treble bed is eight millimetres deep. The single under it forgives. Twenty, not sixty.',
+      'Just under the wire. The single. It counts, it just does not count for much.',
+    ],
+  },
+];
+
+BARKS.push(...PACKAGE_BARKS, ...AIM_BARKS);
 
 /** Every line in the bark pool, main and reply, in declaration order. */
 export function allBarkLines(triggers: BarkTrigger[] = BARKS): string[] {

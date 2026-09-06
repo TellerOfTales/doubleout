@@ -212,6 +212,8 @@ async function main(): Promise<void> {
   await run('package', land, async (d) => {
     await d.evalApp("app.startNight(2024, 'local')");
     await d.wait(900);
+    // Scripted darts: this scenario asserts the rule, not the odds.
+    await d.evalApp('app.night.trueAim = true');
     // In range (the visit began at 150), the forced trio wins the leg off a dart that would have bust.
     await d.evalApp("(function(){const s=app.state; const n=app.night; const leg=n.legs[0]; leg.shanghai=16; leg.score=150; leg.visits[0].scoreAtVisitStart=150; leg.hand=['s16','d16','t16','s20','t20'].map((x)=>s.newCard(n,x)); const g=app.scenes.current; g.score.snap(150); g.hand.deal(leg.hand); g.refreshHints(); return leg.hand.length;})()");
     await d.wait(700);
@@ -236,6 +238,7 @@ async function main(): Promise<void> {
     // the wall costs the crowd
     await d.evalApp("app.startNight(31, 'local')");
     await d.wait(900);
+    await d.evalApp('app.night.trueAim = true');
     await d.evalApp("(function(){const leg=app.night.legs[0]; leg.shanghai=3; leg.score=100000; leg.visits[0].scoreAtVisitStart=100000; app.scenes.current.score.snap(100000); app.scenes.current.refreshHints(); return 1;})()");
     for (let v = 0; v < 2; v++) {
       for (let t = 0; t < 3; t++) {

@@ -86,6 +86,12 @@ export interface ThrowResult {
   miss: boolean;
   /** True when this throw completed a Shanghai and won the leg outright. */
   shanghai: boolean;
+  /** Where the dart was aimed, before the odds and before any BOARD chalk. */
+  aimed: Target;
+  /** How the aim went: it hit, it drifted to a neighbour, it drifted somewhere better, or it went in the wall. */
+  aim: 'hit' | 'drift' | 'lucky' | 'wall';
+  /** The steadiness (percentage points added to every hit chance) the throw was made with. */
+  steadiness: number;
   /**
    * Step-by-step readout of the pipeline for the UI: one entry per chalk that
    * fired, with the targets and values after that chalk applied. Cosmetic;
@@ -250,6 +256,12 @@ export interface NightState {
   shanghaiNumbers: number[];
   /** The clean sheet: consecutive legs won with no bust and no wall. */
   streak: number;
+  /**
+   * True aim: every dart lands where it is aimed. Off in play (the odds are the
+   * game); on for the tutorial's scripted throws and for tests that pin
+   * arithmetic rather than luck.
+   */
+  trueAim: boolean;
 }
 
 // ---------- Engine events ----------

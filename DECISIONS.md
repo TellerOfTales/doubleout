@@ -282,3 +282,29 @@ The shop bot plays a Shanghai the hand offers (including off a busting dart) but
 does not pocket toward the number: measured, that heuristic cost leg 1 eight points
 because the pocket has a better job. A human hunting deliberately, buying the piece
 the shop offers, does better than the bot's numbers.
+
+## Every dart has odds (after "I still feel like I'm just counting down")
+
+68. **The aim.** Until now every dart landed where it was aimed, which made every
+    throw a subtraction and the whole leg a countdown; the developer's third
+    playtest said exactly that, and asked for strategy, risk and a touch of luck in
+    each action. So the throw itself now carries odds (`landingDistribution` in
+    `src/core/resolver.ts`, the AIM step before the BOARD stage). A single lands
+    85% of the time, a double 55%, a treble 50%, the outer bull 65%, the bull 45%.
+    A miss is structured the way a real miss is: a treble mostly drops into its own
+    single, sometimes slips a bed; a double falls short into the single, slips a
+    bed, or goes in the wall for nothing; a single slips a bed or, one miss in four,
+    finds its own treble; the bull strays to the top of the board. The roll is one
+    float from the gameplay RNG, before `wired`, so a night is still one seed. Every
+    card shows its chance of landing, or, when a landing could bust, its chance of
+    a bust, and the selected card's readout shows the whole spread. The crowd
+    steadies the hand: every pip of heat is `STEADY_PER_HEAT` points on every hit
+    chance, capped at 95, so the ride is now worth something on every dart and a
+    bust costs the odds as well as the Pot. The planner (`planVisit`) is an
+    expectimax over the distributions with a bust priced as a cost, not a veto, and
+    the wall on the table at every depth; the shop bot values cards by expected
+    points. True aim (`NightState.trueAim`) exists for the tutorial's scripted
+    throws and for tests that pin arithmetic; play never uses it. The visit limits
+    were retuned for the new expected scoring (`docs/decisions/balance.md`, sixth
+    pass). This is the change the whole loop was missing: the decision on every card
+    is now "how much do I want it, and at what odds".

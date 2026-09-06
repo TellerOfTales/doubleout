@@ -491,3 +491,90 @@ wall.
 The chalk over §15.3's 35% line on leg 8 alone: `fourth_dart` (50.3%), `wide_grip`
 (38.0%) and `last_orders` (35.3%). The guarded test (no chalk far above the field)
 passes; Fourth Dart's price stays the knob if playtesting says it is a must-buy.
+
+
+---
+
+# Sixth pass: every dart has a chance (DECISIONS.md #68)
+
+The third playtest verdict: "I still feel like I'm just counting down and maybe I
+hit zero maybe not. It needs strategy and thought with an element of risk meets a
+touch of luck in EACH action." The critics had already named the cause — every
+dart landed where it was aimed, so nothing was ever at risk at commit time — and
+the previous five passes had all been scaffolding around a throw that could not
+miss.
+
+## The aim
+
+`landingDistribution(target, steadiness)` gives every target its chances. Base
+hit rates: single 90, double 65, treble 60, outer bull 70, bull 50 (percent). A
+miss is structured like a real miss — a treble drops into its own single (60% of
+misses) or slips a bed; a double falls short into the single (40%), slips a bed
+(35%) or goes in the wall for nothing (25%); a single slips a bed (75%) or finds
+its own treble (25%); the bull strays to the top of the board. The crowd
+steadies the hand: `STEADY_PER_HEAT` (3) points per pip, capped at 95. The first
+draft used 85/55/50/65/45 and played like a coin flip; the leg-1 win rate fell to
+53% and the optimal bot lost every night. "A touch of luck" is the brief, so the
+rates came up ten points.
+
+## Retuning the limits
+
+Expected points per visit fell about a fifth and the finish became a matter of
+chances rather than arithmetic, so the visit limits went up. Measured with the
+expectimax bot at 200 nights per table:
+
+| limits | steadiness/pip | leg 1 | mean legs | busts/night | night |
+|---|---|---|---|---|---|
+| `10 10 11 10 9 8 6 4` (fifth pass) | 3 | 63% | 1.40 | 3.2 | 0.5% |
+| `12 12 14 13 12 11 8 5` | 3 | 69% | 1.81 | 4.4 | 0.5% |
+| `13 13 15 14 13 12 9 6` | 3 | 72% | 1.92 | 5.1 | 0.5% |
+| `13 13 16 15 14 13 11 8` | 4 | 71% | 1.87 | 5.0 | 2.0% |
+| `14 14 17 16 15 14 12 9` | 4 | 74% | 2.06 | 5.7 | 2.5% |
+| `14 14 18 17 16 15 11 7` | 4 | 74% | 2.08 | 5.7 | 2.5% (bare Decider 36%) |
+| **`14 14 18 17 16 15 11 6`** | **4** | **74%** | **2.25** | **6.1** | **2.3%** (bare Decider 28%) |
+
+Busts per night are inside the TDD's 3–7 band for the first time: the bot takes
+calculated risks now, because there are risks to calculate. Rewards rose about a
+third (`5 8 10 12 14 17 20`) so a build still comes online across a longer
+night; the Pot economy is measured below.
+
+## What changed in the instrument
+
+The planner is an expectimax over every card, every landing and every card after
+that (`planVisit`), with a bust priced at `OPT.bust` points rather than vetoed, so
+it takes a one-in-twenty bust for sixty points and refuses a coin flip. The wall is
+a planned option at every depth, priced at the crowd it spends. The shop bot values
+cards by expected points under the chances. The `checkout` policy still walks
+whenever its intended card would bust on a hit, which under the chances is far too
+often; the skill-gap test now measures greedy against the planner.
+
+## Where it lands
+
+300 nights, expectimax bot, tables `14 14 18 17 16 15 11 6`, rewards `5 8 10 12 14 17 20`:
+
+| metric | target | measured | |
+|---|---|---|---|
+| leg 1, greedy | > 97% | **36%** | miss — the skill gap, see the first pass |
+| leg 1, planning | — | 74% | the short game, under the chances |
+| leg 8, no chalk | < 5% | **28%** | the Decider is a wall again at six visits; a third, not a twentieth |
+| leg 8, five strong chalk | 45–60% | **75%** | a curated build is meant to pay |
+| full night (planning) | 18–28% | **2.3%** | see below |
+| full night (greedy) | < 8% | **0.0%** | ok |
+| busts per night | 3–7 | **6.1** | inside the band for the first time: risks exist to take |
+| mean legs won, planning / greedy | — | **2.25 / 0.56** | four to one |
+| Pot earned a night | — | 80 | rewards up a third, nights shorter |
+| walks to the wall per leg | — | 3.3 | the endgame waiting for a double that lands |
+
+Conditional leg win rates: `74 73 74 62 59 68 57 41`.
+
+**The night is hard now, and that is the honest number.** Before the chances a
+planning bot won 8–13% of nights; with a dart that misses it wins two or three in a
+hundred. Two things about that. First, the bot's number is a floor: it does not
+hunt the Shanghai, it prunes its own lookahead, and it never buys toward a build
+on purpose; a human who reads the percentages, keeps the crowd warm for the
+steadier hand, and pockets the right double will do better. Second, this is the
+first version where the loss is the player's: every dart that drifted was a
+chance they took with the number in front of them. Whether 2% is the right
+difficulty for a night is now a question for playtesting, and the levers are
+plain — the aim rates, the steadiness per pip, and the visit limits — rather than
+another mechanic.

@@ -8,8 +8,22 @@ import { describe, expect, it } from 'vitest';
 import { BARKS, allBarkLines } from '../src/content/barks.ts';
 import { HEAT_CAP } from '../src/content/legs.ts';
 import { Commentary, buildBarkContext, describeChalkChain, type Bark } from '../src/core/commentary.ts';
-import { addChalk, beginLeg, commitCard, commitMiss, createNight, currentLeg, pocketCard, shopBuy, shopLeave, shopRefresh } from '../src/core/state.ts';
-import type { BarkContext, BarkTrigger, EngineEvent, NightState, ThrowResult } from '../src/core/types.ts';
+import {
+  addChalk,
+  beginLeg,
+  commitCard,
+  commitMiss,
+  createNight as createNightRaw,
+  currentLeg,
+  pocketCard,
+  shopBuy,
+  shopLeave,
+  shopRefresh,
+} from '../src/core/state.ts';
+
+/** These tests pin arithmetic and event order, not luck: every dart lands where it is aimed. */
+const createNight = (seed: number, oche: OcheId = 'local') => createNightRaw(seed, oche, { trueAim: true });
+import type { OcheId, BarkContext, BarkTrigger, EngineEvent, NightState, ThrowResult } from '../src/core/types.ts';
 import { dealFromPool, play, playAll, setScore, smartPickCard } from './helpers.ts';
 
 const LINES = allBarkLines();

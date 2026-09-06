@@ -1,6 +1,6 @@
 # DOUBLE OUT
 
-A single-player darts roguelite. Work a score down from 301, then 501, to exactly zero, finishing on a
+A single-player darts roguelite. Every dart has a chance of landing and a chance of drifting. Work a score down from 301, then 501, to exactly zero, finishing on a
 double, in a shrinking number of visits — except you never aim. Throws are dealt from a deck
 you build, and the board is progressively corrupted by chalk until the arithmetic stops
 making sense. Eight legs make a night. A night can be won, and when it is, the game stops.

@@ -10,7 +10,7 @@ import { computeCheckoutHints } from './checkout';
 import { discardHand, drawHand, takeFromHand } from './deck';
 import { WALL_CARD_ID } from './board';
 import { createRng, nextInt, pickWeighted, shuffle } from './rng';
-import { resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
+import { STEADY_PER_HEAT, resolveThrow, throwsPerVisitFor, visitHandSizeFor } from './resolver';
 import { potReward } from './rules';
 import type {
   Chalk,
@@ -27,7 +27,7 @@ import type {
 
 // ---------------------------------------------------------------- creation
 
-export function createNight(seed: number, oche: OcheId = 'local'): NightState {
+export function createNight(seed: number, oche: OcheId = 'local', opts: { trueAim?: boolean } = {}): NightState {
   const n: NightState = {
     seed: seed >>> 0,
     legIndex: 0,
@@ -69,6 +69,7 @@ export function createNight(seed: number, oche: OcheId = 'local'): NightState {
     consecutiveBusts: 0,
     shanghaiNumbers: [],
     streak: 0,
+    trueAim: !!opts.trueAim,
   };
   for (const [defId, copies] of libraryFor(oche)) {
     for (let i = 0; i < copies; i++) n.library.push(newCard(n, defId));
@@ -221,6 +222,9 @@ export function commitCard(n: NightState, cardId: string): { result: ThrowResult
   const { result, forgivenessConsumed } = resolveThrow(card, {
     chalk: n.chalk,
     rng: n.rng,
+    // The crowd steadies the hand: every pip of heat is STEADY_PER_HEAT points on every hit chance.
+    steadiness: steadinessOf(leg),
+    trueAim: n.trueAim,
     scoreBefore: leg.score,
     scoreAtVisitStart: visit.scoreAtVisitStart,
     visitThrowIndex: throwIndex,
@@ -385,6 +389,11 @@ export function shanghaiProgress(leg: LegState): Set<'S' | 'D' | 'T'> {
     if (hit.target.region === 'S' || hit.target.region === 'D' || hit.target.region === 'T') seen.add(hit.target.region);
   }
   return seen;
+}
+
+/** Percentage points of hit chance the crowd is lending right now. */
+export function steadinessOf(leg: LegState): number {
+  return Math.min(HEAT_CAP, leg.heat) * STEADY_PER_HEAT;
 }
 
 /** A leg that began at the full 501 or more: the nine-darter and "a leg in six" are about that game. */

@@ -11,8 +11,8 @@ import { baseValue, targetNotation } from '../../core/board';
 import { computeCheckoutHints, type CheckoutHints } from '../../core/checkout';
 import { HEAT_CAP, LEGS, SHANGHAI_RANGE, streakMultiplier } from '../../content/legs';
 import { buildBarkContext } from '../../core/commentary';
-import { resolveThrow } from '../../core/resolver';
-import { commitCard, commitMiss, completesShanghai, currentLeg, currentVisit, legName, pocketCard, shanghaiProgress, throwsPerVisit, visitTotal } from '../../core/state';
+import { hitChance, landingDistribution, resolveThrow } from '../../core/resolver';
+import { commitCard, commitMiss, completesShanghai, currentLeg, currentVisit, legName, pocketCard, shanghaiProgress, steadinessOf, throwsPerVisit, visitTotal } from '../../core/state';
 import type { DartCard, EngineEvent, LegState, NightState, ThrowResult } from '../../core/types';
 import type { App } from '../app';
 import { BoardView } from '../boardview';
@@ -112,7 +112,10 @@ export class GameScreen implements Scene {
     this.board = new BoardView(this.layout);
     this.hand = new Hand(this.layout, {
       onThrow: (card, from, v) => this.throwCard(card, from, v),
-      onSelect: () => this.refreshHints(),
+      onSelect: (card) => {
+        this.refreshHints();
+        if (card && !this.busy) this.describeOdds(card);
+      },
       onDeal: () => {},
       sound: (n) => app.sfx(n),
     });
@@ -223,7 +226,9 @@ export class GameScreen implements Scene {
     this.hand.values.clear();
     this.hand.leaves.clear();
     this.hand.leaveKind.clear();
+    this.hand.odds.clear();
     const visit = currentVisit(leg);
+    const steady = steadinessOf(leg);
     const ti = (visit ? visit.throws.length : 0) as 0 | 1 | 2 | 3;
     const dartsLeft = throwsPerVisit(this.night) - (visit ? visit.throws.length : 0);
     for (const c of leg.hand) {
@@ -236,6 +241,24 @@ export class GameScreen implements Scene {
         forgivenessUsed: true,
       }).result;
       this.hand.values.set(c.id, r.totalValue);
+      // The odds: where the dart can land from here, and what each landing does.
+      let bust = 0;
+      let finish = 0;
+      for (const l of landingDistribution(c.target, steady)) {
+        const o = resolveThrow(c, {
+          chalk: this.night.chalk,
+          rng: null,
+          landing: l.target,
+          scoreBefore: leg.score,
+          scoreAtVisitStart: visit ? visit.scoreAtVisitStart : leg.score,
+          visitThrowIndex: ti,
+          forgivenessUsed: true,
+        }).result;
+        const trio = !!visit && visit.scoreAtVisitStart <= SHANGHAI_RANGE && completesShanghai(visit.throws, o, leg.shanghai);
+        if (o.outcome === 'CHECKOUT' || trio) finish += l.p;
+        else if (o.outcome === 'BUST') bust += l.p;
+      }
+      this.hand.odds.set(c.id, { hit: hitChance(c.target, steady), bust: Math.round(bust * 100), finish: Math.round(finish * 100) });
       // The third piece of an in-range Shanghai wins the leg whatever the
       // arithmetic says: it reads as a finish, never as a bust.
       const wins = !!visit && visit.scoreAtVisitStart <= SHANGHAI_RANGE && completesShanghai(visit.throws, r, leg.shanghai);
@@ -245,6 +268,23 @@ export class GameScreen implements Scene {
       this.hand.leaves.set(c.id, wins ? 0 : r.scoreCommitted);
       this.hand.leaveKind.set(c.id, wins ? 'finish' : this.judgeLeave(r, dartsLeft));
     }
+  }
+
+  /** The readout for a selected card: what it hits, where it drifts, what can go wrong. */
+  private describeOdds(card: DartCard): void {
+    const leg = this.leg;
+    if (leg.status !== 'ACTIVE') return;
+    const steady = steadinessOf(leg);
+    const dist = landingDistribution(card.target, steady);
+    const hit = dist[0];
+    const rest = dist.slice(1).sort((a, b) => b.p - a.p);
+    const odds = this.hand.odds.get(card.id);
+    const drift = rest
+      .map((l) => `${l.target.region === 'W' ? 'WALL' : targetNotation(l.target)} ${Math.round(l.p * 100)}%`)
+      .join(' ');
+    const tail = odds && odds.bust > 0 ? ` · BUST ${odds.bust}%` : odds && odds.finish > 0 && odds.finish < 100 ? ` · OUT ${odds.finish}%` : '';
+    this.readout = `${targetNotation(card.target)} ${Math.round(hit.p * 100)}% · ELSE ${drift}${tail}`;
+    this.readoutColor = odds && odds.bust >= 50 ? P.EMBER : P.MIST;
   }
 
   /**
@@ -396,10 +436,13 @@ export class GameScreen implements Scene {
   private *throwSequence(result: ThrowResult, from: { x: number; y: number }, v: { vx: number; vy: number }): Routine {
     const l = this.layout;
     const first = result.hits[0];
-    const intended = result.intent.card.target;
+    const intended = result.aimed;
     const deflected = result.deflected;
-    // Fly to the intended target first; a deflection hops to the neighbour on impact.
-    const to = this.board.landing(deflected ? intended : first.target);
+    const inWall = !first;
+    // Fly to where it landed (a drift is a drift from the moment it leaves the
+    // hand); a wired deflection hops to the neighbour on impact; the wall is
+    // the wall.
+    const to = inWall ? { x: l.board.x - 14, y: l.board.y + 20 + Math.round(rndRange(-8, 8)) } : this.board.landing(deflected ? intended : first.target);
     const speed = clamp01(Math.abs(v.vy) / 900);
     const duration = lerp(0.42, 0.24, speed);
     const arc = lerp(18, 40, speed);
@@ -419,6 +462,26 @@ export class GameScreen implements Scene {
 
     // impact
     let land = to;
+    if (inWall) {
+      this.app.sfx('thud', { pitch: 0.6, volume: 0.5 });
+      this.shake.hit(1, 0.12);
+      this.sparks(to.x, to.y, 4, P.MIST);
+      this.float('IN THE WALL', l.orientation === 'landscape' ? l.board.x + 30 : l.boardCentre.x, to.y - 8, P.EMBER, 1, 1.3);
+      this.readout = `${targetNotation(intended)} MISSED THE BOARD. NO SCORE.`;
+      this.readoutColor = P.EMBER;
+      this.hand.sync(this.leg.hand);
+      this.refreshHints();
+      this.hooks.onEvent?.({ type: 'THROW', result }, this);
+      this.bark({ type: 'THROW', result }, result);
+      yield 0.5;
+      for (const e of this.pendingEvents) yield* this.playEvent(e, result);
+      this.pendingEvents = [];
+      return;
+    }
+    if (result.aim === 'drift' || result.aim === 'lucky') {
+      const lucky = result.aim === 'lucky';
+      this.float(`${lucky ? 'LUCKY' : 'DRIFT'} → ${targetNotation(first.target)}`, l.boardCentre.x, l.board.y - 2, lucky ? P.BAIZE_LIT : P.MIST, 1, 1.2);
+    }
     if (deflected) {
       this.app.sfx('wire');
       this.board.wired.fire(0.5);
@@ -557,7 +620,8 @@ export class GameScreen implements Scene {
         this.refreshHints();
         if (this.leg.visits.length > 1) {
           const v = this.leg.visits[this.leg.visits.length - 1];
-          this.readout = `VISIT ${v.index + 1} OF ${this.leg.visitLimit} · ${e.hand.length} CARDS, ${throwsPerVisit(this.night)} DARTS`;
+          const steady = steadinessOf(this.leg);
+          this.readout = `VISIT ${v.index + 1} OF ${this.leg.visitLimit} · ${e.hand.length} CARDS, ${throwsPerVisit(this.night)} DARTS${steady > 0 ? ` · CROWD +${steady}% ON EVERY DART` : ''}`;
           this.readoutColor = this.leg.visitLimit - v.index <= 2 ? P.EMBER : P.MIST;
         }
         if (this.leg.peek.length) this.float('PEEK', l.chalkStrip.x + 60, l.chalkStrip.y - 6, P.BAIZE_LIT, 1, 1);

@@ -6,19 +6,30 @@
  *   subtract
  *   RULE stage  (decides what the number means: checkout / bust / continue)
  *
- * Chalk within a stage resolves in acquisition order. The only random
- * element is `wired`, which consumes the gameplay RNG.
+ * Chalk within a stage resolves in acquisition order. Before the BOARD stage
+ * the AIM step decides where the dart actually lands: every target has odds,
+ * a miss drifts to a neighbouring bed or ring (or the wall, for a double), and
+ * the roll consumes the gameplay RNG. `wired` also consumes it, afterwards.
  */
 import { anticlockwiseAdjacent, baseValue, clockwiseAdjacent, isDoubleRegion, oppositeBed } from './board';
 import { nextFloat } from './rng';
-import type { Chalk, ChalkStage, DartCard, ResolvedHit, Rng, Target, ThrowResult, TraceStep } from './types';
+import type { Bed, Chalk, ChalkStage, DartCard, Region, ResolvedHit, Rng, Target, ThrowResult, TraceStep } from './types';
 import { targetNotation } from './board';
 
 export interface ResolveContext {
   /** Held chalk, any order; sorted by acquisition order internally. */
   chalk: Chalk[];
-  /** Gameplay RNG. Only consumed by `wired`. Pass null to resolve without deflection (hints, bots). */
+  /**
+   * Gameplay RNG, consumed by the aim roll and by `wired`. Pass null to resolve
+   * a hypothetical: the dart lands where it is aimed (or where `landing` says).
+   */
   rng: Rng | null;
+  /** Percentage points added to every hit chance (the crowd's steadiness). Default 0. */
+  steadiness?: number;
+  /** True aim: skip the odds, the dart lands where aimed. */
+  trueAim?: boolean;
+  /** Force where the dart lands (for enumerating outcomes). Overrides the roll. */
+  landing?: Target;
   scoreBefore: number;
   /** Score at the start of the visit; a plain bust reverts to this. */
   scoreAtVisitStart: number;
@@ -62,6 +73,98 @@ export function throwsPerVisitFor(chalk: Chalk[]): number {
   return has(chalk, 'fourth_dart') ? 4 : 3;
 }
 
+// ---------------------------------------------------------------- the aim
+
+/** One place the dart can land, with its chance. */
+export interface Landing {
+  target: Target;
+  /** Probability, 0..1. */
+  p: number;
+  kind: 'hit' | 'drift' | 'lucky' | 'wall';
+}
+
+/**
+ * Base chance, in percentage points, of a dart landing where it is aimed.
+ * Singles are big, doubles are thin, trebles thinner, the bull smallest.
+ */
+export const AIM_BASE: Record<Exclude<Region, 'W'>, number> = { S: 90, D: 65, T: 60, OB: 70, IB: 50 };
+/** No hand is steadier than this. */
+export const AIM_CAP = 95;
+/** Percentage points of steadiness per pip of heat: the crowd carries you. */
+export const STEADY_PER_HEAT = 4;
+/** The wall of the board: a double missed on the outside scores nothing. */
+const WALL: Target = { region: 'W' };
+/** Where a bull that misses ends up: the top of the board, mostly. */
+const BULL_STRAY: Bed[] = [20, 5, 1];
+
+/**
+ * Where a dart aimed at `target` can land, and how likely each is. The miss
+ * mass is shared out by region: a treble usually drops into its own single;
+ * a double either falls short into the single, slips a bed, or goes in the
+ * wall; a single mostly slips a bed and sometimes finds its own treble.
+ */
+export function landingDistribution(target: Target, steadiness = 0): Landing[] {
+  if (target.region === 'W') return [{ target: WALL, p: 1, kind: 'wall' }];
+  const hit = Math.min(AIM_CAP, AIM_BASE[target.region] + Math.max(0, steadiness)) / 100;
+  const miss = 1 - hit;
+  const out: Landing[] = [{ target: { ...target }, p: hit, kind: 'hit' }];
+  const bed = target.bed;
+  if (target.region === 'OB' || target.region === 'IB') {
+    const other: Target = { region: target.region === 'OB' ? 'IB' : 'OB' };
+    const share = target.region === 'OB' ? 0.25 : 0.55;
+    out.push({ target: other, p: miss * share, kind: target.region === 'OB' ? 'lucky' : 'drift' });
+    for (const b of BULL_STRAY) out.push({ target: { region: 'S', bed: b }, p: (miss * (1 - share)) / BULL_STRAY.length, kind: 'drift' });
+    return out;
+  }
+  if (bed === undefined) return out;
+  const cw = clockwiseAdjacent(bed);
+  const acw = anticlockwiseAdjacent(bed);
+  switch (target.region) {
+    case 'S':
+      out.push({ target: { region: 'S', bed: cw }, p: miss * 0.45, kind: 'drift' });
+      out.push({ target: { region: 'S', bed: acw }, p: miss * 0.3, kind: 'drift' });
+      out.push({ target: { region: 'T', bed }, p: miss * 0.25, kind: 'lucky' });
+      break;
+    case 'T':
+      out.push({ target: { region: 'S', bed }, p: miss * 0.6, kind: 'drift' });
+      out.push({ target: { region: 'T', bed: cw }, p: miss * 0.2, kind: 'drift' });
+      out.push({ target: { region: 'T', bed: acw }, p: miss * 0.2, kind: 'drift' });
+      break;
+    case 'D':
+      out.push({ target: { region: 'S', bed }, p: miss * 0.4, kind: 'drift' });
+      out.push({ target: { region: 'D', bed: cw }, p: miss * 0.2, kind: 'drift' });
+      out.push({ target: { region: 'D', bed: acw }, p: miss * 0.15, kind: 'drift' });
+      out.push({ target: WALL, p: miss * 0.25, kind: 'wall' });
+      break;
+  }
+  return out;
+}
+
+/** Hit chance, as a whole percentage, for the card face. */
+export function hitChance(target: Target, steadiness = 0): number {
+  if (target.region === 'W') return 100;
+  return Math.min(AIM_CAP, AIM_BASE[target.region] + Math.max(0, steadiness));
+}
+
+/** Roll the landing from the gameplay RNG. Consumes exactly one float. */
+export function rollLanding(target: Target, steadiness: number, rng: Rng): Landing {
+  const dist = landingDistribution(target, steadiness);
+  let u = nextFloat(rng);
+  for (const l of dist) {
+    if (u < l.p) return l;
+    u -= l.p;
+  }
+  return dist[dist.length - 1];
+}
+
+function landingKind(aimed: Target, landed: Target): Landing['kind'] {
+  if (landed.region === 'W') return 'wall';
+  if (landed.region === aimed.region && landed.bed === aimed.bed) return 'hit';
+  const dist = landingDistribution(aimed, 0);
+  const found = dist.find((l) => l.target.region === landed.region && l.target.bed === landed.bed);
+  return found ? found.kind : 'drift';
+}
+
 export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput {
   if (card.target.region === 'W') {
     // A deliberate miss: the dart is spent, nothing on the board is hit, no chalk fires.
@@ -79,6 +182,9 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
         deflected: false,
         miss: true,
         shanghai: false,
+        aimed: { ...card.target },
+        aim: 'wall',
+        steadiness: 0,
         trace: [],
       },
       forgivenessConsumed: false,
@@ -91,8 +197,42 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
   const note = (chalkId: string, stage: ChalkStage, targets: Target[], values: number[], text: string) =>
     trace.push({ chalkId, stage, targets: targets.map((t) => ({ ...t })), values: values.slice(), note: text });
 
+  // ---------------- 2. AIM ----------------
+  // Every target has odds. A hypothetical (no RNG) lands where it is aimed
+  // unless a landing is forced; true aim skips the roll altogether.
+  const steadiness = Math.max(0, ctx.steadiness ?? 0);
+  const aimed: Target = { ...card.target };
+  let landed: Target = aimed;
+  if (ctx.landing) landed = { ...ctx.landing };
+  else if (ctx.rng && !ctx.trueAim) landed = { ...rollLanding(aimed, steadiness, ctx.rng).target };
+  const aim = landingKind(aimed, landed);
+  if (landed.region === 'W') {
+    // In the wall: the dart is spent, nothing on the board is hit, no chalk fires.
+    return {
+      result: {
+        intent: { card, visitThrowIndex: ctx.visitThrowIndex },
+        hits: [],
+        totalValue: 0,
+        scoreBefore: ctx.scoreBefore,
+        scoreAfter: ctx.scoreBefore,
+        outcome: 'CONTINUE',
+        firedChalk: [],
+        scoreCommitted: ctx.scoreBefore,
+        forgiven: false,
+        deflected: false,
+        miss: false,
+        shanghai: false,
+        aimed,
+        aim: 'wall',
+        steadiness,
+        trace: [],
+      },
+      forgivenessConsumed: false,
+    };
+  }
+
   // ---------------- 3. BOARD stage ----------------
-  let targets: Target[] = [{ ...card.target }];
+  let targets: Target[] = [landed];
   for (const c of chalk) {
     if (c.def.stage !== 'BOARD') continue;
     switch (c.def.id) {
@@ -361,6 +501,9 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
     deflected,
     miss: false,
     shanghai: false,
+    aimed,
+    aim,
+    steadiness,
     trace,
   };
   return { result, forgivenessConsumed };

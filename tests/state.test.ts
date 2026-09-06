@@ -32,7 +32,7 @@ import {
   cardPrice,
   commitCard,
   commitMiss,
-  createNight,
+  createNight as createNightRaw,
   currentLeg,
   currentVisit,
   generateShop,
@@ -49,6 +49,9 @@ import {
   visitHandSize,
   visitTotal,
 } from '../src/core/state.ts';
+
+/** These tests pin arithmetic and event order, not luck: every dart lands where it is aimed. */
+const createNight = (seed: number, oche: OcheId = 'local') => createNightRaw(seed, oche, { trueAim: true });
 import type { EngineEvent, NightState, OcheId, PotBreakdown, ShopSlot } from '../src/core/types.ts';
 import {
   baseOf,
@@ -271,8 +274,8 @@ describe('legs and visit limits (TDD §4)', () => {
     // The numbers moved with the per-visit hand (docs/decisions/balance.md) and
     // they are pinned here: every leg length and payout in the game comes from
     // this table, so it must never drift by accident.
-    expect(LEGS.map((l) => l.visitLimit)).toEqual([10, 10, 11, 10, 9, 8, 6, 4]);
-    expect(LEGS.map((l) => l.reward)).toEqual([4, 6, 8, 9, 11, 13, 15, 0]);
+    expect(LEGS.map((l) => l.visitLimit)).toEqual([14, 14, 18, 17, 16, 15, 11, 6]);
+    expect(LEGS.map((l) => l.reward)).toEqual([5, 8, 10, 12, 14, 17, 20, 0]);
     // The short game opens the night: two legs of 301, then the full 501.
     expect(LEGS.map((l) => l.start)).toEqual([301, 301, 501, 501, 501, 501, 501, 501]);
     // And the shape those numbers have to keep: every leg tighter (fewer
@@ -1067,24 +1070,26 @@ describe('heat: the crowd warms up, a bust wipes it', () => {
     expect(leg.heat).toBe(1);
     setScore(n, 40);
     play(n, 'd20'); // the finishing visit takes it to 2
-    // base 6 + 8 unused + 3 clean = 17, warmed by 2/4 of itself: 8.5 → 8.
+    // base + unused + 3 clean, warmed by 2/4 of itself, floored.
+    const sub = LEGS[1].reward + (LEGS[1].visitLimit - 2) + 3;
     expect(leg.reward).toEqual({
-      base: 6,
+      base: LEGS[1].reward,
       unusedVisits: LEGS[1].visitLimit - 2,
       bigFinish: 0,
       cleanLeg: 3,
       nineDarter: 0,
       setup: 0,
       heat: 2,
-      heatBonus: 8,
+      heatBonus: Math.floor(sub / 2),
       ...FIRST_CLEAN,
-      total: 25,
+      total: sub + Math.floor(sub / 2),
       checkoutFrom: 40,
       visitsUsed: 2,
     });
-    expect(subtotalOf(leg.reward as PotBreakdown)).toBe(17);
+    expect(subtotalOf(leg.reward as PotBreakdown)).toBe(sub);
+    expect(sub % 2).toBe(1); // an odd subtotal, so the floor actually bites
     expect(leg.reward).toEqual(potReward(leg, n.streak));
-    expect(n.pot).toBe(25);
+    expect(n.pot).toBe(sub + Math.floor(sub / 2));
   });
   it('every leg starts cold', () => {
     const n = startNight(23);
@@ -1156,19 +1161,20 @@ describe('the setup bonus: leaving it right', () => {
     expect(leg.setupBonuses).toBe(SETUP_BONUS);
     playAll(n, ['d20', 'd20']); // 80 → 40 → 0
     const r = currentLeg(n).reward as PotBreakdown;
-    // base 4 + 8 unused + 3 clean + 1 setup = 16, and the wall left the crowd
-    // cold so only the finishing visit is warm: floor(16/4) = 4 on top.
+    // base + unused + 3 clean + 1 setup, and the wall left the crowd cold so
+    // only the finishing visit is warm: a quarter on top, floored.
+    const sub = LEGS[0].reward + (LEGS[0].visitLimit - 2) + 3 + 1;
     expect(r).toEqual({
-      base: 4,
+      base: LEGS[0].reward,
       unusedVisits: LEGS[0].visitLimit - 2,
       bigFinish: 0,
       cleanLeg: 3,
       nineDarter: 0,
       setup: 1,
       heat: 1,
-      heatBonus: 4,
+      heatBonus: Math.floor(sub / 4),
       ...FIRST_CLEAN,
-      total: 20,
+      total: sub + Math.floor(sub / 4),
       checkoutFrom: 80,
       visitsUsed: 2,
     });

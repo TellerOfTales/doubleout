@@ -59,6 +59,8 @@ export class Hand {
   hintOn = true;
   /** The leg's Shanghai number: cards of it wear a corner mark. */
   shanghaiBed: number | null = null;
+  /** Per card: chance it lands where aimed, chance the throw busts, chance it finishes (percent). */
+  odds = new Map<string, { hit: number; bust: number; finish: number }>();
   time = 0;
 
   drag: {
@@ -129,6 +131,7 @@ export class Hand {
   }
 
   clear(): void {
+    this.odds.clear();
     this.cards = [];
     this.selectedId = null;
     this.drag = null;
@@ -354,14 +357,24 @@ export class Hand {
     const vcol = disallowed ? P.PEWTER : isBust ? P.EMBER : isRoute ? P.BRASS_LIT : P.CHALK;
     const vs = String(value);
     const vScale = vs.length * 12 - 1 <= cardW - 8 ? 2 : 1;
-    r.text(vs, x + cardW / 2, y + (bigScale === 2 ? 25 : 21), { color: vcol, align: 'center', scale: vScale, shadow: P.INK });
+    r.text(vs, x + cardW / 2, y + (bigScale === 2 ? 22 : 19), { color: vcol, align: 'center', scale: vScale, shadow: P.INK });
 
-    // What it leaves you — the whole tactical read, on the card.
+    // The odds — the number you are gambling on. Bust risk when there is any,
+    // otherwise the chance of landing it.
+    const odds = this.odds.get(c.card.id);
+    if (odds && !disallowed) {
+      const risky = odds.bust > 0;
+      const label = risky ? `${odds.bust}%!` : `${odds.hit}%`;
+      const col = risky ? (odds.bust >= 50 ? P.EMBER : P.CLARET_LIT) : odds.hit >= 75 ? P.BAIZE_LIT : odds.hit >= 55 ? P.BRASS : P.MIST;
+      r.text(label, x + cardW / 2, y + 36, { color: col, align: 'center', shadow: P.INK });
+    }
+
+    // What it leaves you if it lands — the whole tactical read, on the card.
     const leaves = this.leaves.get(c.card.id);
     const kind = this.leaveKind.get(c.card.id);
     if (leaves !== undefined && this.hintOn) {
-      for (let i = 4; i < cardW - 4; i += 2) r.pixel(x + i, y + 41, P.SHADE);
-      const label = kind === 'bust' ? 'BUST' : kind === 'finish' ? 'OUT!' : `→${leaves}`;
+      for (let i = 4; i < cardW - 4; i += 2) r.pixel(x + i, y + 45, P.SHADE);
+      const label = kind === 'bust' ? 'BUST' : kind === 'finish' ? (odds && odds.finish < 100 ? `OUT ${odds.finish}%` : 'OUT!') : `→${leaves}`;
       const col = disallowed
         ? P.PEWTER
         : kind === 'bust'
@@ -373,7 +386,7 @@ export class Hand {
               : kind === 'dead'
                 ? P.CLARET_LIT
                 : P.MIST;
-      r.text(label, x + cardW / 2, y + 45, { color: col, align: 'center', shadow: P.INK });
+      r.text(label, x + cardW / 2, y + 48, { color: col, align: 'center', shadow: P.INK });
     }
     // flight colour, tucked into the band corners so the numbers keep the room
     const flightCol = [P.SKY, P.CLARET_LIT, P.BAIZE_LIT, P.BRASS][c.card.flight];
