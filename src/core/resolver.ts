@@ -13,7 +13,7 @@
  */
 import { anticlockwiseAdjacent, baseValue, clockwiseAdjacent, isDoubleRegion, oppositeBed } from './board';
 import { nextFloat } from './rng';
-import type { Bed, Chalk, ChalkStage, DartCard, Region, ResolvedHit, Rng, Target, ThrowResult, TraceStep } from './types';
+import type { Bed, Chalk, ChalkStage, Region, ResolvedHit, Rng, Target, ThrowResult, TraceStep } from './types';
 import { targetNotation } from './board';
 
 export interface ResolveContext {
@@ -30,6 +30,12 @@ export interface ResolveContext {
   trueAim?: boolean;
   /** Force where the dart lands (for enumerating outcomes). Overrides the roll. */
   landing?: Target;
+  /**
+   * One-shot interventions spent on this dart. Unlike the deck they replaced,
+   * these never say where to aim — they change what happens to the throw the
+   * player had already chosen. See content/interventions.ts.
+   */
+  use?: string[];
   scoreBefore: number;
   /** Score at the start of the visit; a plain bust reverts to this. */
   scoreAtVisitStart: number;
@@ -52,22 +58,6 @@ function byOrder(chalk: Chalk[]): Chalk[] {
   return chalk.slice().sort((a, b) => a.order - b.order);
 }
 
-/** Spare cards over the dart count. Tuned by simulation — see docs/decisions/balance.md. */
-export const VISIT_HAND_SPARE = 2;
-
-/**
- * Cards dealt at the start of a visit, to be spent across its darts.
- * One spare over the dart count, so there is always a choice to make and
- * spending the big card early costs you the later darts. Wide Grip adds a
- * card, Tunnel Vision takes one away (and pays for it in value).
- */
-export function visitHandSizeFor(chalk: Chalk[]): number {
-  let size = throwsPerVisitFor(chalk) + VISIT_HAND_SPARE;
-  if (has(chalk, 'wide_grip')) size += 1;
-  if (has(chalk, 'tunnel_vision')) size -= 1;
-  return Math.max(1, size);
-}
-
 /** Throws per visit after DEAL chalk. */
 export function throwsPerVisitFor(chalk: Chalk[]): number {
   return has(chalk, 'fourth_dart') ? 4 : 3;
@@ -85,33 +75,54 @@ export interface Landing {
 
 /**
  * Base chance, in percentage points, of a dart landing where it is aimed.
- * Singles are big, doubles are thin, trebles thinner, the bull smallest.
+ *
+ * The gap between these numbers *is* the game's risk dial, so the safe end has
+ * to be genuinely safe. A single at the number you called is as near certain
+ * as makes no difference — that is the thing you give up when you go for the
+ * treble. When everything wobbles, nothing is a gamble, which is what the
+ * third playtest found: "maybe I hit zero maybe not."
+ * See docs/decisions/design.md §2.
  */
-export const AIM_BASE: Record<Exclude<Region, 'W'>, number> = { S: 90, D: 65, T: 60, OB: 70, IB: 50 };
-/** No hand is steadier than this. */
-export const AIM_CAP = 95;
+export const AIM_BASE: Record<Exclude<Region, 'W'>, number> = { S: 97, D: 50, T: 45, OB: 60, IB: 30 };
+/**
+ * Steadiness cannot flatten the risk dial. It closes a fraction of the gap
+ * between a target and certainty, so it is worth a lot on the bull and almost
+ * nothing on a single you were going to hit anyway — and a fully steadied
+ * treble still lands under sixty percent of the time. If it were a flat
+ * addition, enough crowd and chalk would make a treble as safe as a single and
+ * there would be nothing left to gamble with. See docs/decisions/design.md §5.2.
+ */
+export const STEADY_MAX = 26;
+/** No hand is steadier than this, on any target. */
+export const AIM_CAP = 98;
 /** Percentage points of steadiness per pip of heat: the crowd carries you. */
 export const STEADY_PER_HEAT = 4;
-/** The wall of the board: a double missed on the outside scores nothing. */
+/** The wall of the board: a dart that missed the board entirely scores nothing. */
 const WALL: Target = { region: 'W' };
 /** Where a bull that misses ends up: the top of the board, mostly. */
 const BULL_STRAY: Bed[] = [20, 5, 1];
 
 /**
- * Where a dart aimed at `target` can land, and how likely each is. The miss
- * mass is shared out by region: a treble usually drops into its own single;
- * a double either falls short into the single, slips a bed, or goes in the
- * wall; a single mostly slips a bed and sometimes finds its own treble.
+ * Where a dart aimed at `target` can land, and how likely each is.
+ *
+ * The miss mass is shared out the way a real board shares it. Miss the treble
+ * twenty and you mostly get the single twenty, sometimes the five or the one
+ * beside it, occasionally the treble next door, and once in a while nothing at
+ * all. Miss a double and you are usually off the board altogether, which is
+ * why doubles are the expensive shot and why the checkout is the hard part.
+ * Miss a single, in the rare event you do, and you might just find the treble
+ * underneath it.
  */
 export function landingDistribution(target: Target, steadiness = 0): Landing[] {
   if (target.region === 'W') return [{ target: WALL, p: 1, kind: 'wall' }];
-  const hit = Math.min(AIM_CAP, AIM_BASE[target.region] + Math.max(0, steadiness)) / 100;
+  const hit = hitChance(target, steadiness) / 100;
   const miss = 1 - hit;
   const out: Landing[] = [{ target: { ...target }, p: hit, kind: 'hit' }];
+  if (miss <= 0) return out;
   const bed = target.bed;
   if (target.region === 'OB' || target.region === 'IB') {
     const other: Target = { region: target.region === 'OB' ? 'IB' : 'OB' };
-    const share = target.region === 'OB' ? 0.25 : 0.55;
+    const share = target.region === 'OB' ? 0.2 : 0.55;
     out.push({ target: other, p: miss * share, kind: target.region === 'OB' ? 'lucky' : 'drift' });
     for (const b of BULL_STRAY) out.push({ target: { region: 'S', bed: b }, p: (miss * (1 - share)) / BULL_STRAY.length, kind: 'drift' });
     return out;
@@ -121,34 +132,72 @@ export function landingDistribution(target: Target, steadiness = 0): Landing[] {
   const acw = anticlockwiseAdjacent(bed);
   switch (target.region) {
     case 'S':
-      out.push({ target: { region: 'S', bed: cw }, p: miss * 0.45, kind: 'drift' });
-      out.push({ target: { region: 'S', bed: acw }, p: miss * 0.3, kind: 'drift' });
+      // Barely ever happens. When it does it is a neighbouring bed, or the
+      // treble you were sitting on top of all along.
+      out.push({ target: { region: 'S', bed: cw }, p: miss * 0.4, kind: 'drift' });
+      out.push({ target: { region: 'S', bed: acw }, p: miss * 0.25, kind: 'drift' });
       out.push({ target: { region: 'T', bed }, p: miss * 0.25, kind: 'lucky' });
+      out.push({ target: { region: 'D', bed }, p: miss * 0.1, kind: 'lucky' });
       break;
     case 'T':
-      out.push({ target: { region: 'S', bed }, p: miss * 0.6, kind: 'drift' });
-      out.push({ target: { region: 'T', bed: cw }, p: miss * 0.2, kind: 'drift' });
-      out.push({ target: { region: 'T', bed: acw }, p: miss * 0.2, kind: 'drift' });
+      // Thin band, wide bed. High and you are in the single, wide and you are
+      // in the neighbour, and the board does not always catch you.
+      out.push({ target: { region: 'S', bed }, p: miss * 0.5, kind: 'drift' });
+      out.push({ target: { region: 'S', bed: cw }, p: miss * 0.16, kind: 'drift' });
+      out.push({ target: { region: 'S', bed: acw }, p: miss * 0.14, kind: 'drift' });
+      out.push({ target: { region: 'T', bed: cw }, p: miss * 0.06, kind: 'drift' });
+      out.push({ target: { region: 'T', bed: acw }, p: miss * 0.06, kind: 'drift' });
+      out.push({ target: WALL, p: miss * 0.08, kind: 'wall' });
       break;
     case 'D':
-      out.push({ target: { region: 'S', bed }, p: miss * 0.4, kind: 'drift' });
-      out.push({ target: { region: 'D', bed: cw }, p: miss * 0.2, kind: 'drift' });
-      out.push({ target: { region: 'D', bed: acw }, p: miss * 0.15, kind: 'drift' });
-      out.push({ target: WALL, p: miss * 0.25, kind: 'wall' });
+      // The outside edge of the board is right there. Most misses are off it.
+      out.push({ target: WALL, p: miss * 0.36, kind: 'wall' });
+      out.push({ target: { region: 'S', bed }, p: miss * 0.34, kind: 'drift' });
+      out.push({ target: { region: 'D', bed: cw }, p: miss * 0.1, kind: 'drift' });
+      out.push({ target: { region: 'D', bed: acw }, p: miss * 0.08, kind: 'drift' });
+      out.push({ target: { region: 'S', bed: cw }, p: miss * 0.06, kind: 'drift' });
+      out.push({ target: { region: 'S', bed: acw }, p: miss * 0.06, kind: 'drift' });
       break;
   }
   return out;
 }
 
-/** Hit chance, as a whole percentage, for the card face. */
+/**
+ * The same distribution with the wall taken out and its weight shared back
+ * over everything that stayed on the board. This is what CALLED does: it does
+ * not make the dart better, it just guarantees it lands somewhere.
+ */
+export function withoutTheWall(dist: Landing[]): Landing[] {
+  const lost = dist.filter((l) => l.kind === 'wall').reduce((a, l) => a + l.p, 0);
+  if (lost <= 0) return dist;
+  const kept = dist.filter((l) => l.kind !== 'wall');
+  if (!kept.length) return dist;
+  const scale = 1 / (1 - lost);
+  return kept.map((l) => ({ ...l, p: l.p * scale }));
+}
+
+/** The landing spread for a dart, after the interventions spent on it. */
+export function spreadFor(target: Target, steadiness: number, use: string[] = []): Landing[] {
+  const lift = steadiness + (use.includes('steady') ? STEADY_INTERVENTION : 0);
+  const dist = landingDistribution(target, lift);
+  return use.includes('called') ? withoutTheWall(dist) : dist;
+}
+
+/** Percentage points STEADY is worth on the dart it is spent on. */
+export const STEADY_INTERVENTION = 25;
+
+/** Hit chance, as a whole percentage, for the readout on the board. */
 export function hitChance(target: Target, steadiness = 0): number {
   if (target.region === 'W') return 100;
-  return Math.min(AIM_CAP, AIM_BASE[target.region] + Math.max(0, steadiness));
+  const base = AIM_BASE[target.region];
+  const points = Math.min(STEADY_MAX, Math.max(0, steadiness));
+  const lift = (points * (100 - base)) / 100;
+  return Math.min(AIM_CAP, base + lift);
 }
 
 /** Roll the landing from the gameplay RNG. Consumes exactly one float. */
-export function rollLanding(target: Target, steadiness: number, rng: Rng): Landing {
-  const dist = landingDistribution(target, steadiness);
+export function rollLanding(target: Target, steadiness: number, rng: Rng, use: string[] = []): Landing {
+  const dist = spreadFor(target, steadiness, use);
   let u = nextFloat(rng);
   for (const l of dist) {
     if (u < l.p) return l;
@@ -157,20 +206,20 @@ export function rollLanding(target: Target, steadiness: number, rng: Rng): Landi
   return dist[dist.length - 1];
 }
 
-function landingKind(aimed: Target, landed: Target): Landing['kind'] {
+function landingKind(aimed: Target, landed: Target, steadiness = 0, use: string[] = []): Landing['kind'] {
   if (landed.region === 'W') return 'wall';
   if (landed.region === aimed.region && landed.bed === aimed.bed) return 'hit';
-  const dist = landingDistribution(aimed, 0);
+  const dist = spreadFor(aimed, steadiness, use);
   const found = dist.find((l) => l.target.region === landed.region && l.target.bed === landed.bed);
   return found ? found.kind : 'drift';
 }
 
-export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput {
-  if (card.target.region === 'W') {
+export function resolveThrow(target: Target, ctx: ResolveContext): ResolveOutput {
+  if (target.region === 'W') {
     // A deliberate miss: the dart is spent, nothing on the board is hit, no chalk fires.
     return {
       result: {
-        intent: { card, visitThrowIndex: ctx.visitThrowIndex },
+        intent: { target: { ...target }, visitThrowIndex: ctx.visitThrowIndex },
         hits: [],
         totalValue: 0,
         scoreBefore: ctx.scoreBefore,
@@ -181,8 +230,7 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
         forgiven: false,
         deflected: false,
         miss: true,
-        shanghai: false,
-        aimed: { ...card.target },
+        aimed: { ...target },
         aim: 'wall',
         steadiness: 0,
         trace: [],
@@ -201,16 +249,24 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
   // Every target has odds. A hypothetical (no RNG) lands where it is aimed
   // unless a landing is forced; true aim skips the roll altogether.
   const steadiness = Math.max(0, ctx.steadiness ?? 0);
-  const aimed: Target = { ...card.target };
+  const use = ctx.use ?? [];
+  const aimed: Target = { ...target };
   let landed: Target = aimed;
   if (ctx.landing) landed = { ...ctx.landing };
-  else if (ctx.rng && !ctx.trueAim) landed = { ...rollLanding(aimed, steadiness, ctx.rng).target };
-  const aim = landingKind(aimed, landed);
+  else if (ctx.rng && !ctx.trueAim) {
+    landed = { ...rollLanding(aimed, steadiness, ctx.rng, use).target };
+    // AGAIN: throw it a second time. The second dart stands, good or bad.
+    if (use.includes('again')) {
+      landed = { ...rollLanding(aimed, steadiness, ctx.rng, use).target };
+      fired.push('again');
+    }
+  }
+  const aim = landingKind(aimed, landed, steadiness, use);
   if (landed.region === 'W') {
     // In the wall: the dart is spent, nothing on the board is hit, no chalk fires.
     return {
       result: {
-        intent: { card, visitThrowIndex: ctx.visitThrowIndex },
+        intent: { target: { ...target }, visitThrowIndex: ctx.visitThrowIndex },
         hits: [],
         totalValue: 0,
         scoreBefore: ctx.scoreBefore,
@@ -221,7 +277,6 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
         forgiven: false,
         deflected: false,
         miss: false,
-        shanghai: false,
         aimed,
         aim: 'wall',
         steadiness,
@@ -401,6 +456,14 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
     note('tunnel_vision', 'DEAL', targets, values, `${beforeSum} → ${values.reduce((a, b) => a + b, 0)}`);
   }
 
+  // DOUBLED: the intervention, spent on this dart, after everything else.
+  if (use.includes('doubled')) {
+    const beforeSum = values.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < values.length; i++) values[i] *= 2;
+    fired.push('doubled');
+    note('doubled', 'VALUE', targets, values, `${beforeSum} → ${values.reduce((a, b) => a + b, 0)}`);
+  }
+
   const totalValue = values.reduce((a, b) => a + b, 0);
 
   // ---------------- 5. Subtract ----------------
@@ -466,9 +529,15 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
     outcome = 'CONTINUE';
   }
 
-  // 6.4 bust consequences: forgiveness first; if it fires, cheap chalk does not.
+  // 6.4 bust consequences: INSURED first, then forgiveness, then cheap chalk.
   if (outcome === 'BUST') {
-    if (has(chalk, 'forgiving_oche') && !ctx.forgivenessUsed) {
+    if (use.includes('insured')) {
+      // The dart was insured: the arithmetic still busts, but the score it
+      // would have taken back survives it.
+      scoreCommitted = scoreBefore;
+      fired.push('insured');
+      note('insured', 'RULE', targets, values, 'score kept');
+    } else if (has(chalk, 'forgiving_oche') && !ctx.forgivenessUsed) {
       outcome = 'CONTINUE';
       forgiven = true;
       forgivenessConsumed = true;
@@ -489,7 +558,7 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
   }
 
   const result: ThrowResult = {
-    intent: { card, visitThrowIndex: ctx.visitThrowIndex },
+    intent: { target: { ...target }, visitThrowIndex: ctx.visitThrowIndex },
     hits,
     totalValue,
     scoreBefore,
@@ -500,7 +569,6 @@ export function resolveThrow(card: DartCard, ctx: ResolveContext): ResolveOutput
     forgiven,
     deflected,
     miss: false,
-    shanghai: false,
     aimed,
     aim,
     steadiness,

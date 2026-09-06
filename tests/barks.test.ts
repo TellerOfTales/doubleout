@@ -3,28 +3,64 @@
  * length, required triggers and safety; and the engine's priority, cooldown,
  * no-repeat window, placeholder filling and determinism over a scripted,
  * varied sequence of 200+ engine events.
+ *
+ * The fixtures here drive the rebuilt loop (docs/decisions/design.md §5): free
+ * aim at any of the 62 targets, and a slate of contracts that are taken,
+ * banked, pulled, pressed or lost. No deck, no hand, no pocket.
  */
 import { describe, expect, it } from 'vitest';
 import { BARKS, allBarkLines } from '../src/content/barks.ts';
 import { HEAT_CAP } from '../src/content/legs.ts';
-import { Commentary, buildBarkContext, describeChalkChain, type Bark } from '../src/core/commentary.ts';
+import { parseTarget } from '../src/core/board.ts';
+import { Commentary, buildBarkContext, contractName, describeChalkChain, type Bark } from '../src/core/commentary.ts';
 import {
   addChalk,
+  bankContract,
   beginLeg,
-  commitCard,
   commitMiss,
+  commitThrow,
   createNight as createNightRaw,
   currentLeg,
-  pocketCard,
+  currentVisit,
+  pressContract,
+  pullContract,
   shopBuy,
   shopLeave,
   shopRefresh,
+  takeContract,
+  useRubOut,
 } from '../src/core/state.ts';
+import type { BarkContext, BarkTrigger, EngineEvent, NightState, OcheId, TakenContract, ThrowResult } from '../src/core/types.ts';
 
 /** These tests pin arithmetic and event order, not luck: every dart lands where it is aimed. */
 const createNight = (seed: number, oche: OcheId = 'local') => createNightRaw(seed, oche, { trueAim: true });
-import type { OcheId, BarkContext, BarkTrigger, EngineEvent, NightState, ThrowResult } from '../src/core/types.ts';
-import { dealFromPool, play, playAll, setScore, smartPickCard } from './helpers.ts';
+
+// ---------------------------------------------------------------- local fixtures
+//
+// The engine's own test helpers are shared with the state suite; the bark
+// fixtures only need four things, so they live here where they can be read
+// beside the sequence they build.
+
+/** Throw at a named target: "t20", "d16", "s1", "bull". */
+function play(n: NightState, spec: string, use?: string): { result: ThrowResult; events: EngineEvent[] } {
+  return commitThrow(n, parseTarget(spec), use ? { use } : {});
+}
+
+/** Set the remaining score, and the visit's start score if no dart has gone yet. */
+function setScore(n: NightState, score: number): void {
+  const leg = currentLeg(n);
+  leg.score = score;
+  const v = currentVisit(leg);
+  if (v.throws.length === 0) v.scoreAtVisitStart = score;
+}
+
+/** Chalk a known contract up as the whole offer and take it. */
+function take(n: NightState, defId: string): EngineEvent[] {
+  currentLeg(n).offer = [defId];
+  const out = takeContract(n, defId);
+  if (!out.ok) throw new Error(`take ${defId}: ${out.reason}`);
+  return out.events;
+}
 
 const LINES = allBarkLines();
 const BY_ID = new Map(BARKS.map((t) => [t.id, t]));
@@ -82,15 +118,39 @@ describe('the bark pool (TDD §10.3)', () => {
     ['timeout_leg8', 100],
     ['shop_zero_pot', 40],
     ['idle_15', 20],
-    // the reworked loop: the crowd, the pocket and leaving it right
+    // the crowd
     ['heat_max', 88],
     ['heat_lost', 86],
-    ['setup_bonus', 55],
-    ['pocketed', 45],
+    // the slate: taken, riding, settled, and the press
+    ['slate_offered', 22],
+    ['contract_taken', 44],
+    ['contract_riding', 68],
+    ['contract_banked', 72],
+    ['contract_pulled', 66],
+    ['contract_paid', 76],
+    ['contract_lost', 74],
+    ['contract_lost_bust', 90],
+    ['contract_made_lost_bust', 95],
+    ['contract_pressed', 98],
+    ['contract_pressed_twice', 102],
+    ['pressed_landed', 99],
+    ['pressed_died', 99],
+    // free aim
+    ['aim_bull', 57],
+    ['aim_low_bed', 50],
+    ['aim_double_early', 52],
+    ['aim_same_bed', 54],
+    ['treble_wall', 66],
   ])('required trigger %s is present with priority %i', (id, priority) => {
     const t = BY_ID.get(id);
     expect(t, id).toBeDefined();
     expect((t as BarkTrigger).priority).toBe(priority);
+  });
+
+  it('nothing survives from the deck: no trigger reads a hand, a deck, a pocket or a leg Shanghai', () => {
+    for (const id of ['pocketed', 'setup_bonus', 'shanghai', 'shanghai_two', 'shanghai_scoring', 'shanghai_called']) {
+      expect(BY_ID.has(id), id).toBe(false);
+    }
   });
 
   it('the 180 is the loudest ordinary event and the nine-darter outranks everything', () => {
@@ -112,6 +172,18 @@ describe('the bark pool (TDD §10.3)', () => {
   it('the timeout_leg8 pool is kind: no mocking words', () => {
     const t = BY_ID.get('timeout_leg8') as BarkTrigger;
     for (const l of [...t.lines, ...(t.reply?.lines ?? [])]) expect(/\b(fail|failed|failure|lose|loser|lost|pathetic|useless|rubbish)\b/i.test(l), l).toBe(false);
+  });
+
+  it('a lost contract is reported as a loss and the analyst names a rule (design.md §6)', () => {
+    for (const id of ['contract_lost', 'contract_lost_bust', 'contract_made_lost_bust', 'pressed_died']) {
+      const t = BY_ID.get(id) as BarkTrigger;
+      const all = [...t.lines, ...(t.reply?.lines ?? [])];
+      // Nothing dresses a loss up as anything else.
+      for (const l of all) expect(/\b(unlucky|nearly there|so close|next one|keep going|one more)\b/i.test(l), l).toBe(false);
+      // And somewhere in the pool is the rule that would have stopped it.
+      const nock = t.speaker === 'NOCK' ? t.lines : (t.reply?.lines ?? []);
+      expect(nock.some((l) => /\b(bank|banking|banked|pull|pulled|On Tick|third dart|fourth)\b/i.test(l)), id).toBe(true);
+    }
   });
 });
 
@@ -150,6 +222,15 @@ describe('bark safety scan (TDD §17.10)', () => {
     expect(hits).toEqual([]);
   });
 
+  it('the source itself never says the word, in a line, a comment or an identifier', async () => {
+    const { readFileSync } = await import('node:fs');
+    for (const file of ['src/content/barks.ts', 'src/core/commentary.ts']) {
+      const src = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+      expect(/\bbet\b/i.test(src), file).toBe(false);
+      expect(/\b(wager|gambl\w*|punter|bookmaker)\b/i.test(src), file).toBe(false);
+    }
+  });
+
   it('never criticises the player in the second person', () => {
     const hits: string[] = [];
     for (const l of LINES) for (const re of CRITICISM) if (re.test(l)) hits.push(`${re}: ${l}`);
@@ -179,7 +260,7 @@ describe('bark safety scan (TDD §17.10)', () => {
   });
 
   it('every placeholder in the pool is one the engine fills', () => {
-    const known = new Set(['score', 'total', 'value', 'chalk', 'leg', 'pot', 'card', 'n180', 'number']);
+    const known = new Set(['score', 'total', 'value', 'chalk', 'leg', 'pot', 'target', 'n180', 'contract', 'price', 'payout', 'from']);
     const unknown: string[] = [];
     for (const l of LINES) for (const m of l.matchAll(/\{(\w+)\}/g)) if (!known.has(m[1])) unknown.push(`${m[1]} in "${l}"`);
     expect(unknown).toEqual([]);
@@ -194,13 +275,16 @@ function snap(n: NightState, event: BarkContext['event'], tr?: ThrowResult): Bar
 }
 
 /**
- * 200+ engine events with every required trigger reachable: a 180, a 26,
- * a landing on 170 and on 1, a bust chain of four, a 100+ checkout, shops
- * with and without Pot, idle, a chalk-heavy leg, a leg-8 timeout, a leg-8
- * win and a nine-darter — plus the events the per-visit rework added: a
- * pocketed card, heat lost to a bust, a visit ended at the wall and a
- * setup bonus. One hand now covers a whole visit, so a visit is three
- * commits and a single HAND_DEALT, not three of each.
+ * 200+ engine events with every required trigger reachable: a 180, a 26, a
+ * landing on 170 and on 1, a bust chain of four, a 100+ checkout, shops with
+ * and without Pot, idle, a chalk-heavy leg, a leg-8 timeout, a leg-8 win and a
+ * nine-darter — plus the whole of the rebuilt loop: contracts taken cheap,
+ * dear and long; a contract banked, one pulled, one paid at the end of the
+ * visit and one that simply did not land; a bust that takes a live contract
+ * and a bust that takes one already made; a press that lands, a press that
+ * dies and a second press on top of the first; the kit spent and the slate
+ * rubbed out; and darts sent at the bull, at the low beds, at a double with
+ * three figures still on the board, and twice into the same bed.
  */
 function buildSequence(): BarkContext[] {
   const seq: BarkContext[] = [];
@@ -211,23 +295,26 @@ function buildSequence(): BarkContext[] {
   const idle = (seconds: number) => seq.push(snap(n, { type: 'IDLE', seconds }));
 
   push(beginLeg(n));
+  // The visit limits are a balance dial and move; this fixture is about the
+  // commentary, so it lifts them and never times a leg out by accident.
+  currentLeg(n).visitLimit = 60;
   // The short game opens a real night; this script wants the 501 arithmetic.
   setScore(n, 501);
   // visit 1: a 180 (501 → 321)
-  for (const c of ['t20', 't20', 't20']) push(play(n, c).events);
+  for (const t of ['t20', 't20', 't20']) push(play(n, t).events);
   idle(20);
   // visit 2: land on exactly 170, then 150, 130
   setScore(n, 230);
-  for (const c of ['t20', 's20', 's20']) push(play(n, c).events);
+  for (const t of ['t20', 's20', 's20']) push(play(n, t).events);
   // visit 3: the classic 26
-  for (const c of ['s20', 's5', 's1']) push(play(n, c).events);
+  for (const t of ['s20', 's5', 's1']) push(play(n, t).events);
   // visit 4: down to 1 (bust)
   setScore(n, 41);
-  for (const c of ['s20', 's20']) push(play(n, c).events);
+  for (const t of ['s20', 's20']) push(play(n, t).events);
   idle(16);
   // visit 5: a quiet visit resets the bust count
   setScore(n, 400);
-  for (const c of ['s1', 's3', 's5']) push(play(n, c).events);
+  for (const t of ['s1', 's3', 's5']) push(play(n, t).events);
   // visits 6–9: a chain of four busts
   for (let i = 0; i < 4; i++) {
     setScore(n, 10);
@@ -240,7 +327,7 @@ function buildSequence(): BarkContext[] {
   push(play(n, 'd20').events);
   seq.push(snap(n, { type: 'SHOP_ENTER', pot: n.pot }));
   idle(15);
-  // shop: chalk for a chain, a card, a refresh
+  // shop: chalk for a chain, a kit slot, a refresh
   n.pot = 60;
   const shop = n.shop as NonNullable<NightState['shop']>;
   shop.slots[2] = { kind: 'CHALK', chalkId: 'split_tips', cost: 8, sold: false };
@@ -249,18 +336,93 @@ function buildSequence(): BarkContext[] {
   push(shopRefresh(n).events);
   for (const id of ['heavy_tips', 'oiled', 'even_keel', 'cheap_chalk']) addChalk(n, id);
   push(shopLeave(n));
-  // leg 2: the checkout-aware bot plays through the chalk pipeline
-  while (n.status === 'ACTIVE' && n.phase === 'LEG' && seq.length < 150) push(commitCard(n, smartPickCard(n, currentLeg(n)).id).events);
-  if (n.status === 'ACTIVE' && n.phase === 'LEG') {
-    setScore(n, 40);
-    push(play(n, 'd20').events);
+
+  // ---- leg 2: the slate. The visit limit is lifted so the fixture can take
+  // its time; every beat below is one visit and none of them is a timeout.
+  currentLeg(n).visitLimit = 60;
+  n.pot = 200;
+  // a chalk-heavy visit for the four-stage pipeline, then the chalk comes off
+  // so the slate and the aim can be read without it shouting over them.
+  setScore(n, 400);
+  for (const t of ['t20', 't20', 't20']) push(play(n, t).events);
+  n.chalk = [];
+  // four clean visits: the crowd warms up to the cap
+  for (let v = 0; v < 4; v++) {
+    setScore(n, 400);
+    for (const t of ['s20', 's20', 's20']) push(play(n, t).events);
   }
-  if ((n.phase as string) === 'SHOP') {
-    n.pot = 0;
-    seq.push(snap(n, { type: 'SHOP_ENTER', pot: 0 }));
-    push(shopLeave(n));
-    while (n.status === 'ACTIVE' && n.phase === 'LEG' && seq.length < 200) push(commitCard(n, smartPickCard(n, currentLeg(n)).id).events);
-  }
+  // taken cheap, left riding, and paid at the end of the visit
+  setScore(n, 400);
+  push(take(n, 'ton'));
+  push(play(n, 't20').events);
+  push(play(n, 't20').events);
+  push(play(n, 's20').events);
+  // taken and banked the moment it landed
+  setScore(n, 400);
+  push(take(n, 'treble'));
+  push(play(n, 't20').events);
+  push(bankContract(n, 0).events);
+  push(commitMiss(n).events);
+  // a long price, taken and then pulled down for the small certain money
+  setScore(n, 400);
+  push(take(n, 'bull'));
+  push(play(n, 's19').events);
+  push(pullContract(n, 0).events);
+  push(commitMiss(n).events);
+  // a dear one that never gets near its condition
+  setScore(n, 400);
+  push(take(n, 'fish'));
+  for (const t of ['s1', 's1', 's1']) push(play(n, t).events);
+  // a made contract taken down by a bust: the cruellest one
+  setScore(n, 400);
+  push(take(n, 'treble'));
+  push(play(n, 't20').events);
+  setScore(n, 10);
+  push(play(n, 't20').events);
+  // a live contract taken down by a bust
+  setScore(n, 400);
+  push(take(n, 'bull'));
+  push(play(n, 's19').events);
+  setScore(n, 10);
+  push(play(n, 't20').events);
+  // the press: made, torn up, made again, banked
+  setScore(n, 400);
+  push(take(n, 'treble'));
+  push(play(n, 't20').events);
+  push(pressContract(n, 0).events);
+  push(play(n, 't19').events);
+  push(bankContract(n, 0).events);
+  push(commitMiss(n).events);
+  // the press that dies
+  setScore(n, 400);
+  push(take(n, 'treble'));
+  push(play(n, 't20').events);
+  push(pressContract(n, 0).events);
+  for (const t of ['s5', 's5']) push(play(n, t).events);
+  // pressed twice, and it lands
+  setScore(n, 400);
+  push(take(n, 'treble'));
+  push(play(n, 't20').events);
+  push(pressContract(n, 0).events);
+  push(play(n, 't19').events);
+  push(pressContract(n, 0).events);
+  push(play(n, 't18').events);
+  // the slate rubbed out, and one intervention spent on a dart
+  setScore(n, 400);
+  n.kit.push('rubout', 'steady');
+  push(useRubOut(n).events);
+  push(play(n, 't20', 'steady').events);
+  push(commitMiss(n).events);
+  // free aim: the bull, the small numbers, and the same bed twice
+  setScore(n, 400);
+  push(play(n, 'bull').events);
+  push(play(n, 's1').events);
+  push(play(n, 's1').events);
+  // a double on the first dart with three figures still on the board
+  setScore(n, 400);
+  push(play(n, 'd20').events);
+  push(commitMiss(n).events);
+
   // a leg-8 timeout on a second night
   const lost = createNight(77);
   lost.legIndex = 7;
@@ -286,38 +448,8 @@ function buildSequence(): BarkContext[] {
   };
   pushNine(beginLeg(nine));
   setScore(nine, 501); // the short game opens a real night; the nine-darter is a 501 thing
-  for (const c of ['t20', 't20', 't20', 't20', 't20', 't20', 't20', 't19']) pushNine(play(nine, c).events);
-  pushNine(playAll(nine, ['d12']).events);
+  for (const t of ['t20', 't20', 't20', 't20', 't20', 't20', 't20', 't19', 'd12']) pushNine(play(nine, t).events);
   seq.push(snap(nine, { type: 'SHOP_ENTER', pot: nine.pot }));
-  // a fifth night for the reworked visit: a card kept in the pocket, heat built
-  // over whole visits and then wiped by a bust, a visit walked away from at the
-  // wall, and a setup bonus for leaving a score the deck can finish.
-  const kept = createNight(81);
-  const pushKept = (events: EngineEvent[]) => {
-    for (const e of events) seq.push(snap(kept, e));
-  };
-  pushKept(beginLeg(kept));
-  const keeper = currentLeg(kept).hand[currentLeg(kept).hand.length - 1];
-  pushKept(pocketCard(kept, keeper.id).events);
-  setScore(kept, 100000);
-  const legRunning = () => kept.status === 'ACTIVE' && kept.phase === 'LEG';
-  // whole visits thrown out from the hand the engine dealt: the heat climbs
-  for (let v = 0; v < 5 && legRunning(); v++) {
-    for (let d = 0; d < 3 && legRunning(); d++) pushKept(commitCard(kept, currentLeg(kept).hand[0].id).events);
-  }
-  // a visit walked away from at the wall: the heat is held, not raised
-  if (legRunning()) pushKept(commitMiss(kept).events);
-  // a bust: the crowd goes cold again
-  if (legRunning()) {
-    setScore(kept, 10);
-    pushKept(play(kept, 't20').events);
-  }
-  // and a visit that leaves 80 on the board — a score the deck can still finish
-  if (legRunning()) {
-    setScore(kept, 140);
-    for (const card of dealFromPool(kept, ['t20'])) pushKept(commitCard(kept, card.id).events);
-    if (legRunning()) pushKept(commitMiss(kept).events);
-  }
   // an empty-pot shop, whichever way the legs above happened to fall
   const broke = createNight(80);
   broke.pot = 0;
@@ -338,14 +470,31 @@ describe('the scripted event sequence', () => {
   it('has at least 200 varied events', () => {
     expect(SEQUENCE.length).toBeGreaterThanOrEqual(200);
     const types = new Set(SEQUENCE.map((c) => c.event.type as string));
-    for (const t of ['LEG_START', 'HAND_DEALT', 'THROW', 'VISIT_END', 'ONE_EIGHTY', 'CHECKOUT', 'LEG_TIMEOUT', 'NIGHT_LOST', 'NIGHT_WON', 'SHOP_OPEN', 'SHOP_BUY', 'SHOP_REFRESH', 'SHOP_ENTER', 'IDLE', 'ACHIEVEMENT', 'POCKETED', 'HEAT_LOST', 'SETUP_BONUS']) {
+    for (const t of [
+      'LEG_START', 'SLATE_OFFERED', 'CONTRACT_TAKEN', 'CONTRACT_SETTLED', 'CONTRACT_PRESSED', 'KIT_SPENT',
+      'THROW', 'VISIT_END', 'ONE_EIGHTY', 'CHECKOUT', 'LEG_TIMEOUT', 'NIGHT_LOST', 'NIGHT_WON',
+      'SHOP_OPEN', 'SHOP_BUY', 'SHOP_REFRESH', 'SHOP_ENTER', 'IDLE', 'ACHIEVEMENT', 'HEAT_LOST',
+    ]) {
       expect(types.has(t), t).toBe(true);
     }
   });
 
   it('every required trigger fires at least once over the sequence', () => {
-    const fired = new Set(run(1).flat().map((b) => b.triggerId));
-    for (const id of ['visit_180', 'visit_26', 'checkout_100', 'checkout_leg8', 'bust_1', 'bust_2', 'bust_3', 'bust_4plus', 'chalk_chain_4', 'score_170', 'score_1', 'nine_darter', 'timeout_leg8', 'shop_zero_pot', 'idle_15', 'heat_max', 'heat_lost', 'setup_bonus', 'pocketed']) {
+    const seeds = [1, 2, 3, 7, 23, 99];
+    const fired = new Set(run(seeds[0]).flat().map((b) => b.triggerId));
+    for (const sd of seeds.slice(1)) {
+      const also = new Set(run(sd).flat().map((b) => b.triggerId));
+      for (const id of fired) if (!also.has(id)) fired.delete(id);
+    }
+    for (const id of [
+      'visit_180', 'visit_26', 'checkout_100', 'checkout_leg8', 'bust_1', 'bust_2', 'bust_3', 'bust_4plus',
+      'chalk_chain_4', 'score_170', 'score_1', 'nine_darter', 'timeout_leg8', 'shop_zero_pot', 'idle_15',
+      'heat_max', 'heat_lost',
+      'slate_offered', 'contract_taken', 'contract_taken_dear', 'contract_taken_long', 'contract_riding',
+      'contract_banked', 'contract_pulled', 'contract_paid', 'contract_lost', 'contract_lost_bust',
+      'contract_made_lost_bust', 'contract_pressed', 'contract_pressed_twice', 'pressed_landed', 'pressed_died',
+      'rub_out', 'kit_spent', 'aim_bull', 'aim_low_bed', 'aim_double_early', 'aim_same_bed',
+    ]) {
       expect(fired.has(id), id).toBe(true);
     }
   });
@@ -363,7 +512,157 @@ describe('the scripted event sequence', () => {
   });
 });
 
-describe('the triggers the reworked visit added', () => {
+// ---------------------------------------------------------------- the slate
+
+/** The index in SEQUENCE of the first context matching a predicate. */
+function findIdx(pred: (c: BarkContext) => boolean): number {
+  const i = SEQUENCE.findIndex(pred);
+  expect(i).toBeGreaterThan(0);
+  return i;
+}
+
+const settledWith = (how: string, extra: (c: TakenContract) => boolean = () => true) => (c: BarkContext) =>
+  c.event.type === 'CONTRACT_SETTLED' && c.event.contract.settled?.how === how && extra(c.event.contract);
+
+describe('the triggers the slate added', () => {
+  const OUT = run(7);
+
+  it('a bust that takes a contract already made is the loudest settlement of the lot', () => {
+    const idx = findIdx(settledWith('LOST', (c) => c.status === 'MADE' && c.pressed === 0));
+    expect(OUT[idx][0].triggerId).toBe('contract_made_lost_bust');
+    expect(OUT[idx][0].speaker).toBe('NOCK');
+    const made = BY_ID.get('contract_made_lost_bust') as BarkTrigger;
+    const lost = BY_ID.get('contract_lost') as BarkTrigger;
+    expect(made.priority).toBeGreaterThan(lost.priority);
+  });
+
+  it('a bust that takes a live contract is a different bark from one that takes a made one', () => {
+    // A bust is still on the night's count when the slate settles behind it.
+    const live = findIdx((c) => settledWith('LOST', (x) => x.status !== 'MADE' && x.pressed === 0)(c) && c.consecutiveBusts >= 1);
+    expect(OUT[live][0].triggerId).toBe('contract_lost_bust');
+  });
+
+  it('banking, pulling and being paid are three different settlements and three different barks', () => {
+    expect(OUT[findIdx(settledWith('BANKED', (c) => c.pressed === 0))][0].triggerId).toBe('contract_banked');
+    expect(OUT[findIdx(settledWith('PULLED'))][0].triggerId).toBe('contract_pulled');
+    expect(OUT[findIdx(settledWith('PAID', (c) => c.pressed === 0))][0].triggerId).toBe('contract_paid');
+  });
+
+  it('a contract that simply did not land is a plain loss, and says so without a bust', () => {
+    const idx = findIdx((c) => settledWith('LOST', (x) => x.pressed === 0)(c) && c.consecutiveBusts === 0);
+    expect(OUT[idx][0].triggerId).toBe('contract_lost');
+  });
+
+  it('the press is the loudest thing on the slate, and the second press is louder still', () => {
+    const first = findIdx((c) => c.event.type === 'CONTRACT_PRESSED' && c.event.contract.pressed === 1);
+    expect(OUT[first][0].triggerId).toBe('contract_pressed');
+    expect(OUT[first][0].speaker).toBe('BARREL');
+    expect(OUT[first][1].speaker).toBe('NOCK');
+    const second = findIdx((c) => c.event.type === 'CONTRACT_PRESSED' && c.event.contract.pressed === 2);
+    expect(OUT[second][0].triggerId).toBe('contract_pressed_twice');
+    const one = BY_ID.get('contract_pressed') as BarkTrigger;
+    const two = BY_ID.get('contract_pressed_twice') as BarkTrigger;
+    expect(two.priority).toBeGreaterThan(one.priority);
+    for (const t of BARKS) if (t.id !== 'nine_darter' && t.id !== two.id) expect(t.priority, t.id).toBeLessThanOrEqual(two.priority);
+  });
+
+  it('a pressed contract that lands and one that dies are told apart', () => {
+    expect(OUT[findIdx(settledWith('BANKED', (c) => c.pressed > 0))][0].triggerId).toBe('pressed_landed');
+    expect(OUT[findIdx(settledWith('LOST', (c) => c.pressed > 0))][0].triggerId).toBe('pressed_died');
+  });
+
+  it('{contract}, {price}, {payout} and {from} are filled from the event', () => {
+    const probe = (ctx: BarkContext, line: string) =>
+      new Commentary(3, [{ id: 't', speaker: 'NOCK', priority: 1, cooldown: 1, when: () => true, lines: [line] }]).react(ctx)[0].text;
+    const taken = SEQUENCE[findIdx((c) => c.event.type === 'CONTRACT_TAKEN')].event as Extract<EngineEvent, { type: 'CONTRACT_TAKEN' }>;
+    expect(probe(SEQUENCE[findIdx((c) => c.event.type === 'CONTRACT_TAKEN')], '{contract} {price}')).toBe(
+      `${contractName(taken.contract.defId)} ${taken.contract.price}`,
+    );
+    const pressIdx = findIdx((c) => c.event.type === 'CONTRACT_PRESSED');
+    const press = SEQUENCE[pressIdx].event as Extract<EngineEvent, { type: 'CONTRACT_PRESSED' }>;
+    expect(probe(SEQUENCE[pressIdx], '{from} to {contract}')).toBe(`${contractName(press.from)} to ${contractName(press.contract.defId)}`);
+    const paidIdx = findIdx(settledWith('PAID'));
+    const paid = SEQUENCE[paidIdx].event as Extract<EngineEvent, { type: 'CONTRACT_SETTLED' }>;
+    expect(probe(SEQUENCE[paidIdx], '{payout}')).toBe(String(paid.contract.settled?.pot));
+    for (const id of ['contract_taken', 'contract_pressed', 'contract_paid']) {
+      const real = new Commentary(3, [BY_ID.get(id) as BarkTrigger]);
+      const at = findIdx((c) => (BY_ID.get(id) as BarkTrigger).when(c));
+      for (const b of real.react(SEQUENCE[at])) expect(b.text, id).not.toMatch(/\{\w+\}/);
+    }
+  });
+
+  it('a contract still riding is only remarked on while it can still be lost', () => {
+    const t = BY_ID.get('contract_riding') as BarkTrigger;
+    const idx = findIdx((c) => t.when(c));
+    const ctx = SEQUENCE[idx];
+    expect(ctx.event.type).toBe('THROW');
+    expect(ctx.leg.slate.some((c) => !c.settled && c.status === 'MADE')).toBe(true);
+    // Once the visit is over the slate is settled, so nothing is left riding.
+    for (const c of SEQUENCE) if (c.event.type === 'VISIT_END') expect(t.when(c)).toBe(false);
+  });
+});
+
+describe('the triggers free aim added', () => {
+  const OUT = run(7);
+  /** Clone a real THROW context and patch the dart. */
+  function throwCtx(patch: (r: ThrowResult) => void): BarkContext {
+    const idx = findIdx((c) => c.event.type === 'THROW');
+    const ctx = structuredClone(SEQUENCE[idx]);
+    const ev = ctx.event as Extract<EngineEvent, { type: 'THROW' }>;
+    patch(ev.result);
+    ctx.throwResult = ev.result;
+    return ctx;
+  }
+
+  it('the bull, a low bed and an early double are each their own remark', () => {
+    expect(OUT[findIdx((c) => c.event.type === 'THROW' && c.event.result.intent.target.region === 'IB')][0].triggerId).toBe('aim_bull');
+    const lowIdx = findIdx((c) => (BY_ID.get('aim_low_bed') as BarkTrigger).when(c));
+    expect(SEQUENCE[lowIdx].event.type).toBe('THROW');
+    const dbl = BY_ID.get('aim_double_early') as BarkTrigger;
+    expect(dbl.when(throwCtx((r) => {
+      r.intent.target = { region: 'D', bed: 20 };
+      r.intent.visitThrowIndex = 0;
+      r.scoreBefore = 400;
+    }))).toBe(true);
+    // ... but not when the double is a finish.
+    expect(dbl.when(throwCtx((r) => {
+      r.intent.target = { region: 'D', bed: 20 };
+      r.intent.visitThrowIndex = 0;
+      r.scoreBefore = 40;
+    }))).toBe(false);
+  });
+
+  it('a treble that misses the board entirely gets the wall bark, and a deliberate miss does not', () => {
+    const t = BY_ID.get('treble_wall') as BarkTrigger;
+    expect(t.when(throwCtx((r) => {
+      r.intent.target = { region: 'T', bed: 20 };
+      r.aimed = { region: 'T', bed: 20 };
+      r.aim = 'wall';
+      r.miss = false;
+    }))).toBe(true);
+    const deliberate = throwCtx((r) => {
+      r.intent.target = { region: 'W' };
+      r.aimed = { region: 'W' };
+      r.aim = 'wall';
+      r.miss = true;
+    });
+    expect(t.when(deliberate)).toBe(false);
+    expect((BY_ID.get('dart_in_wall') as BarkTrigger).when(deliberate)).toBe(false);
+  });
+
+  it('{target} names where the dart was sent, not where it landed', () => {
+    const ctx = throwCtx((r) => {
+      r.intent.target = { region: 'T', bed: 20 };
+      r.hits = [{ target: { region: 'S', bed: 5 }, value: 5, countsAsDouble: false }];
+    });
+    const probe = new Commentary(3, [{ id: 't', speaker: 'NOCK', priority: 1, cooldown: 1, when: () => true, lines: ['{target}'] }]);
+    expect(probe.react(ctx)[0].text).toBe('treble 20');
+  });
+});
+
+// ---------------------------------------------------------------- the crowd
+
+describe('the crowd', () => {
   const n0 = createNight(31);
   beginLeg(n0);
   const visit = currentLeg(n0).visits[0];
@@ -383,29 +682,6 @@ describe('the triggers the reworked visit added', () => {
     const t = BY_ID.get('heat_lost') as BarkTrigger;
     for (const from of [2, 3, HEAT_CAP]) expect(t.when(buildBarkContext(n0, { type: 'HEAT_LOST', from, reason: 'BUST' as const })), `from ${from}`).toBe(true);
     for (const from of [0, 1]) expect(t.when(buildBarkContext(n0, { type: 'HEAT_LOST', from, reason: 'BUST' as const })), `from ${from}`).toBe(false);
-  });
-
-  it('setup_bonus and pocketed answer their own event and nothing else, and nothing shouts over them', () => {
-    const setup = BY_ID.get('setup_bonus') as BarkTrigger;
-    const pocketed = BY_ID.get('pocketed') as BarkTrigger;
-    const setupCtx = buildBarkContext(n0, { type: 'SETUP_BONUS', score: 80, pot: 1 });
-    const pocketCtx = buildBarkContext(n0, { type: 'POCKETED', card: currentLeg(n0).hand[0] });
-    expect(setup.when(setupCtx)).toBe(true);
-    expect(setup.when(pocketCtx)).toBe(false);
-    expect(pocketed.when(pocketCtx)).toBe(true);
-    expect(pocketed.when(setupCtx)).toBe(false);
-    for (const t of BARKS) if (t.when(setupCtx)) expect(t.priority, t.id).toBeLessThanOrEqual(setup.priority);
-    for (const t of BARKS) if (t.when(pocketCtx)) expect(t.priority, t.id).toBeLessThanOrEqual(pocketed.priority);
-  });
-
-  it('{score} on a setup bonus is the score that was left on the board', () => {
-    const ctx = SEQUENCE.find((c) => c.event.type === 'SETUP_BONUS') as BarkContext;
-    const left = (ctx.event as Extract<EngineEvent, { type: 'SETUP_BONUS' }>).score;
-    expect(left).toBeGreaterThan(0);
-    const probe = new Commentary(3, [{ id: 't', speaker: 'NOCK', priority: 1, cooldown: 1, when: () => true, lines: ['{score}'] }]);
-    expect(probe.react(ctx)[0].text).toBe(String(left));
-    const real = new Commentary(3, [BY_ID.get('setup_bonus') as BarkTrigger]);
-    expect(real.react(ctx)[0].text).not.toMatch(/\{\w+\}/);
   });
 });
 
@@ -430,15 +706,18 @@ describe('Commentary engine (src/core/commentary.ts)', () => {
     }
   });
 
-  it('no line text repeats within 8 consecutive reacts', () => {
+  it('no line text repeats within 8 consecutive reacts, whatever the cosmetic seed', () => {
     const repeats: string[] = [];
-    for (let i = 0; i < OUT.length; i++) {
-      const window = new Set<string>();
-      for (let j = Math.max(0, i - 7); j < i; j++) for (const b of OUT[j]) window.add(b.text);
-      const seen = new Set<string>();
-      for (const b of OUT[i]) {
-        if (window.has(b.text) || seen.has(b.text)) repeats.push(`react ${i} (${b.triggerId}): "${b.text}"`);
-        seen.add(b.text);
+    for (const seed of [1, 2, 7, 23, 99]) {
+      const out = run(seed);
+      for (let i = 0; i < out.length; i++) {
+        const window = new Set<string>();
+        for (let j = Math.max(0, i - 7); j < i; j++) for (const b of out[j]) window.add(b.text);
+        const seen = new Set<string>();
+        for (const b of out[i]) {
+          if (window.has(b.text) || seen.has(b.text)) repeats.push(`seed ${seed} react ${i} (${b.triggerId}): "${b.text}"`);
+          seen.add(b.text);
+        }
       }
     }
     expect(repeats).toEqual([]);
@@ -488,7 +767,7 @@ describe('Commentary engine (src/core/commentary.ts)', () => {
     const idx = SEQUENCE.findIndex((c) => c.event.type === 'ONE_EIGHTY');
     expect(OUT[idx].map((b) => b.speaker)).toEqual(['BARREL', 'NOCK']);
     expect(OUT[idx][0].triggerId).toBe('visit_180');
-    expect(OUT[idx][0].text.toUpperCase()).toContain('EIGHTY');
+    expect(OUT[idx][0].text.toUpperCase()).toMatch(/EIGHTY|MAXIMUM/);
   });
 
   it('the nine-darter outranks the checkout barks', () => {
@@ -507,7 +786,7 @@ describe('Commentary engine (src/core/commentary.ts)', () => {
 
   it('placeholders are filled from the context: {total} on the 180 reply, {pot} in the shop', () => {
     const c = new Commentary(3, [
-      { id: 't', speaker: 'NOCK', priority: 1, cooldown: 1, when: () => true, lines: ['{total} {pot} {leg} {score} {n180} {value} {card} {chalk}'] },
+      { id: 't', speaker: 'NOCK', priority: 1, cooldown: 1, when: () => true, lines: ['{total} {pot} {leg} {score} {n180} {value} {target} {chalk}'] },
     ]);
     const ctx = SEQUENCE.find((x) => x.event.type === 'ONE_EIGHTY') as BarkContext;
     const [b] = c.react(ctx);
@@ -550,6 +829,11 @@ describe('Commentary engine (src/core/commentary.ts)', () => {
   it('describeChalkChain names the chalk in pipeline order', () => {
     expect(describeChalkChain(['hot_twenty', 'heavy_tips'])).toBe('Hot Twenty then Heavy Tips');
     expect(describeChalkChain([])).toBe('');
+  });
+
+  it('contractName reads the slate, and falls back to the id it was given', () => {
+    expect(contractName('ton')).toBe('A TON');
+    expect(contractName('nothing_at_all')).toBe('nothing_at_all');
   });
 
   it('buildBarkContext carries the visit total on VISIT_END and the throw on THROW', () => {

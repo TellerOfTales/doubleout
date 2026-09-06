@@ -1,49 +1,95 @@
 /**
  * Shared helpers for the engine test suite. No test logic lives here — only
  * constructors and scripted bots so the spec files stay readable.
+ *
+ * Rebuilt for free aim (docs/decisions/design.md §5.1): there is no hand of
+ * dealt cards to fake up any more, so a scripted throw is just a target, and
+ * the interesting scaffolding is the slate — taking contracts, settling them,
+ * and driving a whole night deterministically.
  */
 import { createHash } from 'node:crypto';
-import { cardDef, makeCard } from '../src/content/cards.ts';
 import { chalkDef } from '../src/content/chalkdefs.ts';
-import { targetDefId } from '../src/core/board.ts';
+import { ALL_TARGETS, baseValue, parseTarget, targetDefId, targetNotation } from '../src/core/board.ts';
 import { computeCheckoutHints } from '../src/core/checkout.ts';
-import { resolveThrow } from '../src/core/resolver.ts';
+import { resolveThrow, rollLanding } from '../src/core/resolver.ts';
 import { createRng, nextFloat } from '../src/core/rng.ts';
+import { contractDef } from '../src/core/slate.ts';
 import {
   addChalk,
+  bankContract,
   beginLeg,
-  commitCard,
+  throwsPerVisit,
   commitMiss,
+  commitThrow,
   createNight,
   currentLeg,
   currentVisit,
-  newCard,
+  pressContract,
+  pullContract,
   shopBuy,
   shopLeave,
   shopRefresh,
+  takeContract,
+  useRubOut,
+  visitProgress,
 } from '../src/core/state.ts';
-import type { Chalk, DartCard, EngineEvent, LegState, NightState, OcheId, Rng, Target, ThrowResult } from '../src/core/types.ts';
+import type {
+  Chalk,
+  EngineEvent,
+  LegState,
+  NightState,
+  OcheId,
+  Rng,
+  TakenContract,
+  Target,
+  ThrowResult,
+} from '../src/core/types.ts';
 
-// ---------------------------------------------------------------- chalk / cards
+// ---------------------------------------------------------------- targets
+
+/** A target, or its notation ("T20", "d16", "ob", "bull", "wall"). */
+export type TargetLike = Target | string;
+
+/** Normalise a target written either way. Always a fresh object. */
+export function target(t: TargetLike): Target {
+  return typeof t === 'string' ? parseTarget(t) : { ...t };
+}
+
+/** "T20", "OB", "BULL", "WALL". */
+export function notation(t: TargetLike): string {
+  return targetNotation(target(t));
+}
+
+/** Lower-case def id for a target: "t20", "ob", "ib". Still the id the art and audio use. */
+export function defIdOf(t: Target): string {
+  return targetDefId(t);
+}
+
+/** Base value of a target written either way (bed × multiplier, OB 25, IB 50). */
+export function baseOf(t: TargetLike): number {
+  return baseValue(target(t));
+}
+
+// ---------------------------------------------------------------- chalk
 
 /** Chalk list whose acquisition order is the array order (first = oldest). */
 export function mkChalk(ids: string[]): Chalk[] {
   return ids.map((id, i) => ({ def: chalkDef(id), order: i + 1 }));
 }
 
-let cardSeq = 0;
-
-/** A throw-away card instance for a def id ("t20", "d16", "ob", "ib"). */
-export function mkCard(defId: string): DartCard {
-  cardSeq++;
-  return makeCard(defId, `h${cardSeq}`, (cardSeq % 4) as 0 | 1 | 2 | 3);
-}
+// ---------------------------------------------------------------- one throw, resolved
 
 export interface ResolveOpts {
   /** Play the aim's odds instead of landing where aimed (default true aim). */
   trueAim?: boolean;
-  /** Gameplay RNG; null (default) disables wired deflection. */
+  /** Gameplay RNG; null (default) disables the aim roll and wired deflection. */
   rng?: Rng | null;
+  /** Force where the dart lands, overriding the roll. */
+  landing?: TargetLike;
+  /** Percentage points of steadiness lent to the throw. */
+  steadiness?: number;
+  /** Interventions spent on this dart. */
+  use?: string[];
   /** Defaults to `score`. */
   scoreAtVisitStart?: number;
   /** Defaults to 0. */
@@ -54,13 +100,16 @@ export interface ResolveOpts {
 
 export type Resolved = ThrowResult & { forgivenessConsumed: boolean };
 
-/** Resolve one card through the real pipeline with the given chalk (acquisition order = array order). */
-export function resolve(defId: string, score: number, chalkIds: string[] = [], opts: ResolveOpts = {}): Resolved {
-  const out = resolveThrow(mkCard(defId), {
+/** Resolve one throw through the real pipeline with the given chalk (acquisition order = array order). */
+export function resolve(t: TargetLike, score: number, chalkIds: string[] = [], opts: ResolveOpts = {}): Resolved {
+  const out = resolveThrow(target(t), {
     chalk: mkChalk(chalkIds),
     rng: opts.rng === undefined ? null : opts.rng,
-    // These tests pin chalk arithmetic; the aim's odds have their own tests.
+    // These tests pin chalk arithmetic; the aim's odds have their own file.
     trueAim: opts.trueAim ?? true,
+    landing: opts.landing === undefined ? undefined : target(opts.landing),
+    steadiness: opts.steadiness,
+    use: opts.use,
     scoreBefore: score,
     scoreAtVisitStart: opts.scoreAtVisitStart ?? score,
     visitThrowIndex: opts.throwIndex ?? 0,
@@ -70,18 +119,8 @@ export function resolve(defId: string, score: number, chalkIds: string[] = [], o
 }
 
 /** Just the total resolved value of a throw. */
-export function value(defId: string, chalkIds: string[] = [], opts: ResolveOpts = {}): number {
-  return resolve(defId, 1000, chalkIds, opts).totalValue;
-}
-
-/** Card def id for a target: "t20", "ob", "ib". */
-export function defIdOf(t: Target): string {
-  return targetDefId(t);
-}
-
-/** Base value of a def id straight from the card table (bed × multiplier, OB 25, IB 50). */
-export function baseOf(defId: string): number {
-  return cardDef(defId).value;
+export function value(t: TargetLike, chalkIds: string[] = [], opts: ResolveOpts = {}): number {
+  return resolve(t, 1000, chalkIds, opts).totalValue;
 }
 
 // ---------------------------------------------------------------- rng
@@ -92,6 +131,14 @@ export function deflectingRng(): Rng {
     if (nextFloat(createRng(s)) < 0.25) return createRng(s);
   }
   throw new Error('no deflecting seed found');
+}
+
+/** A seeded RNG whose next aim roll at `t` puts the dart in the wall. */
+export function wallRng(t: TargetLike, steadiness = 0): Rng {
+  for (let s = 1; s < 100000; s++) {
+    if (rollLanding(target(t), steadiness, createRng(s)).target.region === 'W') return createRng(s);
+  }
+  throw new Error('no wall seed found');
 }
 
 /** An RNG whose next float is >= 0.25, i.e. `wired` will NOT deflect on the next bed throw. */
@@ -106,56 +153,18 @@ export function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }
 
-// ---------------------------------------------------------------- night helpers
+// ---------------------------------------------------------------- nights
 
-/** A fresh night with its first leg begun. Chalk ids are added (in order) before the leg starts. */
 /**
- * A night at the oche. True aim by default: the state tests pin arithmetic and
- * event order, not luck. Pass `trueAim = false` to play the real odds.
+ * A night at the oche with its first leg begun. True aim by default: the state
+ * tests pin arithmetic and event order, not luck. Pass `trueAim = false` to
+ * play the real odds.
  */
 export function startNight(seed = 1, oche: OcheId = 'local', chalk: string[] = [], trueAim = true): NightState {
   const n = createNight(seed, oche, { trueAim });
   for (const id of chalk) addChalk(n, id);
   beginLeg(n);
   return n;
-}
-
-/**
- * Replace the visit's hand with fresh cards of the given def ids (bypasses the
- * deck). One hand now covers a whole visit, so this is the hand the remaining
- * darts of this visit are thrown from.
- */
-export function forceHand(n: NightState, defIds: string[]): DartCard[] {
-  const leg = currentLeg(n);
-  leg.hand = defIds.map((d) => newCard(n, d));
-  return leg.hand;
-}
-
-/**
- * Set up the whole VISIT hand from the leg pool: the current hand goes back on
- * top of the deck, then one card per def id is pulled out of the pool (deck
- * first, then discard) into the hand. Unlike forceHand this keeps the leg pool
- * intact, so the deck/discard bookkeeping stays honest. Throws if a def id is
- * not held.
- */
-export function dealFromPool(n: NightState, defIds: string[]): DartCard[] {
-  const leg = currentLeg(n);
-  leg.deck.unshift(...leg.hand);
-  leg.hand = [];
-  for (const d of defIds) {
-    let i = leg.deck.findIndex((c) => c.defId === d);
-    if (i >= 0) {
-      leg.hand.push(leg.deck.splice(i, 1)[0]);
-      continue;
-    }
-    i = leg.discard.findIndex((c) => c.defId === d);
-    if (i >= 0) {
-      leg.hand.push(leg.discard.splice(i, 1)[0]);
-      continue;
-    }
-    throw new Error(`no ${d} in the leg pool`);
-  }
-  return leg.hand;
 }
 
 /** Set the remaining score and the current visit's start score (only valid before the visit's first throw). */
@@ -166,247 +175,343 @@ export function setScore(n: NightState, score: number): void {
   if (v.throws.length === 0) v.scoreAtVisitStart = score;
 }
 
-/**
- * Force a one-card hand of `defId` and commit it: the scripted way to throw an
- * exact card. The rest of the visit's hand is replaced, so use `playHeld` when
- * the point of the test is the hand the engine actually dealt.
- */
-export function play(n: NightState, defId: string): { result: ThrowResult; events: EngineEvent[] } {
-  const [c] = forceHand(n, [defId]);
-  return commitCard(n, c.id);
+/** Throw one dart at a named target, optionally spending an intervention on it. */
+export function throwAt(n: NightState, t: TargetLike, opts: { use?: string } = {}): { result: ThrowResult; events: EngineEvent[] } {
+  return commitThrow(n, target(t), opts);
 }
 
-/** Force and commit a sequence of cards, one per dart; returns the last commit's output. */
-export function playAll(n: NightState, defIds: string[]): { result: ThrowResult; events: EngineEvent[] } {
+/** Throw a sequence of darts, one per target; returns the last commit's output. */
+export function throwAll(n: NightState, targets: TargetLike[]): { result: ThrowResult; events: EngineEvent[] } {
   let last: { result: ThrowResult; events: EngineEvent[] } | null = null;
-  for (const d of defIds) last = play(n, d);
-  if (!last) throw new Error('nothing played');
+  for (const t of targets) last = throwAt(n, t);
+  if (!last) throw new Error('nothing thrown');
   return last;
 }
 
-/** Commit the first card in the dealt hand with this def id, leaving the rest of the hand alone. */
-export function playHeld(n: NightState, defId: string): { result: ThrowResult; events: EngineEvent[] } {
-  const leg = currentLeg(n);
-  const card = leg.hand.find((c) => c.defId === defId);
-  if (!card) throw new Error(`no ${defId} in hand [${leg.hand.map((c) => c.defId).join(',')}]`);
-  return commitCard(n, card.id);
-}
-
-/**
- * Throw whatever the engine dealt until the current visit ends, re-reading the
- * hand after every dart (one hand is spent across the whole visit now).
- * Returns the last commit's output.
- */
-export function playVisit(n: NightState): { result: ThrowResult; events: EngineEvent[] } {
-  const leg = currentLeg(n);
-  const visits = leg.visits.length;
-  let last: { result: ThrowResult; events: EngineEvent[] } | null = null;
-  while (n.phase === 'LEG' && leg.status === 'ACTIVE' && leg.visits.length === visits) {
-    if (leg.hand.length === 0) throw new Error('empty hand');
-    last = commitCard(n, leg.hand[0].id);
-  }
-  if (!last) throw new Error('nothing played');
-  return last;
-}
-
-/**
- * Deal `defIds` out of the leg's own pool as this visit's hand, throw them in
- * order, then end the visit at the wall. Unlike `play` this leaves the pool
- * intact, so anything that reads the deck — the checkout hints, and the setup
- * bonus that depends on them — still sees the whole library.
- */
-export function playPoolThenMiss(n: NightState, defIds: string[]): { result: ThrowResult; events: EngineEvent[] } {
-  // Snapshot the hand: commitCard splices the card out of `leg.hand`, so
-  // iterating the live array would skip every other card.
-  for (const card of [...dealFromPool(n, defIds)]) commitCard(n, card.id);
+/** Throw the darts, then walk away at the wall to close the visit. */
+export function throwThenMiss(n: NightState, targets: TargetLike[]): { result: ThrowResult; events: EngineEvent[] } {
+  throwAll(n, targets);
   return commitMiss(n);
-}
-
-/** The def ids of the hand the engine dealt, in hand order. */
-export function handDefIds(n: NightState): string[] {
-  return currentLeg(n).hand.map((c) => c.defId);
-}
-
-/** The ids of the cards dealt for the current visit, for before/after comparisons. */
-export function handIds(n: NightState): string[] {
-  return currentLeg(n).hand.map((c) => c.id);
-}
-
-/**
- * The whole leg pool (deck + hand + discard, plus the pocketed card, which the
- * engine also keeps in the hand while the leg runs) as sorted unique ids: it
- * must stay constant within a leg.
- */
-export function poolIds(n: NightState): string[] {
-  const leg = currentLeg(n);
-  const pocket = leg.pocket ? [leg.pocket] : [];
-  return [...new Set([...leg.deck, ...leg.hand, ...leg.discard, ...pocket].map((c) => c.id))].sort();
 }
 
 export function eventTypes(events: EngineEvent[]): string[] {
   return events.map((e) => e.type);
 }
 
-/** Multiset of def ids in a card list, as a sorted "defId×n" string for easy comparison. */
-export function composition(cards: { defId: string }[]): string {
-  const m = new Map<string, number>();
-  for (const c of cards) m.set(c.defId, (m.get(c.defId) ?? 0) + 1);
-  return [...m.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([k, v]) => `${k}×${v}`)
-    .join(' ');
+/** The first event of a type, or a readable throw. */
+export function ev<T extends EngineEvent['type']>(events: EngineEvent[], type: T): Extract<EngineEvent, { type: T }> {
+  const e = events.find((x) => x.type === type);
+  if (!e) throw new Error(`no ${type} in [${eventTypes(events)}]`);
+  return e as Extract<EngineEvent, { type: T }>;
+}
+
+// ---------------------------------------------------------------- the slate
+
+/** The contracts chalked up for the current visit. */
+export function offerOf(n: NightState): string[] {
+  return currentLeg(n).offer.slice();
+}
+
+/** The contracts taken this visit. */
+export function slateOf(n: NightState): TakenContract[] {
+  return currentLeg(n).slate;
+}
+
+/**
+ * Take a contract, forcing it onto the offer first if it is not already there.
+ * Tests that care about the offer roll read `offerOf`; the rest just want the
+ * contract on the slate.
+ */
+export function take(n: NightState, defId: string): TakenContract {
+  const leg = currentLeg(n);
+  if (!leg.offer.includes(defId)) leg.offer.push(defId);
+  const out = takeContract(n, defId);
+  if (!out.ok) throw new Error(`could not take ${defId}: ${out.reason}`);
+  return leg.slate[leg.slate.length - 1];
+}
+
+/** Index of a taken contract on the slate, by def id. */
+export function slateIndex(n: NightState, defId: string): number {
+  const i = currentLeg(n).slate.findIndex((c) => c.defId === defId && !c.settled);
+  if (i < 0) throw new Error(`${defId} is not riding`);
+  return i;
+}
+
+export function bank(n: NightState, defId: string) {
+  return bankContract(n, slateIndex(n, defId));
+}
+
+export function pull(n: NightState, defId: string) {
+  return pullContract(n, slateIndex(n, defId));
+}
+
+export function press(n: NightState, defId: string) {
+  return pressContract(n, slateIndex(n, defId));
+}
+
+/** Status of a contract on the slate right now. */
+export function statusOf(n: NightState, defId: string): TakenContract['status'] {
+  return currentLeg(n).slate.find((c) => c.defId === defId)?.status ?? 'DEAD';
+}
+
+/**
+ * Run a contract's own check over a scripted visit: the values and the landing
+ * spots of the darts, then whatever is left. Used to prove that every contract
+ * reaches MADE on a visit that satisfies it and DEAD on one that cannot.
+ */
+export function checkVisit(
+  defId: string,
+  hits: (TargetLike | null)[],
+  opts: { from?: number; perVisit?: number; busted?: boolean; checkedOut?: boolean } = {},
+): TakenContract['status'] {
+  const per = opts.perVisit ?? 3;
+  const from = opts.from ?? 501;
+  const landed = hits.map((h) => (h === null ? null : target(h)));
+  const values = landed.map((h) => (h ? baseValue(h) : 0));
+  const total = values.reduce((a, b) => a + b, 0);
+  return contractDef(defId).check({
+    values,
+    hits: landed,
+    left: Math.max(0, per - hits.length),
+    from,
+    now: opts.checkedOut ? 0 : from - total,
+    busted: opts.busted ?? false,
+    checkedOut: opts.checkedOut ?? false,
+  });
 }
 
 // ---------------------------------------------------------------- scripted bot (determinism harness)
 
 /**
- * The scripted bot: the highest-value card in hand that does not bust
- * (evaluated with forgiveness spent so a forgivable bust still reads as a
- * bust), else the first card. Never touches the night RNG.
+ * Every input a night can take, as data. A night is a pure function of its
+ * seed and this list, which is the property the determinism tests prove: the
+ * bot below decides, but only these steps ever touch the state, so a recorded
+ * script replays a night exactly without re-running a single decision.
  */
-export function botPickCard(n: NightState, leg: LegState): DartCard {
-  const visit = currentVisit(leg);
-  let best: DartCard | null = null;
-  let bestValue = -1;
-  for (const c of leg.hand) {
-    const r = resolveThrow(c, {
-      chalk: n.chalk,
-      rng: null,
-      scoreBefore: leg.score,
-      scoreAtVisitStart: visit.scoreAtVisitStart,
-      visitThrowIndex: visit.throws.length as 0 | 1 | 2 | 3,
-      forgivenessUsed: true,
-    }).result;
-    if (r.outcome !== 'BUST' && r.totalValue > bestValue) {
-      best = c;
-      bestValue = r.totalValue;
-    }
+export type ScriptStep =
+  | { kind: 'TAKE'; defId: string }
+  | { kind: 'RUBOUT' }
+  | { kind: 'THROW'; target: Target; use?: string }
+  | { kind: 'MISS' }
+  | { kind: 'BANK'; index: number }
+  | { kind: 'PRESS'; index: number }
+  | { kind: 'PULL'; index: number }
+  | { kind: 'BUY'; index: number; replaceChalkId?: string }
+  | { kind: 'LEAVE' };
+
+export function applyStep(n: NightState, s: ScriptStep): void {
+  switch (s.kind) {
+    case 'TAKE':
+      takeContract(n, s.defId);
+      break;
+    case 'RUBOUT':
+      useRubOut(n);
+      break;
+    case 'THROW':
+      commitThrow(n, s.target, s.use ? { use: s.use } : {});
+      break;
+    case 'MISS':
+      commitMiss(n);
+      break;
+    case 'BANK':
+      bankContract(n, s.index);
+      break;
+    case 'PRESS':
+      pressContract(n, s.index);
+      break;
+    case 'PULL':
+      pullContract(n, s.index);
+      break;
+    case 'BUY':
+      shopBuy(n, s.index, s.replaceChalkId ? { replaceChalkId: s.replaceChalkId } : {});
+      break;
+    case 'LEAVE':
+      shopLeave(n);
+      break;
   }
-  return best ?? leg.hand[0];
 }
 
-/** In the shop: buy the first affordable card slot, then leave. */
-export function botShop(n: NightState): void {
-  const shop = n.shop;
-  if (shop) {
-    for (let i = 0; i < shop.slots.length; i++) {
-      const s = shop.slots[i];
-      if (s.kind === 'CARD' && !s.sold && n.pot >= s.cost) {
-        shopBuy(n, i);
-        break;
-      }
-    }
-  }
-  shopLeave(n);
+/** Replay a recorded script into a night. */
+export function applyScript(n: NightState, script: ScriptStep[]): NightState {
+  for (const s of script) applyStep(n, s);
+  return n;
+}
+
+function step(n: NightState, s: ScriptStep, log?: ScriptStep[]): void {
+  if (log) log.push(s);
+  applyStep(n, s);
 }
 
 /**
- * A checkout-aware variant used to reach the later legs: inside hint range it
- * plays the hand card that starts the shortest finishing route, else the
- * highest non-busting card that leaves a number the pool can still finish,
- * else the scripted pick. Still never touches the night RNG.
+ * The pick is a pure function of the held chalk (in acquisition order), the
+ * score and the darts already thrown, so a thousand replays of one night can
+ * share the answer without changing a single one of them.
  */
-export function smartPickCard(n: NightState, leg: LegState): DartCard {
+const pickCache = new Map<string, Target | null>();
+
+/**
+ * The scripted bot's dart. Free aim means the choice is a target, not a card,
+ * so the rule is the darts player's default: finish if the checkout table says
+ * you can, otherwise the biggest number that does not bust, otherwise the
+ * wall. Never touches the night RNG — every hypothetical passes `rng: null`.
+ */
+export function botTarget(n: NightState, leg: LegState): Target | null {
   const visit = currentVisit(leg);
   const ti = visit.throws.length as 0 | 1 | 2 | 3;
-  if (leg.score <= 170) {
-    const hints = computeCheckoutHints(n, leg);
-    let best: DartCard | null = null;
-    let bestLen = Infinity;
-    for (const c of leg.hand) {
-      const r = hints.byHandCard.get(c.id);
-      if (r && r.defIds.length < bestLen) {
-        best = c;
-        bestLen = r.defIds.length;
-      }
-    }
-    if (best) return best;
+  const key = `${n.chalk.map((c) => c.def.id).join(',')}|${leg.score}|${ti}`;
+  const cached = pickCache.get(key);
+  if (cached !== undefined) return cached ? { ...cached } : null;
+  const pick = choose(n, leg, ti);
+  pickCache.set(key, pick);
+  return pick ? { ...pick } : null;
+}
+
+function choose(n: NightState, leg: LegState, ti: 0 | 1 | 2 | 3): Target | null {
+  // Only look for a finish when one could exist: the search is the expensive
+  // part and a night spends most of its darts a long way from the double.
+  if (leg.score <= 240) {
+    const best = computeCheckoutHints(n, leg).best;
+    if (best) return { ...best.targets[0] };
   }
-  let pick: DartCard | null = null;
-  let pickV = -1;
-  for (const c of leg.hand) {
-    const r = resolveThrow(c, {
+  let best: Target | null = null;
+  let bestValue = -1;
+  for (const t of ALL_TARGETS) {
+    const r = resolveThrow(t, {
       chalk: n.chalk,
       rng: null,
       scoreBefore: leg.score,
-      scoreAtVisitStart: visit.scoreAtVisitStart,
+      scoreAtVisitStart: leg.score,
       visitThrowIndex: ti,
       forgivenessUsed: true,
     }).result;
-    if (r.outcome !== 'CONTINUE' || r.scoreCommitted > 170 || r.totalValue <= pickV) continue;
-    const fake: LegState = {
-      ...leg,
-      score: r.scoreCommitted,
-      deck: [...leg.deck, ...leg.discard, ...leg.hand.filter((x) => x !== c)],
-      hand: [],
-      discard: [],
-      visits: [{ index: 0, scoreAtVisitStart: 0, throws: new Array(ti + 1).fill(r) as ThrowResult[], busted: false }],
-    };
-    if (computeCheckoutHints(n, fake).best) {
-      pick = c;
-      pickV = r.totalValue;
+    if (r.outcome === 'BUST') continue;
+    if (r.totalValue > bestValue) {
+      best = { ...t };
+      bestValue = r.totalValue;
     }
   }
-  return pick ?? botPickCard(n, leg);
+  return best;
 }
 
-/** Smart shop: chalk if affordable (replacing the oldest when full), first affordable card, one refresh, another card, leave. */
-export function smartShop(n: NightState): void {
-  const buyFirstCard = () => {
-    const shop = n.shop;
-    if (!shop) return;
-    for (let i = 0; i < shop.slots.length; i++) {
-      const s = shop.slots[i];
-      if (s.kind === 'CARD' && !s.sold && n.pot >= s.cost) {
-        shopBuy(n, i);
-        return;
-      }
-    }
-  };
+/**
+ * The scripted slate policy, before the first dart of a visit: rub the offer
+ * out if nothing on it is affordable and the kit can pay for it, then take the
+ * cheapest contract that leaves at least two Pot in hand.
+ */
+export function botTakeContracts(n: NightState, leg: LegState, log?: ScriptStep[]): void {
+  if (currentVisit(leg).throws.length > 0) return;
+  const affordable = () => leg.offer.filter((id) => contractDef(id).stake + 2 <= n.pot);
+  if (affordable().length === 0 && n.kit.includes('rubout')) step(n, { kind: 'RUBOUT' }, log);
+  const ids = affordable().sort((a, b) => contractDef(a).stake - contractDef(b).stake || a.localeCompare(b));
+  if (ids.length) step(n, { kind: 'TAKE', defId: ids[0] }, log);
+}
+
+/**
+ * The scripted settle policy, after every dart: bank anything already made.
+ * The greedier bot presses a made contract once first, which is the only way
+ * the press ever reaches the determinism run.
+ */
+export function botSettleSlate(n: NightState, leg: LegState, deep = false, log?: ScriptStep[]): void {
+  for (let i = 0; i < leg.slate.length; i++) {
+    const c = leg.slate[i];
+    if (c.settled || c.status !== 'MADE') continue;
+    const dartsLeft = throwsPerVisit(n) - currentVisit(leg).throws.length;
+    const harder = contractDef(c.defId).pressTo;
+    if (deep && harder && c.pressed === 0 && dartsLeft > 0 && n.pot >= c.stake) step(n, { kind: 'PRESS', index: i }, log);
+    else step(n, { kind: 'BANK', index: i }, log);
+  }
+}
+
+/** The scripted kit policy: steady the hand on a finishing dart, when one is held. */
+export function botUse(n: NightState, t: Target): string | undefined {
+  if (t.region !== 'D' && t.region !== 'IB') return undefined;
+  if (n.kit.includes('steady')) return 'steady';
+  if (n.kit.includes('called')) return 'called';
+  return undefined;
+}
+
+/** In the shop: buy the first affordable slot, then leave. */
+export function botShop(n: NightState, log?: ScriptStep[]): void {
   const shop = n.shop;
   if (shop) {
     for (let i = 0; i < shop.slots.length; i++) {
       const s = shop.slots[i];
-      if (s.kind === 'CHALK' && !s.sold && n.pot >= s.cost) {
-        const full = n.chalk.length >= n.chalkSlots;
-        shopBuy(n, i, full ? { replaceChalkId: n.chalk[0].def.id } : {});
-      }
+      if (s.sold || n.pot < s.cost) continue;
+      const replaceChalkId = s.kind === 'CHALK' && n.chalk.length >= n.chalkSlots ? n.chalk[0].def.id : undefined;
+      const before = n.pot;
+      step(n, { kind: 'BUY', index: i, replaceChalkId }, log);
+      if (n.pot !== before) break;
     }
-    buyFirstCard();
-    if (shopRefresh(n).ok) buyFirstCard();
   }
-  shopLeave(n);
+  step(n, { kind: 'LEAVE' }, log);
+}
+
+/** A greedier shop: chalk first, then a refresh-free second buy. Used to reach the deeper legs. */
+export function botShopDeep(n: NightState, log?: ScriptStep[]): void {
+  const buyFirst = (kind?: string): boolean => {
+    const shop = n.shop;
+    if (!shop) return false;
+    for (let i = 0; i < shop.slots.length; i++) {
+      const s = shop.slots[i];
+      if (s.sold || n.pot < s.cost) continue;
+      if (kind && s.kind !== kind) continue;
+      const replaceChalkId = s.kind === 'CHALK' && n.chalk.length >= n.chalkSlots ? n.chalk[0].def.id : undefined;
+      const before = n.pot;
+      step(n, { kind: 'BUY', index: i, replaceChalkId }, log);
+      if (n.pot !== before) return true;
+    }
+    return false;
+  };
+  if (n.shop) {
+    buyFirst('CHALK');
+    buyFirst();
+    buyFirst();
+  }
+  step(n, { kind: 'LEAVE' }, log);
 }
 
 export interface DriveOpts {
+  /** Stop before the step that would make this true. */
   stopWhen?: (n: NightState) => boolean;
-  smart?: boolean;
+  /** The greedier bot: presses contracts, spends the kit, buys chalk. */
+  deep?: boolean;
+  /** Every input the drive fed the night, for replay. */
+  log?: ScriptStep[];
 }
 
-/** Drive a night (or a deserialised snapshot of one) to its end with a scripted bot. */
-export function continueScripted(n: NightState, stopWhen?: (n: NightState) => boolean, smart = false): NightState {
-  while (n.status === 'ACTIVE') {
+/**
+ * Drive a night (or a deserialised snapshot of one) to its end with the
+ * scripted bot: take a contract, throw, bank what landed, repeat.
+ */
+export function continueScripted(n: NightState, opts: DriveOpts = {}): NightState {
+  const { stopWhen, deep = false, log } = opts;
+  let guard = 0;
+  while (n.status === 'ACTIVE' && guard++ < 20000) {
     if (stopWhen && stopWhen(n)) break;
     if (n.phase === 'LEG') {
       const leg = currentLeg(n);
-      if (leg.hand.length === 0) throw new Error('empty hand');
-      commitCard(n, (smart ? smartPickCard : botPickCard)(n, leg).id);
+      botTakeContracts(n, leg, log);
+      const t = botTarget(n, leg);
+      if (!t) step(n, { kind: 'MISS' }, log);
+      else step(n, { kind: 'THROW', target: t, use: deep ? botUse(n, t) : undefined }, log);
+      if (n.phase === 'LEG' && currentLeg(n).status === 'ACTIVE') botSettleSlate(n, currentLeg(n), deep, log);
     } else if (n.phase === 'SHOP') {
-      if (smart) smartShop(n);
-      else botShop(n);
-    } else {
-      break;
-    }
+      if (deep) botShopDeep(n, log);
+      else botShop(n, log);
+    } else break;
   }
   return n;
 }
 
-/** Play a whole night from a seed with the scripted bot. */
+/** Play a whole night from a seed with the scripted bot, at the real odds. */
 export function playScripted(seed: number, oche: OcheId = 'local'): NightState {
   return continueScripted(startNight(seed, oche, [], false));
 }
 
-/** Play a whole night from a seed with the checkout-aware bot, optionally with starting chalk. */
-export function playSmart(seed: number, chalk: string[] = [], oche: OcheId = 'local'): NightState {
-  return continueScripted(startNight(seed, oche, chalk, false), undefined, true);
+/** Play a whole night from a seed with the greedier bot, optionally with starting chalk. */
+export function playDeep(seed: number, chalk: string[] = [], oche: OcheId = 'local'): NightState {
+  return continueScripted(startNight(seed, oche, chalk, false), { deep: true });
 }
+
+/** Everything the visit's contracts can see right now. */
+export { visitProgress };

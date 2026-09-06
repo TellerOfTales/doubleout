@@ -2,7 +2,7 @@
  * Base ruleset helpers (TDD §3, §4): pot rewards and the unmodified
  * bust/checkout law used as the reference table in tests.
  */
-import { BIG_FINISH_LADDER, HEAT_CAP, LEGS, SHANGHAI_BONUS, streakMultiplier } from '../content/legs';
+import { BIG_FINISH_LADDER, HEAT_CAP, LEGS, streakMultiplier } from '../content/legs';
 import { baseValue, isDoubleRegion } from './board';
 import type { LegState, PotBreakdown, Target } from './types';
 
@@ -13,30 +13,29 @@ export function bigFinishBonus(score: number): number {
 }
 
 /**
- * Pot for a checked-out leg (TDD §4), plus this build's additions: the
- * "left it right" bonuses banked during the leg; the crowd heat, which scales
- * everything by up to ×2 and is wiped by a bust or a walk to the wall; the
- * Shanghai bonus; and the clean sheet, which multiplies the lot when this is
- * the second or later clean leg in a row. `streak` is the night's clean-sheet
- * count INCLUDING this leg (0 when the leg was dirty).
+ * Pot for a checked-out leg (TDD §4), plus this build's additions: the crowd
+ * heat, which scales everything by up to ×2 and is wiped by a bust or a walk to
+ * the wall; and the clean sheet, which multiplies the lot when this is the
+ * second or later clean leg in a row. `streak` is the night's clean-sheet count
+ * INCLUDING this leg (0 when the leg was dirty).
+ *
+ * There is deliberately NO bonus for finishing with visits to spare. It paid a
+ * Pot for every unused visit, which is a direct reward for throwing the treble
+ * twenty and getting out — the exact behaviour the fourth playtest called
+ * dreadfully boring. Without it, a spare visit is worth whatever you can take
+ * off the slate in it, and the leg carries its own press-your-luck question:
+ * how long can you milk the contracts before you have to close this out.
  */
 export function potReward(leg: LegState, streak = 0): PotBreakdown {
   const def = LEGS[leg.index];
   const visitsUsed = leg.visits.length;
   const finishing = leg.visits[leg.visits.length - 1];
   const checkoutFrom = finishing ? finishing.scoreAtVisitStart : 0;
-  const lastThrow = finishing ? finishing.throws[finishing.throws.length - 1] : undefined;
-  const byShanghai = !!lastThrow?.shanghai;
   const base = def.reward;
-  const unusedVisits = Math.max(0, leg.visitLimit - visitsUsed);
-  // A Shanghai is not a checkout: no finish ladder, and the nine-darter is a
-  // 501 thing thrown to zero.
-  const bigFinish = byShanghai ? 0 : bigFinishBonus(checkoutFrom);
+  const bigFinish = bigFinishBonus(checkoutFrom);
   const cleanLeg = leg.bustsThisLeg === 0 ? 3 : 0;
-  const nineDarter = visitsUsed === 3 && (def.start >= 501 || (leg.visits[0]?.scoreAtVisitStart ?? 0) >= 501) && !byShanghai ? 5 : 0;
-  const setup = leg.setupBonuses;
-  const shanghai = byShanghai ? SHANGHAI_BONUS : 0;
-  const subtotal = base + unusedVisits + bigFinish + cleanLeg + nineDarter + setup + shanghai;
+  const nineDarter = visitsUsed === 3 && (def.start >= 501 || (leg.visits[0]?.scoreAtVisitStart ?? 0) >= 501) ? 5 : 0;
+  const subtotal = base + bigFinish + cleanLeg + nineDarter;
   const heat = Math.min(HEAT_CAP, leg.heat);
   // ×1 at heat 0 rising to ×2 at the cap, in quarters so it stays integer.
   const heatBonus = Math.floor((subtotal * heat) / HEAT_CAP);
@@ -44,17 +43,14 @@ export function potReward(leg: LegState, streak = 0): PotBreakdown {
   // The clean sheet multiplies the leg and its finish, not the visits it left
   // unused or the crowd: a fast clean leg is worth more, not everything.
   const streakMult = streakMultiplier(streak);
-  const streakBonus = (base + bigFinish + nineDarter + shanghai) * (streakMult - 1);
+  const streakBonus = (base + bigFinish + nineDarter) * (streakMult - 1);
   return {
     base,
-    unusedVisits,
     bigFinish,
     cleanLeg,
     nineDarter,
-    setup,
     heat,
     heatBonus,
-    shanghai,
     streak,
     streakMult,
     streakBonus,

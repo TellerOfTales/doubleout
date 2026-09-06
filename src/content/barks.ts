@@ -10,19 +10,30 @@
  * Writing rules (TDD §10.3): never mock the player; mock the board, the
  * wiring, the crowd, each other, the arithmetic, Gerald in the third row,
  * the carpet, the pint. ≤ 90 characters per line. Mild pub register only.
- * No gambling words. No real people, leagues, sponsors, venues or brands.
+ * No casino words at all. No real people, leagues, sponsors, venues or brands.
  * "Pot" means the in-game Pot only.
+ *
+ * Since the rebuild (docs/decisions/design.md §5) the drama is on the slate,
+ * not in a hand of dealt cards. The player aims wherever they like, every dart,
+ * so where they aimed is now expressive and worth remarking on; and the money
+ * is taken, pressed, banked, pulled or lost in front of the room. Two rules
+ * from §6 bind the writing here: a loss is reported as a loss, in the same
+ * voice as any other loss, and every loss names a rule that can be used next
+ * time. Barrel may be reckless. Nock names the actual mistake.
  *
  * Placeholders substituted by the engine (src/core/commentary.ts):
  *   {score} leg score after the throw   {total} visit total   {value} throw value
  *   {chalk} fired chalk names joined by ' then '   {leg} leg name   {pot} pot
- *   {card} notation of the committed card   {n180} 180s this night
+ *   {target} where the dart was aimed, long form   {n180} 180s this night
+ *   {contract} name chalked on the slate   {price} its printed price
+ *   {payout} what a settled contract returned   {from} what a press came out of
+ *
+ * {target} and {value} only mean anything on a THROW; the slate placeholders
+ * only mean anything on a CONTRACT_TAKEN, CONTRACT_SETTLED or CONTRACT_PRESSED.
  *
  * Character set: ASCII printable plus '…' (the 5x7 font has no em-dash).
  */
-import { SHANGHAI_RANGE } from './legs';
-import { shanghaiProgress } from '../core/state';
-import type { BarkContext, BarkTrigger, ThrowResult } from '../core/types';
+import type { BarkContext, BarkTrigger, ContractOutcome, TakenContract, Target, ThrowResult, VisitState } from '../core/types';
 
 const LAST_LEG = 7;
 
@@ -111,6 +122,57 @@ function shopPot(ctx: BarkContext): number {
 
 function legStart(ctx: BarkContext, index: number): boolean {
   return ctx.event.type === 'LEG_START' && ctx.event.legIndex === index;
+}
+
+// ---------------------------------------------------------------- the slate
+
+/** The contract a CONTRACT_TAKEN / SETTLED / PRESSED event is about. */
+function contractOf(ctx: BarkContext): TakenContract | undefined {
+  const e = ctx.event;
+  if (e.type === 'CONTRACT_TAKEN' || e.type === 'CONTRACT_SETTLED' || e.type === 'CONTRACT_PRESSED') return e.contract;
+  return undefined;
+}
+
+/** How a CONTRACT_SETTLED event ended. Undefined for every other event. */
+function settledAs(ctx: BarkContext): ContractOutcome | undefined {
+  if (ctx.event.type !== 'CONTRACT_SETTLED') return undefined;
+  return ctx.event.contract.settled?.how;
+}
+
+/**
+ * The visit a settlement belongs to. A bark context is built from the state
+ * the engine left behind, by which time a busted visit has already been closed
+ * and the next one opened, so "the visit that just ended" is the one with
+ * darts in it.
+ */
+function settlingVisit(ctx: BarkContext): VisitState | undefined {
+  const vs = ctx.leg.visits;
+  const last = vs[vs.length - 1];
+  if (last && last.throws.length > 0) return last;
+  return vs[vs.length - 2] ?? last;
+}
+
+/** A contract lost because the visit went bust, rather than simply not landing. */
+function bustTookIt(ctx: BarkContext): boolean {
+  return settledAs(ctx) === 'LOST' && !!settlingVisit(ctx)?.busted;
+}
+
+/** Contracts still on the slate and still losable. Empty once the visit is over. */
+function riding(ctx: BarkContext): TakenContract[] {
+  return ctx.leg.slate.filter((c) => !c.settled);
+}
+
+// ---------------------------------------------------------------- free aim
+
+/** Where this dart was sent. Any of the 62 targets, or the wall on purpose. */
+function aimedAt(ctx: BarkContext): Target | undefined {
+  return throwOf(ctx)?.intent.target;
+}
+
+/** The beds aimed at so far this visit. Undefined entries are the wall. */
+function aimedBeds(ctx: BarkContext): (number | undefined)[] {
+  const v = settlingVisit(ctx);
+  return v ? v.throws.map((t) => t.intent.target.bed) : [];
 }
 
 // ---------------------------------------------------------------- content
@@ -939,7 +1001,7 @@ export const BARKS: BarkTrigger[] = [
     speaker: 'NOCK',
     priority: 15,
     cooldown: 20,
-    when: (ctx) => ctx.event.type === 'HAND_DEALT' && ctx.leg.score >= 2 && ctx.leg.score <= 170,
+    when: (ctx) => ctx.event.type === 'SLATE_OFFERED' && ctx.leg.score >= 2 && ctx.leg.score <= 170,
     lines: [
       "{score} left. The hint knows the route. I know the distance: 2.37 metres.",
       "{score} to go. There are 62 places to land on a board. Only a few of them help.",
@@ -1034,14 +1096,14 @@ export const BARKS: BarkTrigger[] = [
     },
     lines: [
       "THE SHOP! {pot} in the pot! Spend it! Spend it all! No, SOME of it! Nock, how much?",
-      "Shop's open! {pot} in the pot! Cards! Chalk! Something in a jar!",
+      "Shop's open! {pot} in the pot! Chalk! Kit! Something in a jar!",
       "To the shop! {pot} pot! The man behind the counter's got a look! A SELLING look!",
       "Shop time! {pot} pot! I'd buy the lot but I'm not allowed to touch anything!",
     ],
     reply: {
       speaker: 'NOCK',
       lines: [
-        "{pot} in the pot. A refresh is 1. Removing a card is 2. The jar is not for sale.",
+        "{pot} in the pot. A refresh is 1. A steadier hand is 2. The jar is not for sale.",
         "The pot is {pot}. Chalk costs between 4 and 12. I have a spreadsheet. It is sad.",
         "{pot} to spend. Four slots, one refresh. I would look at the doubles. I always do.",
       ],
@@ -1094,7 +1156,7 @@ export const BARKS: BarkTrigger[] = [
     when: (ctx) => ctx.event.type === 'SHOP_BUY' && ctx.event.slot.kind !== 'CHALK',
     lines: [
       "Purchased. The pot is now {pot}. The shopkeeper has said nothing. He never does.",
-      "A purchase. {pot} left in the pot. The deck is a little different. The board is not.",
+      "A purchase. {pot} left in the pot. The kit is a little heavier. The board is not.",
       "Bought. I have updated my notes. My notes now say 'bought'.",
     ],
   },
@@ -1156,32 +1218,6 @@ export const BARKS: BarkTrigger[] = [
     ],
   },
   {
-    id: 'setup_bonus',
-    speaker: 'NOCK',
-    priority: 55,
-    cooldown: 9,
-    when: (ctx) => ctx.event.type === 'SETUP_BONUS',
-    lines: [
-      'Left on {score}, and the deck can close it. That is the whole game, done quietly.',
-      '{score}. A finishable number, chosen on purpose. I could weep.',
-      'That is not luck. That is arithmetic done three darts early.',
-      'Left it right. The Pot notices. Nobody else does, but the Pot notices.',
-    ],
-  },
-  {
-    id: 'pocketed',
-    speaker: 'BARREL',
-    priority: 45,
-    cooldown: 10,
-    when: (ctx) => ctx.event.type === 'POCKETED',
-    lines: [
-      "Into the pocket! He's saving that one for later! Like a crisp!",
-      'Kept back! That is FORWARD PLANNING and I do not care for it!',
-      'One up the sleeve! Legal! I checked! Nobody checked!',
-      'Pocketed! It will come back every visit until he throws it! Like a bad memory!',
-    ],
-  },
-  {
     id: 'idle_15',
     speaker: 'BARREL',
     priority: 20,
@@ -1217,90 +1253,6 @@ export const BARKS: BarkTrigger[] = [
 // ---------------------------------------------------------------- the excitement package (DECISIONS.md #62-66)
 
 const PACKAGE_BARKS: BarkTrigger[] = [
-  {
-    id: 'shanghai',
-    speaker: 'BARREL',
-    priority: 108,
-    cooldown: 6,
-    when: (ctx) => ctx.event.type === 'SHANGHAI' && ctx.event.won,
-    lines: [
-      "SHANGHAI! SINGLE, DOUBLE, TREBLE! THE LEG IS OVER! Nock, the leg is OVER!",
-      "SHANGHAI! Whatever was left, it's gone! GONE! The scoreboard's been made redundant!",
-      "SHANGHAI ON THE {number}S! Gerald's up! Gerald's on a CHAIR! That chair has a history!",
-      "THE SHANGHAI! The pub rule! The ONE! Three darts, one number, and the leg just… ENDS!",
-      "SHANGHAI! I've never seen one! I've seen one NOW! I'll be seeing it for WEEKS!",
-      "ONE NUMBER, THREE WAYS, AND GOODNIGHT! That is a SHANGHAI and I need a sit down!",
-    ],
-    reply: {
-      speaker: 'NOCK',
-      lines: [
-        'Single, double, treble of the called number. What was left does not matter. It never did.',
-        'The rule predates the scoreboard. Tonight the scoreboard found out.',
-        'Three darts in one bed, three rings. The arithmetic is dismissed. It returns next leg.',
-        'That is the oldest rule in the room, and the loudest. Both by some distance.',
-      ],
-    },
-  },
-  {
-    id: 'shanghai_scoring',
-    speaker: 'NOCK',
-    priority: 90,
-    cooldown: 6,
-    when: (ctx) => ctx.event.type === 'SHANGHAI' && !ctx.event.won,
-    lines: [
-      'Single, double, treble of the {number}s, from up here. The Pot pays; the board plays on.',
-      'A Shanghai in the scoring. Inside 170 it ends the leg. Up here it pays the crowd.',
-      'Three rings of the called number. Out of range, so not the leg. Still the loudest thing.',
-    ],
-    reply: {
-      speaker: 'BARREL',
-      lines: [
-        "A SHANGHAI! Doesn't count! Counts a BIT! The crowd's paying! The BOARD isn't!",
-        "Three rings! From all the way up there! Do it again LOWER DOWN and we go HOME!",
-      ],
-    },
-  },
-  {
-    id: 'shanghai_two',
-    speaker: 'NOCK',
-    priority: 48,
-    cooldown: 5,
-    when: (ctx) => {
-      if (ctx.event.type !== 'THROW' || ctx.event.result.outcome !== 'CONTINUE') return false;
-      const v = ctx.leg.visits[ctx.leg.visits.length - 1];
-      if (!v || v.scoreAtVisitStart > SHANGHAI_RANGE) return false;
-      const got = shanghaiProgress(ctx.leg);
-      if (got.size !== 2) return false;
-      // Only when the third piece is actually in hand: Nock does not cry wolf.
-      return ctx.leg.hand.some((c) => c.target.bed === ctx.leg.shanghai && (c.target.region === 'S' || c.target.region === 'D' || c.target.region === 'T') && !got.has(c.target.region));
-    },
-    lines: [
-      'Two of the three, and the third is in hand. One dart, and the leg ends where it stands.',
-      'Two pieces of the Shanghai down, the last one dealt. The room has noticed. So has the.',
-      'Two down, one in hand. It finishes the leg whatever the score says. Barrel says the rest.',
-      'Single and double, or double and treble, it does not matter. One more of the {number}s.',
-    ],
-    reply: {
-      speaker: 'BARREL',
-      lines: [
-        "ONE MORE OF THEM AND IT'S OVER! I can't look! I'm looking! I CAN'T STOP LOOKING!",
-        "Come on! COME ON! One more in that bed and the leg is DONE! DONE, I said!",
-        "Nock, I have never wanted a dart to land anywhere this much! ANYWHERE!",
-      ],
-    },
-  },
-  {
-    id: 'shanghai_called',
-    speaker: 'NOCK',
-    priority: 46,
-    cooldown: 3,
-    when: (ctx) => ctx.event.type === 'LEG_START' && ctx.event.legIndex >= 1 && ctx.leg.visits.length <= 1,
-    lines: [
-      'Shanghai on the {number}s. Single, double, treble in a visit, inside 170, and the leg is.',
-      'The {number}s are called. Three rings in one visit, in checkout range, and the board can.',
-      'Shanghai number: {number}. Most nights nobody hits it. Everyone talks about it anyway.',
-    ],
-  },
   {
     id: 'heat_lost_wall',
     speaker: 'BARREL',
@@ -1393,7 +1345,7 @@ const AIM_BARKS: BarkTrigger[] = [
     speaker: 'BARREL',
     priority: 64,
     cooldown: 6,
-    when: (ctx) => ctx.event.type === 'THROW' && ctx.event.result.aim === 'wall',
+    when: (ctx) => ctx.event.type === 'THROW' && ctx.event.result.aim === 'wall' && !ctx.event.result.miss,
     lines: [
       "IN THE WALL! Not the board! The WALL! The wall has done nothing to deserve this!",
       "Wide! Into the plaster! There's a dart in the wall and a hole in the plan!",
@@ -1444,9 +1396,556 @@ const AIM_BARKS: BarkTrigger[] = [
       'Just under the wire. The single. It counts, it just does not count for much.',
     ],
   },
+  {
+    id: 'treble_wall',
+    speaker: 'BARREL',
+    priority: 66,
+    cooldown: 8,
+    when: (ctx) => {
+      const t = throwOf(ctx);
+      return !!t && !t.miss && t.aim === 'wall' && t.intent.target.region === 'T';
+    },
+    lines: [
+      'At the treble, and into the wall. A dart in the plaster and a nought on the board.',
+      'Missed the board off a treble. The wall has done nothing to deserve any of this.',
+      'Aimed at {target}. Found the wall. Gerald has ducked. Gerald was never in danger.',
+      'Treble, wall, nothing. The board is over there and the dart went somewhere else.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'The treble band is eight millimetres. High and wide of it there is only plaster.',
+        'No score, no bust, one dart gone. The wall is the most honest thing in this room.',
+        'A treble carries a real chance of the wall. That is what makes the single under it safe.',
+      ],
+    },
+  },
+  {
+    id: 'aim_bull',
+    speaker: 'NOCK',
+    priority: 57,
+    cooldown: 8,
+    when: (ctx) => aimedAt(ctx)?.region === 'IB',
+    lines: [
+      'At the bull. Twelve and a half millimetres across, and everything round it is not it.',
+      'The bull, called on purpose. Fifty if it lands and a long way back if it does not.',
+      'He has gone at the middle. Smallest thing on that board, and nobody made him do it.',
+      'The bull. Nothing about the score requires that. Something on the slate does.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'The bull. He is going at the bull. I always want the bull. Nobody wants the bull.',
+        'Middle of the board, straight down the throat of it. Gerald has stopped chewing.',
+        'At the bull, and not because he has to be. That is a decision, that is.',
+      ],
+    },
+  },
+  {
+    id: 'aim_low_bed',
+    speaker: 'BARREL',
+    priority: 50,
+    cooldown: 10,
+    when: (ctx) => {
+      const t = aimedAt(ctx);
+      return !!t && t.region === 'S' && (t.bed ?? 20) <= 5 && ctx.leg.score > 60;
+    },
+    lines: [
+      'He has aimed at the small numbers. On purpose. There is a reason and I want to hear it.',
+      'Deliberately low. Somebody up there is reading the slate and ignoring the scoreboard.',
+      'That is a low bed, called and thrown at. Nobody does that by accident twice.',
+      'The little numbers. The ones nobody looks at. He has looked at them.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'That is a {target}, chosen. The score barely moves. Something on the slate wanted it.',
+        'Low, on purpose. The scoreboard will not thank him for it. The slate might.',
+        'Aiming small is a real decision here. The board does not know what to do with it.',
+      ],
+    },
+  },
+  {
+    id: 'aim_double_early',
+    speaker: 'NOCK',
+    priority: 52,
+    cooldown: 10,
+    when: (ctx) => {
+      const t = throwOf(ctx);
+      return !!t && t.intent.target.region === 'D' && t.intent.visitThrowIndex === 0 && t.scoreBefore > 100;
+    },
+    lines: [
+      'A double, this early. Nothing here is a finish. He wants the ring for its own sake.',
+      'First dart of the visit at a double, with three figures still up. That is unusual.',
+      'The doubles are thin and the wall is directly behind them. He has gone there anyway.',
+      'A double at this score buys nothing but the ring it lands in. Something wants the ring.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'A double. Now. We are nowhere near the end of this leg and he has gone for one.',
+        'Straight at the outside ring with the score up there. Bold. Possibly daft. Bold.',
+        'Early double. Half the pub has checked the scoreboard. The scoreboard has not moved.',
+      ],
+    },
+  },
+  {
+    id: 'aim_same_bed',
+    speaker: 'NOCK',
+    priority: 54,
+    cooldown: 8,
+    when: (ctx) => {
+      if (ctx.event.type !== 'THROW') return false;
+      const beds = aimedBeds(ctx);
+      if (beds.length < 2) return false;
+      const [a, b] = beds.slice(-2);
+      return a !== undefined && a === b;
+    },
+    lines: [
+      'Same bed again. He is not scoring, he is building something up there, dart by dart.',
+      'Twice into one number. That is a contract being assembled in front of us.',
+      'The same bed a second time. Whatever is on the slate, this is the shape of it.',
+      'One number, over and over. The rest of the board might as well be a wall tonight.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'Same number again. He is going for the set. Do not talk to me, do not talk to him.',
+        'That bed has gone thin and the rest of the board has gone quiet.',
+        'Again. In the same one. I know exactly what he is doing and I cannot look at it.',
+      ],
+    },
+  },
 ];
 
-BARKS.push(...PACKAGE_BARKS, ...AIM_BARKS);
+// ---------------------------------------------------------------- the slate
+//
+// Where the tension lives now. A contract is taken before the visit; after
+// every dart it can be pulled down, banked, or pressed into something harder.
+// Nothing left riding survives a bust. Barrel wants it left up there, Nock
+// wants it banked, and per design.md §6 every loss is reported as a loss and
+// names the rule that would have stopped it.
+
+const SLATE_BARKS: BarkTrigger[] = [
+  {
+    id: 'slate_offered',
+    speaker: 'NOCK',
+    priority: 22,
+    cooldown: 14,
+    when: (ctx) => ctx.event.type === 'SLATE_OFFERED',
+    lines: [
+      'The slate is chalked. Three prices, one visit, and no obligation to touch any of them.',
+      'Three contracts, pulling three different directions. That is the point of three.',
+      'New slate. Read all three before the first dart. After that the prices are what they are.',
+      'Chalked up, three of them. Taking none is a position. It is not a popular one.',
+      'Three on the slate. Whichever goes up decides where the next three darts are going.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'Three up on the slate. I have opinions on all of them. Mostly about the dear one.',
+        'Fresh chalk. I can smell it from here. That is the chalk, Nock. Tell me that is the chalk.',
+        'Three contracts. Take the lot, that is my view. Nobody has ever asked for my view.',
+      ],
+    },
+  },
+  {
+    id: 'contract_taken',
+    speaker: 'BARREL',
+    priority: 44,
+    cooldown: 8,
+    when: (ctx) => ctx.event.type === 'CONTRACT_TAKEN',
+    lines: [
+      '{contract} is on. That is a plan, that is. A plan, in darts, at this hour.',
+      'Taken: {contract} at {price}. The slate has been touched and there is no untouching it.',
+      '{contract}. Right. Everything else on that board is scenery for the next three darts.',
+      'He has gone for {contract}. Gerald approves. Gerald approves of most things by now.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        '{contract}, at a price of {price}. The Pot is {pot}. Both numbers matter from here.',
+        'Taken. The Pot goes down first and comes back later, or does not. That is the shape.',
+        '{contract} for {price}. It pays at the end of the visit, or the moment it is banked.',
+      ],
+    },
+  },
+  {
+    id: 'contract_taken_dear',
+    speaker: 'NOCK',
+    priority: 56,
+    cooldown: 9,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return ctx.event.type === 'CONTRACT_TAKEN' && !!c && (c.stake >= 4 || ctx.night.pot <= c.stake);
+    },
+    lines: [
+      'That is a dear one. Three darts to make it, and no fourth dart is coming.',
+      '{contract}, and a good part of the Pot with it. Every dart in this visit has a job now.',
+      'A large one, taken early. There is no slack left in the visit. There was not much.',
+      'Dear. If it does not land inside three darts the Pot does not see that money again.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'Dear? It is dear. It is also {price} coming back. I can do that sum. I have done it.',
+        'That is the big one off the slate. The night has a shape now. A frightening shape.',
+        'He has had the dear one. I would have had the dear one. Nobody lets me near the darts.',
+      ],
+    },
+  },
+  {
+    id: 'contract_taken_long',
+    speaker: 'BARREL',
+    priority: 54,
+    cooldown: 9,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return ctx.event.type === 'CONTRACT_TAKEN' && !!c && c.price >= 9;
+    },
+    lines: [
+      '{contract}. Pays {price}. Also almost never happens. Both of those are true at once.',
+      'He has taken {contract}. At {price}. I have not sat down since and I will not.',
+      '{contract} chalked up. That is the long one. That is the one nobody takes.',
+      'The long price is up on the slate and somebody has gone and touched it.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        '{price} back on it. There is a reason the price is that long, and the reason is the board.',
+        'A long price is a thin chance in a good coat. The house prints both of them honestly.',
+        '{contract} pays {price} because it hardly ever lands. The number is not being generous.',
+      ],
+    },
+  },
+  {
+    id: 'contract_riding',
+    speaker: 'NOCK',
+    priority: 68,
+    cooldown: 8,
+    when: (ctx) => ctx.event.type === 'THROW' && riding(ctx).some((c) => c.status === 'MADE'),
+    lines: [
+      'That has landed, and it is still up there. Made is not paid. Banking is what pays.',
+      'Made, not banked. The difference between the two is one bust wide.',
+      'It is good on the slate and not in the Pot. A bust from here takes it with the score.',
+      'Up there, made, and losable until somebody takes it down. Those are the terms as printed.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'Bank it. Or do not. I am holding a pen and a pint, not the darts.',
+        'It is made. Take it, press it, or leave it up. Three doors, and they all shut shortly.',
+        'Made. Now the hard part, which is deciding to stop.',
+      ],
+    },
+  },
+  {
+    id: 'contract_banked',
+    speaker: 'NOCK',
+    priority: 72,
+    cooldown: 8,
+    when: (ctx) => settledAs(ctx) === 'BANKED',
+    lines: [
+      'Banked. {payout} into the Pot, and nothing that happens on that board can reach it.',
+      '{contract}, banked. Not the largest number available. The only certain one.',
+      'Off the slate at {payout}. A bust later in this visit is now merely a bust.',
+      'Banked. Unfashionable. Correct.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'Banked. Sensible. I hate it. Well done.',
+        'He has taken the money. The room wanted the other thing. The room is not paying.',
+        'In the Pot and out of reach. Boring. Lovely. Boring and lovely.',
+      ],
+    },
+  },
+  {
+    id: 'contract_pulled',
+    speaker: 'BARREL',
+    priority: 66,
+    cooldown: 8,
+    when: (ctx) => settledAs(ctx) === 'PULLED',
+    lines: [
+      'Pulled. {payout} back, and it comes down off that slate before it can go wrong.',
+      'He has pulled it. Small money, certain money. Gerald would have left it up there.',
+      'Down it comes. {payout} for the darts it survived and not a pip more.',
+      'Pulled it down. No drama, no shouting, no me. Lovely for everyone but me.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'A pull returns what went up, plus one for every dart it lived through. Not a loss.',
+        '{payout}. Less than the price, more than nothing, and it happens now rather than maybe.',
+        'Pulled early. The small certain number beats the large one that was never arriving.',
+      ],
+    },
+  },
+  {
+    id: 'contract_paid',
+    speaker: 'BARREL',
+    priority: 76,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return settledAs(ctx) === 'PAID' && !!c && c.pressed === 0;
+    },
+    lines: [
+      '{contract} lands. Left riding all the way to the last dart. {payout} into the Pot.',
+      'That is {contract} home. He never banked it and, as it turns out, never needed to.',
+      '{contract}, paid at the end of the visit. Held all the way. My nerves were not.',
+      'Paid. It sat up on that slate for three darts and none of them broke it.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        '{payout} back on {contract}. Riding it to the end paid this time. It does not always.',
+        'Paid at the end. Held, unbanked, and nothing broke it. Only one of those was a decision.',
+        'The Pot is {pot}, and that one is settled. Settled money cannot be lost.',
+      ],
+    },
+  },
+  {
+    id: 'contract_lost',
+    speaker: 'NOCK',
+    priority: 74,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return settledAs(ctx) === 'LOST' && !bustTookIt(ctx) && !!c && c.pressed === 0;
+    },
+    lines: [
+      '{contract} did not land. A loss, recorded in the same column as every other loss.',
+      'Dead. The visit ran out of darts before the contract ran out of conditions.',
+      'Lost. Three darts was always the whole of it, and there is no fourth one coming.',
+      'That one is gone. It could have been pulled the moment the visit stopped fitting it.',
+      'Not made. The slate does not do nearly, and it never has.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'Gone. That is the slate for you. It does not do nearly and it never apologises.',
+        'Not made. The board says no and the board keeps the chalk.',
+        'Lost, and nothing to argue with. I have tried arguing with a board. It sits there.',
+      ],
+    },
+  },
+  {
+    id: 'contract_lost_bust',
+    speaker: 'BARREL',
+    priority: 90,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return bustTookIt(ctx) && !!c && c.pressed === 0 && c.status !== 'MADE';
+    },
+    lines: [
+      'The bust has taken the slate down with it. Everything up there, gone, in one dart.',
+      'One dart too many and the whole slate goes. The board did not even blink.',
+      'That is the score put back and the slate wiped. Two punishments, one dart.',
+      'Bust, and {contract} goes down the drain behind it. I did not enjoy watching that.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'A bust settles every live contract as a loss. Nothing riding survives it. Nothing.',
+        'The score is restored and the slate is not. That gap is the reason to pull early.',
+        'This is what banking is for, and pulling, and the third dart nobody has to throw.',
+      ],
+    },
+  },
+  {
+    id: 'contract_made_lost_bust',
+    speaker: 'NOCK',
+    priority: 95,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return bustTookIt(ctx) && !!c && c.pressed === 0 && c.status === 'MADE';
+    },
+    lines: [
+      'It was made. It was up there, made, and the bust took it anyway. Banking is for that.',
+      'Made and lost in the same visit. The bank was open on every dart until this one.',
+      'That contract had landed. A bust does not care what has landed, only what was banked.',
+      'Gone, and it was already good. On Tick is the chalk that stops exactly this.',
+      '{payout} returned on a contract that was made. That is the cruellest zero on the slate.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'It was in. It was in, and now it is not. I have gone quiet. Listen to that.',
+        'Made, then bust, then gone. Three things to one contract out of one dart.',
+        'I watched it land. I watched it leave. Nobody moved and it left anyway.',
+      ],
+    },
+  },
+  {
+    id: 'contract_pressed',
+    speaker: 'BARREL',
+    priority: 98,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return ctx.event.type === 'CONTRACT_PRESSED' && !!c && c.pressed <= 1;
+    },
+    lines: [
+      'He has pressed it. A made contract, torn up, chalked again as {contract}, for double.',
+      'Out of {from} and into {contract}. That was money and it is now a question.',
+      'The press. He had it made and he has torn it up in front of the room.',
+      'Pressed. {contract} by the end of this visit or the lot goes. I love it here.',
+      'That is the press. Nobody made him do it. That is what I keep coming back to.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'It was made. It was made, and he tore it up. I would like that in the record twice.',
+        '{from} had landed. That was a number. {contract} is a hope. He has swapped them over.',
+        'Double the money down on a contract already good. There is a word for it. Not analysis.',
+        'Appalling. Possibly correct at that price. Still appalling.',
+      ],
+    },
+  },
+  {
+    id: 'contract_pressed_twice',
+    speaker: 'NOCK',
+    priority: 102,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return ctx.event.type === 'CONTRACT_PRESSED' && !!c && c.pressed >= 2;
+    },
+    lines: [
+      'Pressed twice. {contract}. That is the top of the slate; there is nothing above it.',
+      'Twice pressed. Four times the money on a contract that has to be perfect. I am cold.',
+      '{contract}, at the second press. Nobody presses twice. He has just pressed twice.',
+      'Out of {from} and up again. The slate has run out of harder things to become.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'Twice. He has pressed it twice. There is no third press. There is only the board.',
+        'Pressed again! Gerald is standing on the chair and the chair has a history.',
+        'Two presses and one visit. I have not breathed since the first one.',
+      ],
+    },
+  },
+  {
+    id: 'pressed_landed',
+    speaker: 'BARREL',
+    priority: 99,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      const how = settledAs(ctx);
+      return !!c && c.pressed > 0 && (how === 'PAID' || how === 'BANKED');
+    },
+    lines: [
+      'The press has landed. {contract}, made, {payout} into the Pot. I have no notes left.',
+      'Pressed and paid. He tore up a good contract for a better one and the board allowed it.',
+      '{contract} after a press. That is the biggest thing this slate does, and it has done it.',
+      'It came in. The pressed one came in. Gerald has stood up and forgotten why.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        '{payout} on a pressed contract. It came off. Noted, for the record: it usually does not.',
+        'The press paid. Once. One from one is the least useful record in the sport.',
+        'I said it was appalling. It was appalling and it paid. Both are true. Both stay true.',
+      ],
+    },
+  },
+  {
+    id: 'pressed_died',
+    speaker: 'NOCK',
+    priority: 99,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      return settledAs(ctx) === 'LOST' && !!c && c.pressed > 0;
+    },
+    lines: [
+      'That is the press gone. A made contract torn up, and nothing to show for either half.',
+      'The press dies. Everything it was worth before he pressed it was real. It is not now.',
+      'Lost on the press. The contract underneath it would have paid. That is the whole lesson.',
+      'Gone. A press is a choice made from a winning position. That is why it costs this much.',
+      'Gone. It could have been banked at any point before the press. That was the other door.',
+      'Nothing back. {from} was the money and {contract} was the idea. The idea did not land.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'He had it. He pressed it. He has not got it. I am going to look at the carpet.',
+        'That is the press for you. Best thing in the game, and mostly it is this.',
+        'Nothing, out of something. Nock warned him. Nock was right and Nock hates being right.',
+      ],
+    },
+  },
+  {
+    id: 'contract_shanghai',
+    speaker: 'BARREL',
+    priority: 88,
+    cooldown: 8,
+    when: (ctx) => {
+      const c = contractOf(ctx);
+      const how = settledAs(ctx);
+      return !!c && c.defId === 'shanghai' && (how === 'PAID' || how === 'BANKED');
+    },
+    lines: [
+      'Shanghai. Single, double and treble of one number, on a contract, for {payout}.',
+      'That is a Shanghai, chalked and paid. Three rings, one bed, one visit. Gerald is up.',
+      'A Shanghai on the slate. I have seen one. I will be seeing it for weeks.',
+      'Three darts, one number, three different rings. And it was written down beforehand.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'Single, double, treble of the same bed. The oldest thing in this room, and it paid.',
+        'Three rings of one number in three darts. The arithmetic is beside the point.',
+        'That is the contract nobody takes, made by the player who took it. {payout} to the Pot.',
+      ],
+    },
+  },
+  {
+    id: 'rub_out',
+    speaker: 'NOCK',
+    priority: 52,
+    cooldown: 8,
+    when: (ctx) => ctx.event.type === 'KIT_SPENT' && ctx.event.defId === 'rubout',
+    lines: [
+      'Rub out. The slate is wiped and three new contracts go up. The board did not object.',
+      'Wiped. Three fresh ones, and the three he did not fancy are gone without costing a thing.',
+      'A rub out before the first dart. The offer was poor. Now it is a different poor offer.',
+    ],
+    reply: {
+      speaker: 'BARREL',
+      lines: [
+        'Off it all comes. New chalk, new three. That is lovely housekeeping, that is.',
+        'Rubbed out. The slate is blank and the whole pub has gone quiet looking at it.',
+      ],
+    },
+  },
+  {
+    id: 'kit_spent',
+    speaker: 'BARREL',
+    priority: 40,
+    cooldown: 8,
+    when: (ctx) => ctx.event.type === 'KIT_SPENT' && ctx.event.defId !== 'rubout',
+    lines: [
+      'Something out of the kit. One use, gone, and the dart is different for it.',
+      'Into the kit and out of the kit. No putting that one back in the bag.',
+      'He has spent one. That is the kit lighter and the dart heavier, in a manner of speaking.',
+    ],
+    reply: {
+      speaker: 'NOCK',
+      lines: [
+        'One intervention, one dart. It changes the throw he had already decided on. Nothing else.',
+        'Spent. The kit is smaller and the chance is larger. That is the entire transaction.',
+      ],
+    },
+  },
+];
+
+BARKS.push(...PACKAGE_BARKS, ...AIM_BARKS, ...SLATE_BARKS);
 
 /** Every line in the bark pool, main and reply, in declaration order. */
 export function allBarkLines(triggers: BarkTrigger[] = BARKS): string[] {

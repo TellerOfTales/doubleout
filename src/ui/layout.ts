@@ -1,7 +1,12 @@
 /**
  * Screen layouts for landscape (320×180) and portrait (180×320), TDD §13.
- * Every rect is in internal pixels. The remaining score is always the
- * largest element on screen.
+ * Every rect is in internal pixels. The remaining score is always the largest
+ * element on screen.
+ *
+ * The board is no longer decoration. Since the rebuild it is the input
+ * surface: you aim at it directly, so it gets the whole left column in
+ * landscape and the top third in portrait, and the strip that used to hold a
+ * hand of dealt cards now holds the slate.
  */
 export interface Rect {
   x: number;
@@ -18,34 +23,38 @@ export interface GameLayout {
   /** The board sprite name and where its top-left goes. */
   boardName: string;
   boardNumbersName: string;
-  board: Rect; // the board itself (96×96)
+  board: Rect; // the board itself (96×96) — tap it to aim
   boardCentre: { x: number; y: number };
-  boardRadius: number; // outer edge radius in pixels (for hit placement)
+  boardRadius: number;
   scoreLabel: { x: number; y: number };
-  score: Rect; // area for the big number (centre alignment)
+  score: Rect;
   checkoutLine: { x: number; y: number; w: number };
   visitLine: { x: number; y: number; w: number };
-  hand: Rect; // area that holds the cards
-  cardW: number;
-  cardH: number;
+  /** The slate: contracts on offer, or contracts riding. */
+  slate: Rect;
+  /** The kit strip: one-shot interventions. */
+  kit: Rect;
   chalkStrip: Rect;
-  readout: Rect; // pipeline readout / hint text
-  /** The deliberate-miss button (throw at the wall). */
+  /** What the aimed target is and what it would leave. */
+  aimBar: Rect;
+  readout: Rect;
+  /** Commit the dart. */
+  throwBtn: Rect;
+  /** Throw it at the wall on purpose and end the visit. */
   miss: Rect;
-  /** The pocket button: set one card aside for a later visit. */
-  pocket: Rect;
   commentary: Rect;
-  /** Where the dart launches from when thrown (above the hand). */
+  /** Where the dart launches from when thrown. */
   launch: { x: number; y: number };
 }
 
-export const CARD_W = 40;
-export const CARD_H = 56;
+/** One contract card on the slate. */
+export const SLATE_W = 68;
+export const SLATE_H = 62;
 
 export function gameLayout(w: number, h: number): GameLayout {
   if (w >= h) {
     // ---- landscape 320×180 ----
-    const board: Rect = { x: 10, y: 22, w: 96, h: 96 };
+    const board: Rect = { x: 5, y: 15, w: 96, h: 96 };
     return {
       orientation: 'landscape',
       w,
@@ -56,23 +65,23 @@ export function gameLayout(w: number, h: number): GameLayout {
       board,
       boardCentre: { x: board.x + 48, y: board.y + 48 },
       boardRadius: 46,
-      scoreLabel: { x: 128, y: 16 },
-      score: { x: 124, y: 25, w: 192, h: 36 },
-      checkoutLine: { x: 128, y: 63, w: 184 },
-      visitLine: { x: 128, y: 72, w: 184 },
-      hand: { x: 124, y: 82, w: 192, h: CARD_H },
-      cardW: CARD_W,
-      cardH: CARD_H,
-      chalkStrip: { x: 2, y: 132, w: 132, h: 24 },
-      readout: { x: 138, y: 140, w: 94, h: 18 },
-      pocket: { x: 236, y: 140, w: 40, h: 16 },
-      miss: { x: 280, y: 140, w: 38, h: 16 },
-      commentary: { x: 0, y: 160, w, h: 20 },
-      launch: { x: 220, y: 80 },
+      scoreLabel: { x: 110, y: 14 },
+      score: { x: 106, y: 18, w: 212, h: 28 },
+      checkoutLine: { x: 110, y: 48, w: 206 },
+      visitLine: { x: 110, y: 56, w: 206 },
+      slate: { x: 106, y: 64, w: 212, h: SLATE_H },
+      kit: { x: 4, y: 113, w: 98, h: 12 },
+      aimBar: { x: 4, y: 127, w: 98, h: 17 },
+      throwBtn: { x: 4, y: 145, w: 58, h: 12 },
+      miss: { x: 64, y: 145, w: 38, h: 12 },
+      chalkStrip: { x: 106, y: 128, w: 130, h: 18 },
+      readout: { x: 106, y: 147, w: 212, h: 10 },
+      commentary: { x: 0, y: 158, w, h: 22 },
+      launch: { x: 52, y: 150 },
     };
   }
   // ---- portrait 180×320 ----
-  const board: Rect = { x: 42, y: 22, w: 96, h: 96 };
+  const board: Rect = { x: 42, y: 14, w: 96, h: 96 };
   return {
     orientation: 'portrait',
     w,
@@ -83,43 +92,52 @@ export function gameLayout(w: number, h: number): GameLayout {
     board,
     boardCentre: { x: board.x + 48, y: board.y + 48 },
     boardRadius: 46,
-    scoreLabel: { x: 6, y: 132 },
-    score: { x: 0, y: 134, w, h: 36 },
-    checkoutLine: { x: 6, y: 172, w: 168 },
-    visitLine: { x: 6, y: 180, w: 168 },
-    hand: { x: 0, y: 190, w, h: CARD_H },
-    cardW: CARD_W,
-    cardH: CARD_H,
-    chalkStrip: { x: 4, y: 248, w: 172, h: 24 },
-    readout: { x: 4, y: 270, w: 172, h: 12 },
-    pocket: { x: 88, y: 248, w: 44, h: 18 },
-    miss: { x: 134, y: 248, w: 42, h: 18 },
-    commentary: { x: 0, y: 284, w, h: 36 },
-    launch: { x: 90, y: 190 },
+    scoreLabel: { x: 6, y: 112 },
+    score: { x: 0, y: 116, w, h: 28 },
+    checkoutLine: { x: 6, y: 145, w: 168 },
+    visitLine: { x: 6, y: 153, w: 168 },
+    slate: { x: 0, y: 161, w, h: SLATE_H },
+    kit: { x: 4, y: 225, w: 172, h: 12 },
+    chalkStrip: { x: 4, y: 239, w: 130, h: 18 },
+    aimBar: { x: 4, y: 259, w: 172, h: 17 },
+    throwBtn: { x: 4, y: 278, w: 108, h: 14 },
+    miss: { x: 116, y: 278, w: 60, h: 14 },
+    readout: { x: 4, y: 294, w: 172, h: 9 },
+    commentary: { x: 0, y: 305, w, h: 15 },
+    launch: { x: 90, y: 292 },
   };
 }
 
 /**
- * Card slots, centred in the hand area. Cards shrink to fit as the hand grows,
- * so a pocketed sixth card never pushes the row off the panel.
+ * Contract slots across the slate. They shrink to fit as Wide Grip adds a
+ * fourth, so the extra contract never pushes the row off the panel.
  */
-export function cardSlots(l: GameLayout, n: number): Rect[] {
+export function slateSlots(l: GameLayout, n: number): Rect[] {
   if (n <= 0) return [];
-  const gap = n >= 6 ? 2 : n >= 4 ? 3 : 8;
-  const w = Math.min(l.cardW, Math.floor((l.hand.w - (n - 1) * gap) / n));
-  const total = n * w + (n - 1) * gap;
-  const start = l.hand.x + Math.floor((l.hand.w - total) / 2);
+  const gap = n >= 4 ? 3 : 5;
+  const cw = Math.min(SLATE_W, Math.floor((l.slate.w - 6 - (n - 1) * gap) / n));
+  const total = n * cw + (n - 1) * gap;
+  const start = l.slate.x + Math.floor((l.slate.w - total) / 2);
   const out: Rect[] = [];
-  for (let i = 0; i < n; i++) out.push({ x: start + i * (w + gap), y: l.hand.y, w, h: l.cardH });
+  for (let i = 0; i < n; i++) out.push({ x: start + i * (cw + gap), y: l.slate.y, w: cw, h: l.slate.h });
+  return out;
+}
+
+/** Kit chips along the kit strip. Three letters wide, so they can be read. */
+export function kitChips(l: GameLayout, n: number): Rect[] {
+  const gap = 2;
+  const size = n > 0 ? Math.min(20, Math.floor((l.kit.w - (n - 1) * gap) / n)) : 20;
+  const out: Rect[] = [];
+  for (let i = 0; i < n; i++) out.push({ x: l.kit.x + i * (size + gap), y: l.kit.y, w: size, h: l.kit.h });
   return out;
 }
 
 /** Chalk chip rects for up to `slots` chips. */
 export function chalkChips(l: GameLayout, slots: number): Rect[] {
-  const size = 20;
+  const size = 18;
   const gap = 2;
   const out: Rect[] = [];
-  for (let i = 0; i < slots; i++) out.push({ x: l.chalkStrip.x + i * (size + gap), y: l.chalkStrip.y + 2, w: size, h: size });
+  for (let i = 0; i < slots; i++) out.push({ x: l.chalkStrip.x + i * (size + gap), y: l.chalkStrip.y + 1, w: size, h: size });
   return out;
 }
 

@@ -1,17 +1,23 @@
 /**
- * The shop between legs (TDD §4.1): two cards, one chalk, one service,
- * one refresh. Services open the library picker; a sixth chalk asks which
- * one to discard.
+ * The shop between legs: two interventions for the kit, a piece of chalk, and
+ * one of the publican's services.
+ *
+ * The library browser went out with the deck. There is no pile of cards to
+ * page through any more and no service that needs one picked out of it, so the
+ * room that freed up is spent on the prices board — what has paid tonight and
+ * what the house is printing it at now. That board is the player's own record
+ * being used against them, and this is the only screen quiet enough to read it
+ * on.
  */
 import { P } from '../../art/palette';
 import { measureText } from '../../art/sprites';
-import { cardDef } from '../../content/cards';
 import { CHALK_DEFS, chalkDef } from '../../content/chalkdefs';
-import { LIBRARY_FLOOR, SHOP_REFRESH_COST } from '../../content/legs';
-import { targetNotation } from '../../core/board';
+import { KIT_CAP, interventionDef } from '../../content/interventions';
+import { SERVICE_COST, SHOP_REFRESH_COST } from '../../content/legs';
 import { buildBarkContext } from '../../core/commentary';
-import { legName, shopBuy, shopLeave, shopRefresh } from '../../core/state';
-import type { DartCard, NightState, ShopSlot } from '../../core/types';
+import { CONTRACT_BY_ID, PRICE_FLOOR } from '../../core/slate';
+import { currentPrice, hasChalk, legName, shopBuy, shopLeave, shopRefresh } from '../../core/state';
+import type { NightState, ServiceKind, ShopSlot } from '../../core/types';
 import type { App } from '../app';
 import { CommentaryBar } from '../commentarybar';
 import type { Renderer } from '../draw';
@@ -19,7 +25,7 @@ import { inRect, type Pointer } from '../input';
 import type { Rect } from '../layout';
 import type { Scene } from '../scene';
 import { Particles, Pulse, rndRange } from '../tween';
-import { ButtonSet, drawPanel } from '../widgets';
+import { ButtonSet, drawPanel, drawRule } from '../widgets';
 
 export interface ShopHooks {
   onReady?(screen: ShopScreen): void;
@@ -33,11 +39,91 @@ export interface ShopHooks {
   allowRefresh?: boolean;
 }
 
-const SERVICE_TEXT: Record<string, { name: string; blurb: string; icon: number }> = {
-  REMOVE: { name: 'THE BIN', blurb: 'Take a card out of your library for good. Stays open: bin as many as you can pay for.', icon: 7 },
-  DUPLICATE: { name: 'DUPLICATE', blurb: 'Add a second copy of one card you own.', icon: 8 },
-  SHARPEN: { name: 'SHARPEN', blurb: 'Upgrade a card: single to treble, treble to double.', icon: 9 },
+/**
+ * The publican's three services. Names are his, not the game's: he is selling
+ * a steady hand, an advance and a clean record, and the price of each is
+ * printed on the slot beside it.
+ */
+const SERVICE_TEXT: Record<ServiceKind, { name: string; icon: number }> = {
+  STEADY: { name: 'STEADY HAND', icon: 28 },
+  CREDIT: { name: "PUBLICAN'S ADVANCE", icon: 5 },
+  RUB_OUT: { name: 'FULL PRICE', icon: 7 },
 };
+
+/**
+ * The 5×7 face has no curly quote and prints anything it does not know as a
+ * hollow box. Content is written with proper typography, so flatten it on the
+ * way to the screen rather than making the writers think about the font.
+ */
+function plain(s: string): string {
+  return s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-');
+}
+
+interface ShopLayout {
+  slots: Rect[];
+  kit: Rect;
+  prices: Rect;
+  /** Held chalk chips: first chip, and the step between them. */
+  chalk: Rect;
+  chalkStep: number;
+  detail: Rect;
+  detailLines: number;
+  refresh: Rect;
+  leave: Rect;
+  bar: Rect;
+  barLines: number;
+}
+
+/**
+ * Everything is placed from the commentary bar upward: the bar and the two
+ * action buttons are fixed, and what is left over is split between the offers
+ * on top and the two things worth reading before spending — the kit, and the
+ * prices the night has earned.
+ */
+function shopLayout(w: number, h: number): ShopLayout {
+  if (w >= h) {
+    const slots: Rect[] = [];
+    for (let i = 0; i < 4; i++) slots.push({ x: 5 + i * 78, y: 14, w: 74, h: 48 });
+    return {
+      slots,
+      kit: { x: 4, y: 64, w: 150, h: 44 },
+      prices: { x: 158, y: 64, w: 158, h: 60 },
+      chalk: { x: 4, y: 110, w: 14, h: 14 },
+      chalkStep: 16,
+      detail: { x: 3, y: 126, w: w - 6, h: 16 },
+      detailLines: 2,
+      refresh: { x: 4, y: 143, w: 96, h: 15 },
+      leave: { x: w - 100, y: 143, w: 96, h: 15 },
+      bar: { x: 0, y: h - 20, w, h: 20 },
+      barLines: 2,
+    };
+  }
+  // Portrait stacks the same five things and spends its extra height on the
+  // detail line, which has a third of the width to say the same sentence in.
+  const slots: Rect[] = [];
+  for (let i = 0; i < 4; i++) slots.push({ x: 4 + (i % 2) * 88, y: 14 + Math.floor(i / 2) * 50, w: 84, h: 46 });
+  return {
+    slots,
+    kit: { x: 4, y: 114, w: 172, h: 42 },
+    prices: { x: 4, y: 180, w: 172, h: 58 },
+    chalk: { x: 4, y: 160, w: 16, h: 16 },
+    chalkStep: 18,
+    detail: { x: 3, y: 240, w: w - 6, h: 32 },
+    detailLines: 4,
+    refresh: { x: 4, y: 274, w: 84, h: 15 },
+    leave: { x: 92, y: 274, w: 84, h: 15 },
+    bar: { x: 0, y: h - 28, w, h: 28 },
+    barLines: 3,
+  };
+}
+
+/** One line of the prices board. */
+interface PriceRow {
+  name: string;
+  paid: number;
+  was: number;
+  now: number;
+}
 
 export class ShopScreen implements Scene {
   buttons = new ButtonSet();
@@ -45,19 +131,19 @@ export class ShopScreen implements Scene {
   particles = new Particles();
   keyboardFocus = false;
   time = 0;
+  /** Which offer is being read, -1 for none. */
   selected = -1;
-  overlay: 'none' | 'library' | 'replace' = 'none';
-  overlayButtons = new ButtonSet();
-  pendingService: number | null = null;
-  pendingChalk: number | null = null;
-  libraryPage = 0;
+  /** Held intervention / held chalk being read. Only ever one of the three. */
+  kitTip: string | null = null;
   chalkTip: string | null = null;
+  overlay: 'none' | 'replace' = 'none';
+  overlayButtons = new ButtonSet();
+  pendingChalk: number | null = null;
   potPulse = new Pulse();
   w = 320;
   h = 180;
-  private slotRects: Rect[] = [];
+  private lay: ShopLayout = shopLayout(320, 180);
   private buyFlash = new Map<number, Pulse>();
-  private sortedLibrary: DartCard[] = [];
 
   constructor(
     public app: App,
@@ -95,22 +181,75 @@ export class ShopScreen implements Scene {
   resize(): void {
     this.w = this.app.screen.width;
     this.h = this.app.screen.height;
-    this.bar.lines = this.portrait ? 4 : 2;
-    this.layoutSlots();
+    this.lay = shopLayout(this.w, this.h);
+    this.bar.lines = this.lay.barLines;
     this.buildButtons();
   }
 
-  private layoutSlots(): void {
-    this.slotRects = [];
-    if (this.portrait) {
-      for (let i = 0; i < 4; i++) {
-        const col = i % 2;
-        const row = Math.floor(i / 2);
-        this.slotRects.push({ x: 6 + col * 86, y: 14 + row * 88, w: 82, h: 84 });
-      }
-    } else {
-      for (let i = 0; i < 4; i++) this.slotRects.push({ x: 6 + i * 78, y: 16, w: 74, h: 90 });
+  // ---------------------------------------------------------------- reading the night
+
+  /** The kit, grouped: six of one intervention is one line, not six. */
+  private kitCells(): { defId: string; label: string; rect: Rect }[] {
+    const box = this.lay.kit;
+    const order: string[] = [];
+    const count = new Map<string, number>();
+    for (const id of this.night.kit) {
+      if (!count.has(id)) order.push(id);
+      count.set(id, (count.get(id) ?? 0) + 1);
     }
+    const colW = Math.floor((box.w - 10) / 2);
+    return order.slice(0, 6).map((id, i) => {
+      const held = count.get(id) ?? 1;
+      const name = interventionDef(id).name;
+      return {
+        defId: id,
+        label: held > 1 ? `${name} ×${held}` : name,
+        rect: { x: box.x + 4 + (i % 2) * (colW + 2), y: box.y + 15 + Math.floor(i / 2) * 9, w: colW, h: 9 },
+      };
+    });
+  }
+
+  /**
+   * What the night has paid, worst first. Only contracts that have actually
+   * paid appear: an untouched price is still the printed one, and printing a
+   * board of unchanged numbers would bury the ones that have moved.
+   */
+  private priceRows(): PriceRow[] {
+    const n = this.night;
+    const rows: PriceRow[] = [];
+    for (const [id, times] of Object.entries(n.paid)) {
+      const def = CONTRACT_BY_ID[id];
+      if (!def || times <= 0) continue;
+      rows.push({ name: def.name, paid: times, was: def.price, now: currentPrice(n, id) });
+    }
+    return rows.sort((a, b) => b.paid - a.paid || a.name.localeCompare(b.name));
+  }
+
+  /** The contract FULL PRICE would rub out. Mirrors the engine's own choice. */
+  private rubOutTarget(): string | null {
+    const worst = Object.entries(this.night.paid).sort((a, b) => b[1] - a[1])[0];
+    if (!worst) return null;
+    return CONTRACT_BY_ID[worst[0]]?.name ?? null;
+  }
+
+  private chipRects(): Rect[] {
+    const { chalk, chalkStep } = this.lay;
+    const out: Rect[] = [];
+    for (let i = 0; i < this.night.chalkSlots; i++) out.push({ x: chalk.x + i * chalkStep, y: chalk.y, w: chalk.w, h: chalk.h });
+    return out;
+  }
+
+  // ---------------------------------------------------------------- buttons
+
+  /** Why this offer cannot be bought, in nine characters or fewer. */
+  private blockedLabel(slot: ShopSlot): string | null {
+    const n = this.night;
+    const kitFull = n.kit.length >= KIT_CAP;
+    if (slot.kind === 'KIT' && kitFull) return 'KIT FULL';
+    if (slot.kind === 'CHALK' && hasChalk(n, slot.chalkId)) return 'HELD';
+    if (slot.kind === 'SERVICE' && slot.service === 'STEADY' && kitFull) return 'KIT FULL';
+    if (slot.kind === 'SERVICE' && slot.service === 'RUB_OUT' && !this.rubOutTarget()) return 'NO RECORD';
+    return null;
   }
 
   private buildButtons(): void {
@@ -119,42 +258,33 @@ export class ShopScreen implements Scene {
     const shop = this.night.shop;
     if (!shop) return;
     shop.slots.forEach((slot, i) => {
-      const r = this.slotRects[i];
+      const r = this.lay.slots[i];
       const allowed = !this.hooks.allowedSlots || this.hooks.allowedSlots.includes(i);
-      const canAfford = this.night.pot >= slot.cost;
-      // The bin never sells out, but it stops at the smallest playable library.
-      const emptied = slot.kind === 'SERVICE' && slot.service === 'REMOVE' && this.night.library.length <= LIBRARY_FLOOR;
-      const spent = slot.sold || emptied;
+      const afford = this.night.pot >= slot.cost;
+      const blocked = this.blockedLabel(slot);
+      const spent = slot.sold || !!blocked;
       b.add({
         id: `buy${i}`,
-        rect: { x: r.x + 8, y: r.y + r.h - 22, w: r.w - 16, h: 16 },
-        label: emptied ? 'THAT IS PLENTY' : slot.sold ? 'SOLD' : `BUY ${slot.cost}`,
+        rect: { x: r.x + 6, y: r.y + r.h - 17, w: r.w - 12, h: 15 },
+        label: slot.sold ? 'SOLD' : (blocked ?? `BUY ${slot.cost}`),
         icon: spent ? undefined : 5,
-        disabled: spent || !canAfford || !allowed,
-        primary: !spent && canAfford && allowed,
+        disabled: spent || !afford || !allowed,
+        primary: !spent && afford && allowed,
         onPress: () => this.buy(i),
       });
     });
-    const by = this.portrait ? 206 : 112;
     const refreshAllowed = this.hooks.allowRefresh !== false;
     b.add({
       id: 'refresh',
-      rect: { x: 6, y: by, w: this.portrait ? 82 : 96, h: 16 },
+      rect: this.lay.refresh,
       label: shop.refreshed ? 'REFRESHED' : `REFRESH ${SHOP_REFRESH_COST}`,
       icon: 6,
       disabled: shop.refreshed || this.night.pot < SHOP_REFRESH_COST || !refreshAllowed,
       onPress: () => this.refresh(),
     });
     b.add({
-      id: 'library',
-      rect: { x: this.portrait ? 92 : 108, y: by, w: this.portrait ? 82 : 96, h: 16 },
-      label: `LIBRARY ${this.night.library.length}`,
-      icon: 26,
-      onPress: () => this.openLibrary(null),
-    });
-    b.add({
       id: 'leave',
-      rect: this.portrait ? { x: 6, y: by + 20, w: 168, h: 18 } : { x: 210, y: by, w: 104, h: 16 },
+      rect: this.lay.leave,
       label: 'TO THE OCHE',
       icon: 15,
       primary: true,
@@ -168,10 +298,8 @@ export class ShopScreen implements Scene {
   private buy(i: number): void {
     const slot = this.night.shop?.slots[i];
     if (!slot || slot.sold) return;
-    if (slot.kind === 'SERVICE') {
-      this.openLibrary(i);
-      return;
-    }
+    // The only purchase that still needs an answer first: a sixth piece of
+    // chalk has to push one off the wall.
     if (slot.kind === 'CHALK' && this.night.chalk.length >= this.night.chalkSlots) {
       this.openReplace(i);
       return;
@@ -189,7 +317,7 @@ export class ShopScreen implements Scene {
     const slot = this.night.shop?.slots[i];
     this.app.sfx('shop_buy');
     this.potPulse.fire(0.5);
-    const rect = this.slotRects[i];
+    const rect = this.lay.slots[i];
     const pulse = new Pulse();
     pulse.fire(0.6);
     this.buyFlash.set(i, pulse);
@@ -231,54 +359,7 @@ export class ShopScreen implements Scene {
     this.app.toGame();
   }
 
-  // ---------------------------------------------------------------- overlays
-
-  private openLibrary(serviceSlot: number | null): void {
-    this.overlay = 'library';
-    this.pendingService = serviceSlot;
-    this.libraryPage = 0;
-    this.app.sfx('ui_confirm');
-    this.sortedLibrary = this.night.library.slice().sort((a, b) => cardDef(b.defId).value - cardDef(a.defId).value || a.defId.localeCompare(b.defId));
-    this.buildLibraryButtons();
-  }
-
-  private libraryGrid(): { cols: number; rows: number; cw: number; ch: number; x0: number; y0: number } {
-    return this.portrait ? { cols: 6, rows: 5, cw: 26, ch: 30, x0: 10, y0: 40 } : { cols: 11, rows: 3, cw: 26, ch: 30, x0: 12, y0: 34 };
-  }
-
-  private buildLibraryButtons(): void {
-    const ob = this.overlayButtons;
-    ob.clear();
-    const g = this.libraryGrid();
-    const perPage = g.cols * g.rows;
-    const pages = Math.max(1, Math.ceil(this.sortedLibrary.length / perPage));
-    const bottom = g.y0 + g.rows * g.ch + 6;
-    ob.add({ id: 'prev', rect: { x: g.x0, y: bottom, w: 40, h: 16 }, label: 'PREV', icon: 16, disabled: this.libraryPage <= 0, onPress: () => { this.libraryPage--; this.buildLibraryButtons(); } });
-    ob.add({ id: 'next', rect: { x: g.x0 + 44, y: bottom, w: 40, h: 16 }, label: 'NEXT', icon: 17, disabled: this.libraryPage >= pages - 1, onPress: () => { this.libraryPage++; this.buildLibraryButtons(); } });
-    ob.add({ id: 'close', rect: { x: this.w - 12 - 60, y: bottom, w: 60, h: 16 }, label: this.pendingService !== null ? 'CANCEL' : 'BACK', onPress: () => this.closeOverlay() });
-    ob.focus = 2;
-  }
-
-  private libraryCardAt(x: number, y: number): DartCard | null {
-    const g = this.libraryGrid();
-    const perPage = g.cols * g.rows;
-    const start = this.libraryPage * perPage;
-    for (let i = 0; i < perPage; i++) {
-      const c = this.sortedLibrary[start + i];
-      if (!c) break;
-      const rect = { x: g.x0 + (i % g.cols) * g.cw, y: g.y0 + Math.floor(i / g.cols) * g.ch, w: g.cw - 2, h: g.ch - 2 };
-      if (inRect(x, y, rect)) return c;
-    }
-    return null;
-  }
-
-  private applyService(card: DartCard): void {
-    if (this.pendingService === null) return;
-    const i = this.pendingService;
-    const out = shopBuy(this.night, i, { cardId: card.id });
-    this.closeOverlay();
-    this.afterBuy(i, out.ok, out.reason);
-  }
+  // ---------------------------------------------------------------- the replace overlay
 
   private openReplace(slot: number): void {
     this.overlay = 'replace';
@@ -287,7 +368,7 @@ export class ShopScreen implements Scene {
     const ob = this.overlayButtons;
     ob.clear();
     const px = Math.floor((this.w - (this.portrait ? 168 : 240)) / 2);
-    const py = this.portrait ? 40 : 26;
+    const py = this.replaceTop();
     this.night.chalk.forEach((c, i) => {
       ob.add({
         id: `rep${i}`,
@@ -304,9 +385,17 @@ export class ShopScreen implements Scene {
     ob.focusFirst();
   }
 
+  /**
+   * Where the discard panel starts. A sixth slot on The Wide makes it tall
+   * enough to matter, so it is pushed up rather than off the bottom.
+   */
+  private replaceTop(): number {
+    const h = 16 + this.night.chalk.length * 18 + 26;
+    return Math.max(6, Math.min(this.portrait ? 40 : 26, this.h - 4 - h));
+  }
+
   private closeOverlay(): void {
     this.overlay = 'none';
-    this.pendingService = null;
     this.pendingChalk = null;
     this.overlayButtons.clear();
     this.app.sfx('ui_back');
@@ -314,54 +403,38 @@ export class ShopScreen implements Scene {
 
   // ---------------------------------------------------------------- input
 
-  private chipRects(): Rect[] {
-    const out: Rect[] = [];
-    // Landscape has 31 rows between the action buttons and the commentary bar,
-    // shared with the library summary and the detail strip, so the chips are
-    // tighter there than in portrait.
-    const y = this.portrait ? 248 : 128;
-    const size = this.portrait ? 22 : 14;
-    const step = this.portrait ? 24 : 16;
-    for (let i = 0; i < this.night.chalkSlots; i++) out.push({ x: 6 + i * step, y, w: size, h: size });
-    return out;
-  }
-
   onDown(p: Pointer): void {
     this.keyboardFocus = false;
     if (this.hooks.onDown?.(p, this)) return;
-    if (this.overlay === 'library') {
-      const card = this.libraryCardAt(p.x, p.y);
-      if (card && this.pendingService !== null) {
-        this.applyService(card);
-        return;
-      }
-      this.overlayButtons.down(p.x, p.y);
-      return;
-    }
     if (this.overlay === 'replace') {
       this.overlayButtons.down(p.x, p.y);
       return;
     }
-    if (inRect(p.x, p.y, this.barRect())) {
+    if (inRect(p.x, p.y, this.lay.bar)) {
       this.bar.skip();
       return;
     }
-    // slot panels: select to read the blurb
-    for (let i = 0; i < this.slotRects.length; i++) {
-      if (inRect(p.x, p.y, this.slotRects[i])) {
-        this.selected = i;
-        this.chalkTip = null;
-      }
+    for (let i = 0; i < this.lay.slots.length; i++) {
+      if (inRect(p.x, p.y, this.lay.slots[i])) this.read('slot', i);
+    }
+    for (const cell of this.kitCells()) {
+      if (inRect(p.x, p.y, cell.rect)) this.read('kit', cell.defId);
     }
     const chips = this.chipRects();
     for (let i = 0; i < chips.length; i++) {
-      if (inRect(p.x, p.y, chips[i]) && this.night.chalk[i]) {
-        this.chalkTip = this.chalkTip === this.night.chalk[i].def.id ? null : this.night.chalk[i].def.id;
-        this.selected = -1;
-        this.app.sfx('ui_move');
-      }
+      if (inRect(p.x, p.y, chips[i]) && this.night.chalk[i]) this.read('chalk', this.night.chalk[i].def.id);
     }
     this.buttons.down(p.x, p.y);
+  }
+
+  /** One thing is being read at a time, so picking one drops the other two. */
+  private read(kind: 'slot' | 'kit' | 'chalk', what: number | string): void {
+    const wasKit = this.kitTip;
+    const wasChalk = this.chalkTip;
+    this.selected = kind === 'slot' ? (what as number) : -1;
+    this.kitTip = kind === 'kit' ? (wasKit === what ? null : (what as string)) : null;
+    this.chalkTip = kind === 'chalk' ? (wasChalk === what ? null : (what as string)) : null;
+    if (kind !== 'slot') this.app.sfx('ui_move');
   }
 
   onMove(p: Pointer): void {
@@ -392,15 +465,13 @@ export class ShopScreen implements Scene {
     if (this.buttons.key(key)) {
       this.keyboardFocus = true;
       const f = this.buttons.buttons[this.buttons.focus];
-      if (f && f.id.startsWith('buy')) this.selected = Number(f.id.slice(3));
+      // Walking the offers with the keyboard reads them out, so a player who
+      // never touches the screen still gets the blurb.
+      if (f && f.id.startsWith('buy')) this.read('slot', Number(f.id.slice(3)));
     }
   }
 
   // ---------------------------------------------------------------- update / draw
-
-  private barRect(): Rect {
-    return this.portrait ? { x: 0, y: this.h - 36, w: this.w, h: 36 } : { x: 0, y: this.h - 20, w: this.w, h: 20 };
-  }
 
   update(dt: number): void {
     this.time += dt;
@@ -421,7 +492,6 @@ export class ShopScreen implements Scene {
       r.sprite('wall', 0, 0);
       r.sprite('oche_floor', 0, 132);
     }
-    // chrome
     r.rect(0, 0, this.w, 12, P.INK);
     r.rect(0, 12, this.w, 1, P.STONE);
     const after = this.night.shop?.afterLeg ?? 0;
@@ -434,10 +504,80 @@ export class ShopScreen implements Scene {
 
     const shop = this.night.shop;
     if (shop) shop.slots.forEach((slot, i) => this.drawSlot(r, slot, i));
-    // held chalk
+    this.drawKit(r);
+    this.drawChalk(r);
+    this.drawPrices(r);
+    this.drawDetail(r);
+    this.buttons.draw(r, this.keyboardFocus);
+    for (const p of this.particles.list) r.sprite(p.sprite, Math.round(p.x), Math.round(p.y), p.frame);
+    this.bar.draw(r, this.lay.bar);
+    if (this.overlay === 'replace') this.drawReplace(r);
+    this.hooks.draw?.(r, this);
+  }
+
+  // ---------------------------------------------------------------- the offers
+
+  /** Tag, name and the extra line an offer earns, if it has anything to add. */
+  private slotView(slot: ShopSlot): { tag: string; tagColor: number; icon: number; name: string; note?: string; noteColor?: number } {
+    if (slot.kind === 'KIT') {
+      const d = interventionDef(slot.defId);
+      const held = this.night.kit.filter((k) => k === slot.defId).length;
+      return { tag: 'KIT', tagColor: P.SKY_LIT, icon: 25, name: d.name, note: held ? `IN KIT: ${held}` : undefined, noteColor: P.MIST };
+    }
+    if (slot.kind === 'CHALK') {
+      const d = chalkDef(slot.chalkId);
+      const color = d.stage === 'VALUE' ? P.BRASS_LIT : d.stage === 'BOARD' ? P.CLARET_LIT : d.stage === 'RULE' ? P.SKY_LIT : P.BAIZE_LIT;
+      return { tag: d.stage, tagColor: color, icon: 27, name: d.name.toUpperCase() };
+    }
+    const s = SERVICE_TEXT[slot.service];
+    if (slot.service === 'STEADY') return { tag: 'SERVICE', tagColor: P.BAIZE_LIT, icon: s.icon, name: s.name, note: 'STAYS OPEN', noteColor: P.BAIZE_LIT };
+    if (slot.service === 'CREDIT') return { tag: 'SERVICE', tagColor: P.BAIZE_LIT, icon: s.icon, name: s.name, note: `PAYS ${SERVICE_COST.CREDIT * 2}`, noteColor: P.BRASS_LIT };
+    const target = this.rubOutTarget();
+    return { tag: 'SERVICE', tagColor: P.BAIZE_LIT, icon: s.icon, name: s.name, note: target ?? undefined, noteColor: P.BRASS_LIT };
+  }
+
+  private drawSlot(r: Renderer, slot: ShopSlot, i: number): void {
+    const rect = this.lay.slots[i];
+    const sel = this.selected === i;
+    const flash = this.buyFlash.get(i);
+    drawPanel(r, rect, undefined, sel);
+    if (flash?.active) r.dither(rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, P.BRASS_LIT, flash.value * 8);
+    const view = this.slotView(slot);
+    const dim = slot.sold;
+    const cx = rect.x + Math.floor(rect.w / 2);
+    // The two things a shop has to say first: what it is, and what it costs.
+    r.sprite('icons', rect.x + 3, rect.y + 3, view.icon);
+    r.text(view.tag, rect.x + 13, rect.y + 4, { color: dim ? P.PEWTER : view.tagColor });
+    r.text(String(slot.cost), rect.x + rect.w - 4, rect.y + 4, { color: dim ? P.PEWTER : this.night.pot >= slot.cost ? P.BRASS_LIT : P.EMBER, align: 'right' });
+    const lines = r.wrap(plain(view.name), rect.w - 8).slice(0, 2);
+    lines.forEach((l, k) => r.text(l, cx, rect.y + 13 + k * 8, { color: dim ? P.PEWTER : P.CHALK, align: 'center' }));
+    if (view.note && lines.length < 2) r.text(view.note, cx, rect.y + 21, { color: dim ? P.PEWTER : (view.noteColor ?? P.MIST), align: 'center' });
+  }
+
+  // ---------------------------------------------------------------- the kit
+
+  private drawKit(r: Renderer): void {
+    const box = this.lay.kit;
+    const n = this.night;
+    r.panel(box.x, box.y, box.w, box.h, P.DEEP, P.STONE);
+    r.text('THE KIT', box.x + 4, box.y + 3, { color: P.CHALK });
+    const full = n.kit.length >= KIT_CAP;
+    r.text(`${n.kit.length}/${KIT_CAP}`, box.x + box.w - 4, box.y + 3, { color: full ? P.EMBER : P.BRASS_LIT, align: 'right' });
+    drawRule(r, box.x + 3, box.y + 12, box.w - 6);
+    const cells = this.kitCells();
+    if (!cells.length) {
+      r.text('NOTHING IN IT.', box.x + 4, box.y + 16, { color: P.STONE });
+      return;
+    }
+    for (const c of cells) {
+      const on = this.kitTip === c.defId;
+      if (on) r.rect(c.rect.x - 1, c.rect.y, c.rect.w, c.rect.h - 1, P.SHADE);
+      r.text(c.label, c.rect.x + 1, c.rect.y + 1, { color: on ? P.CHALK : P.MIST });
+    }
+  }
+
+  private drawChalk(r: Renderer): void {
     const chips = this.chipRects();
-    // No room for a caption in landscape; the chips carry a tooltip instead.
-    if (this.portrait) r.text('YOUR CHALK', chips[0].x, chips[0].y - 9, { color: P.PEWTER });
     chips.forEach((c, i) => {
       const held = this.night.chalk[i];
       if (!held) {
@@ -449,136 +589,116 @@ export class ShopScreen implements Scene {
       const idx = CHALK_DEFS.findIndex((d) => d.id === held.def.id);
       r.sprite('chalk_icons', c.x + (c.w - 8) / 2, c.y + (c.h - 8) / 2, Math.max(0, idx));
     });
-    // library summary
-    const lib = this.night.library;
-    const mean = lib.length ? (lib.reduce((a, c) => a + cardDef(c.defId).value, 0) / lib.length).toFixed(1) : '0';
-    const doubles = lib.filter((c) => c.target.region === 'D' || c.target.region === 'IB').length;
-    const trebles = lib.filter((c) => c.target.region === 'T').length;
-    const infoX = this.portrait ? 6 : chips[chips.length - 1].x + chips[0].w + 8;
-    const infoY = this.portrait ? 272 : 132;
-    if (this.portrait) {
-      r.dither(infoX - 3, infoY - 2, this.w - 6, 12, P.INK, 11);
-      r.text(`${lib.length} CARDS · AVG ${mean} · ${trebles}T ${doubles}D`, infoX, infoY, { color: P.MIST });
-    } else {
-      r.dither(infoX - 3, infoY - 3, this.w - infoX, 13, P.INK, 11);
-      r.text(`${lib.length} CARDS · AVG ${mean} · ${trebles}T ${doubles}D`, infoX, infoY, { color: P.MIST });
-    }
-    // detail strip: selected slot blurb or chalk tip, in the last two rows
-    // above the commentary bar
-    const detail = this.detailText();
-    if (detail) {
-      const dy = this.portrait ? 188 : 144;
-      r.dither(3, dy - 2, this.w - 6, 18, P.INK, 11);
-      r.textWrap(detail.text, 6, dy, this.w - 12, { color: detail.color });
-    }
-    this.buttons.draw(r, this.keyboardFocus);
-    for (const p of this.particles.list) r.sprite(p.sprite, Math.round(p.x), Math.round(p.y), p.frame);
-    this.bar.draw(r, this.barRect());
-    if (this.overlay === 'library') this.drawLibrary(r);
-    if (this.overlay === 'replace') this.drawReplace(r);
-    this.hooks.draw?.(r, this);
+    const last = chips[chips.length - 1];
+    r.text(`CHALK ${this.night.chalk.length}/${this.night.chalkSlots}`, last.x + last.w + 4, last.y + Math.floor((last.h - 7) / 2), { color: P.PEWTER });
   }
 
-  private detailText(): { text: string; color: number } | null {
+  // ---------------------------------------------------------------- the prices board
+
+  /**
+   * The house shortens your price every time a contract pays, so this is the
+   * night's own record read back at the player. WAS is what it was printed at
+   * cold; NOW is what the next one would pay.
+   */
+  private drawPrices(r: Renderer): void {
+    const box = this.lay.prices;
+    r.panel(box.x, box.y, box.w, box.h, P.DEEP, P.STONE);
+    r.text('THE PRICES', box.x + 4, box.y + 3, { color: P.CHALK });
+    r.text('YOUR RECORD', box.x + box.w - 4, box.y + 3, { color: P.PEWTER, align: 'right' });
+    drawRule(r, box.x + 3, box.y + 12, box.w - 6);
+    const rows = this.priceRows();
+    const nameX = box.x + 4;
+    const nowX = box.x + box.w - 4;
+    const wasX = nowX - 24;
+    const paidX = wasX - 24;
+    if (!rows.length) {
+      r.text('NOTHING HAS PAID YET.', nameX, box.y + 16, { color: P.MIST });
+      r.text('EVERY PRICE IS FULL.', nameX, box.y + 25, { color: P.PEWTER });
+      return;
+    }
+    r.text('CONTRACT', nameX, box.y + 15, { color: P.PEWTER });
+    r.text('PAID', paidX, box.y + 15, { color: P.PEWTER, align: 'right' });
+    r.text('WAS', wasX, box.y + 15, { color: P.PEWTER, align: 'right' });
+    r.text('NOW', nowX, box.y + 15, { color: P.PEWTER, align: 'right' });
+    const room = 4;
+    const shown = rows.length > room ? rows.slice(0, room - 1) : rows;
+    shown.forEach((row, i) => {
+      const y = box.y + 25 + i * 8;
+      r.text(row.name, nameX, y, { color: P.CHALK });
+      r.text(String(row.paid), paidX, y, { color: P.MIST, align: 'right' });
+      r.text(String(row.was), wasX, y, { color: P.PEWTER, align: 'right' });
+      // Shortened is bad news and is printed in the colour bad news comes in.
+      r.text(String(row.now), nowX, y, { color: row.now < row.was ? P.EMBER : row.now > row.was ? P.BRASS_LIT : P.MIST, align: 'right' });
+    });
+    if (shown.length < rows.length) {
+      r.text(`AND ${rows.length - shown.length} MORE`, nameX, box.y + 25 + shown.length * 8, { color: P.PEWTER });
+    }
+  }
+
+  // ---------------------------------------------------------------- the detail line
+
+  private detailText(): { text: string; color: number } {
+    const n = this.night;
+    if (this.kitTip) {
+      const d = interventionDef(this.kitTip);
+      const when = d.when === 'AIM' ? 'Spent on one dart.' : 'Spent before the visit.';
+      return { text: plain(`${d.name}: ${d.blurb} ${when}`), color: P.SKY_LIT };
+    }
     if (this.chalkTip) {
       const d = chalkDef(this.chalkTip);
-      return { text: `${d.name.toUpperCase()} (${d.stage}): ${d.blurb}`, color: P.CHALK };
+      return { text: plain(`${d.name.toUpperCase()} · ${d.stage}: ${d.blurb}`), color: P.CHALK };
     }
-    const slot = this.night.shop?.slots[this.selected];
+    const slot = n.shop?.slots[this.selected];
     if (!slot) {
-      const next = this.night.shanghaiNumbers[this.night.legIndex + 1];
-      return {
-        text: next ? `NEXT LEG: SHANGHAI ON THE ${next}S. SINGLE, DOUBLE AND TREBLE OF IT IN ONE VISIT WINS THE LEG.` : 'TAP AN OFFER TO READ ABOUT IT. THE POT DOES NOT CARRY OVER SHAME, ONLY COINS.',
-        color: P.STONE,
-      };
+      // The one rule the prices board runs on, printed where the board is.
+      const text = hasChalk(n, 'long_prices')
+        ? 'Each time a contract pays, its price drops by one. Long Prices adds 2 back.'
+        : `Each time a contract pays, its price drops by one, down to ${PRICE_FLOOR}.`;
+      return { text, color: P.STONE };
     }
-    if (slot.kind === 'CARD') {
-      const d = cardDef(slot.defId);
-      const region = d.target.region === 'T' ? 'A treble: three times the bed.' : d.target.region === 'D' ? 'A double: finishes a leg.' : d.target.region === 'IB' ? 'The bull: 50, and it counts as a double.' : d.target.region === 'OB' ? 'Outer bull: 25.' : 'A single.';
-      const next = this.night.shanghaiNumbers[this.night.legIndex + 1];
-      const piece = next !== undefined && d.target.bed === next && (d.target.region === 'S' || d.target.region === 'D' || d.target.region === 'T');
-      return { text: `${targetNotation(d.target)} - worth ${d.value}. ${region}${piece ? ` A piece of next leg's Shanghai on the ${next}s.` : ''} Added to your library for every leg.`, color: piece ? P.CLARET_LIT : P.CHALK };
+    if (slot.kind === 'KIT') {
+      const d = interventionDef(slot.defId);
+      const when = d.when === 'AIM' ? 'Spent on one dart.' : 'Spent before the visit.';
+      return { text: plain(`${d.name}: ${d.blurb} ${when}`), color: P.SKY_LIT };
     }
     if (slot.kind === 'CHALK') {
       const d = chalkDef(slot.chalkId);
-      return { text: `${d.name.toUpperCase()} (${d.stage}): ${d.blurb}`, color: P.CHALK };
+      return { text: plain(`${d.name.toUpperCase()} · ${d.stage}: ${d.blurb}`), color: P.CHALK };
     }
-    const s = SERVICE_TEXT[slot.service];
-    return { text: `${s.name}: ${s.blurb}`, color: P.CHALK };
+    return { text: plain(this.serviceRule(slot.service, slot.cost)), color: P.CHALK };
   }
 
-  private drawSlot(r: Renderer, slot: ShopSlot, i: number): void {
-    const rect = this.slotRects[i];
-    const sel = this.selected === i;
-    const flash = this.buyFlash.get(i);
-    drawPanel(r, rect, undefined, sel);
-    if (flash?.active) r.dither(rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, P.BRASS_LIT, flash.value * 8);
-    const cx = rect.x + Math.floor(rect.w / 2);
-    // Lay the captions out from the buy button upward so they fit any slot height.
-    const buttonTop = rect.y + rect.h - 22;
-    const stageY = buttonTop - 9;
-    if (slot.kind === 'CARD') {
-      const d = cardDef(slot.defId);
-      const cxw = cx - 20;
-      const cy = rect.y + 6;
-      r.nineSlice('card_frame', cxw, cy, 40, 56, slot.sold ? 2 : 0);
-      const t = d.target;
-      const band = t.region === 'T' ? P.BRASS : t.region === 'D' ? P.SKY_LIT : t.region === 'IB' ? P.CLARET_LIT : t.region === 'OB' ? P.BAIZE_LIT : P.MIST;
-      r.rect(cxw + 4, cy + 4, 32, 3, band);
-      const regionWord = t.region === 'T' ? 'TREBLE' : t.region === 'D' ? 'DOUBLE' : t.region === 'IB' ? 'BULL' : t.region === 'OB' ? 'OUTER' : 'SINGLE';
-      r.text(regionWord, cxw + 20, cy + 9, { color: P.MIST, align: 'center' });
-      const big = t.region === 'IB' ? 'BULL' : t.region === 'OB' ? 'O·B' : targetNotation(t);
-      r.text(big, cxw + 20, cy + 20, { color: slot.sold ? P.PEWTER : P.CHALK, align: 'center', scale: big.length > 3 ? 1 : 2, shadow: P.INK });
-      r.text(String(d.value), cxw + 20, cy + 43, { color: P.CHALK, align: 'center', shadow: P.INK });
-    } else if (slot.kind === 'CHALK') {
-      const d = chalkDef(slot.chalkId);
-      r.nineSlice('chalk_frame', cx - 16, rect.y + 6, 32, 32, sel ? 1 : 0);
-      const idx = CHALK_DEFS.findIndex((x) => x.id === d.id);
-      r.sprite('chalk_icons', cx - 6, rect.y + 16, Math.max(0, idx));
-      const stageColor = d.stage === 'VALUE' ? P.BRASS_LIT : d.stage === 'BOARD' ? P.CLARET_LIT : d.stage === 'RULE' ? P.SKY_LIT : P.BAIZE_LIT;
-      const lines = r.wrap(d.name.toUpperCase(), rect.w - 8).slice(0, 2);
-      lines.forEach((l, k) => r.text(l, cx, stageY - lines.length * 8 + k * 8, { color: slot.sold ? P.PEWTER : P.CHALK, align: 'center' }));
-      r.text(d.stage, cx, stageY, { color: stageColor, align: 'center' });
-    } else {
-      const s = SERVICE_TEXT[slot.service];
-      r.spriteScaled('icons', cx - 12, rect.y + 8, 3, s.icon);
-      const lines = r.wrap(s.name, rect.w - 8).slice(0, 2);
-      lines.forEach((l, k) => r.text(l, cx, stageY - lines.length * 8 + k * 8, { color: slot.sold ? P.PEWTER : P.CHALK, align: 'center' }));
-      const repeatable = slot.service === 'REMOVE';
-      r.text(repeatable ? 'STAYS OPEN' : 'SERVICE', cx, stageY, { color: repeatable ? P.BAIZE_LIT : P.MIST, align: 'center' });
-    }
+  /**
+   * What a service does, in full. The publican's terms are printed in front of
+   * the player before they pay: nothing here works in a way they cannot read
+   * (design.md §6).
+   */
+  private serviceRule(service: ServiceKind, cost: number): string {
+    if (service === 'STEADY') return `${SERVICE_TEXT.STEADY.name}: adds a STEADY to the kit. Buy again while the kit has room.`;
+    if (service === 'CREDIT') return `${SERVICE_TEXT.CREDIT.name}: pay ${cost}, the publican puts ${SERVICE_COST.CREDIT * 2} in the Pot. Once.`;
+    const target = this.rubOutTarget();
+    return target
+      ? `${SERVICE_TEXT.RUB_OUT.name}: rubs ${target} off the record, so it is printed at its full price again.`
+      : `${SERVICE_TEXT.RUB_OUT.name}: rubs your most-paid contract off the record. Nothing has paid yet.`;
   }
 
-  private drawLibrary(r: Renderer): void {
-    r.dither(0, 0, this.w, this.h, P.INK, 12);
-    const g = this.libraryGrid();
-    const title = this.pendingService !== null ? `${SERVICE_TEXT[(this.night.shop?.slots[this.pendingService] as { service: string }).service].name}: CHOOSE A CARD` : `YOUR LIBRARY · ${this.night.library.length} CARDS`;
-    r.text(title, this.w / 2, g.y0 - 14, { color: P.BRASS_LIT, align: 'center' });
-    const perPage = g.cols * g.rows;
-    const start = this.libraryPage * perPage;
-    for (let i = 0; i < perPage; i++) {
-      const c = this.sortedLibrary[start + i];
-      if (!c) break;
-      const x = g.x0 + (i % g.cols) * g.cw;
-      const y = g.y0 + Math.floor(i / g.cols) * g.ch;
-      const t = c.target;
-      const band = t.region === 'T' ? P.BRASS : t.region === 'D' ? P.SKY_LIT : t.region === 'IB' ? P.CLARET_LIT : t.region === 'OB' ? P.BAIZE_LIT : P.MIST;
-      r.panel(x, y, g.cw - 2, g.ch - 2, P.STONE, P.INK);
-      r.rect(x + 2, y + 2, g.cw - 6, 2, band);
-      const label = t.region === 'IB' ? 'BUL' : t.region === 'OB' ? 'O·B' : targetNotation(t);
-      r.text(label, x + Math.floor((g.cw - 2) / 2), y + 7, { color: P.CHALK, align: 'center' });
-      r.text(String(cardDef(c.defId).value), x + Math.floor((g.cw - 2) / 2), y + 17, { color: P.MIST, align: 'center' });
-    }
-    const pages = Math.max(1, Math.ceil(this.sortedLibrary.length / perPage));
-    r.text(`PAGE ${this.libraryPage + 1}/${pages}`, this.w / 2, g.y0 + g.rows * g.ch + 10, { color: P.PEWTER, align: 'center' });
-    this.overlayButtons.draw(r, this.keyboardFocus);
+  private drawDetail(r: Renderer): void {
+    const box = this.lay.detail;
+    const d = this.detailText();
+    r.dither(box.x, box.y - 2, box.w, box.h + 1, P.INK, 11);
+    const lines = r.wrap(d.text, box.w - 6);
+    // Anything that will not fit is cut with an ellipsis rather than run off
+    // the panel, the same as the slate strip does.
+    const shown = lines.slice(0, this.lay.detailLines);
+    if (lines.length > shown.length && shown.length) shown[shown.length - 1] = `${shown[shown.length - 1]}…`;
+    shown.forEach((l, i) => r.text(l, box.x + 3, box.y + i * 8, { color: d.color }));
   }
 
   private drawReplace(r: Renderer): void {
     r.dither(0, 0, this.w, this.h, P.INK, 12);
     const pw = this.portrait ? 168 : 240;
     const px = Math.floor((this.w - pw) / 2);
-    const py = this.portrait ? 40 : 26;
+    const py = this.replaceTop();
     const n = this.night.chalk.length;
     drawPanel(r, { x: px, y: py, w: pw, h: 16 + n * 18 + 26 }, 'CHALK SLOTS FULL · DISCARD ONE');
     if (!this.portrait) {

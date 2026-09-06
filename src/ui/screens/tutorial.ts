@@ -1,56 +1,76 @@
 /**
- * The self-guided interactive tutorial: a scripted first leg on the real
- * game screen, a guided shop, and one throw with chalk. Every step waits
- * for the player to do the thing rather than read about it.
+ * The self-guided interactive tutorial: a scripted first leg on the real game
+ * screen, a guided shop, and the moment the whole game turns on — a contract
+ * that has landed, and the choice between taking the money and pressing it.
+ *
+ * Two structural rules, both learned the hard way. First, the prompt is a pure
+ * function of the stage (`promptFor`), and `update` re-issues it whenever the
+ * screen is idle with nothing on it. A tutorial that can silently end up with
+ * no prompt and no button is a tutorial that traps the player, which is
+ * exactly what happened at the "40 left" step of the previous one. Second,
+ * every scripted dart forces its own landing, so a lesson about risk can show
+ * a miss on cue instead of waiting for the RNG to supply one.
  */
 import { P } from '../../art/palette';
-import { cardDef } from '../../content/cards';
-import { addChalk, beginLeg, createNight, currentLeg, currentVisit, hasChalk, newCard, shopLeave } from '../../core/state';
-import type { DartCard, EngineEvent, LegState, NightState, ShopSlot } from '../../core/types';
+import { parseTarget, sameTarget, targetNotation } from '../../core/board';
+import { contractDef } from '../../core/slate';
+import { addChalk, beginLeg, createNight, currentLeg, currentVisit, hasChalk, shopLeave } from '../../core/state';
+import type { EngineEvent, LegState, NightState, ShopSlot, Target } from '../../core/types';
 import type { App } from '../app';
 import type { Renderer } from '../draw';
 import { inRect, type Pointer } from '../input';
-import { cardSlots, type Rect } from '../layout';
+import { pointOf } from '../aim';
+import { slateSlots, type Rect } from '../layout';
+import type { SlateVerbId } from '../slateview';
 import { GameScreen } from './game';
 import { ShopScreen } from './shop';
 import { ButtonSet } from '../widgets';
 
 type Stage =
   | 'welcome'
-  | 'cards'
-  | 'throw1'
-  | 'leaves'
-  | 'keep'
-  | 'throw2'
-  | 'throw3'
-  | 'heat'
-  | 'finish_intro'
-  | 'throw_t20'
+  | 'aim'
+  | 'risk'
+  | 'throw_safe'
+  | 'after_safe'
+  | 'throw_treble'
+  | 'after_treble'
+  | 'throw_miss'
+  | 'after_miss'
+  | 'slate_intro'
+  | 'take'
+  | 'after_take'
+  | 'throw_contract'
   | 'decide'
-  | 'throw_decide'
-  | 'busted'
-  | 'twenty'
+  | 'after_press'
+  | 'throw_press'
+  | 'bust_intro'
+  | 'throw_bust'
+  | 'after_bust'
+  | 'finish_intro'
+  | 'throw_finish'
   | 'gameshot'
   | 'shop'
-  | 'leg2'
-  | 'throw_chalk'
-  | 'chain'
   | 'done';
 
 interface Prompt {
   text: string;
   /** 'bottom' pins the panel to a wide strip clear of the shop offers. */
   place?: 'auto' | 'bottom';
-  /** Where the pointer goes. */
   target?: () => Rect | null;
-  /** Label of the advance button; undefined = waiting for an action. */
+  /** Label of the advance button; undefined = waiting for the player to act. */
   button?: string;
   onNext?: () => void;
-  /** Extra button (used on the last step). */
   second?: { label: string; onPress: () => void };
 }
 
 const TUTORIAL_SEED = 20240501;
+
+/** The scripted board positions, so the script reads as darts rather than ids. */
+const T20 = parseTarget('T20');
+const S20 = parseTarget('S20');
+const S5 = parseTarget('S5');
+const D20 = parseTarget('D20');
+const T19 = parseTarget('T19');
 
 class Tutorial {
   night: NightState;
@@ -60,13 +80,13 @@ class Tutorial {
   game: GameScreen | null = null;
   shop: ShopScreen | null = null;
   time = 0;
-  private bustCount = 0;
+  /** Seconds the screen has been idle with no prompt. The dead-end guard. */
+  private idle = 0;
   private w = 320;
   private h = 180;
 
   constructor(private app: App) {
-    // Scripted throws: the tutorial's darts land where they are aimed.
-    this.night = createNight(TUTORIAL_SEED, 'local', { trueAim: true });
+    this.night = createNight(TUTORIAL_SEED, 'local');
     beginLeg(this.night);
     app.night = this.night;
   }
@@ -79,40 +99,7 @@ class Tutorial {
     return this.app.screen.orientation === 'portrait';
   }
 
-  // ---------------------------------------------------------------- deck control
-
-  /**
-   * Find (or mint) a card by def id, taking it from the deck or the discard.
-   * Never from the hand: stealing a card the player can already see would
-   * desync the dealt hand from the leg state.
-   */
-  private take(defId: string): DartCard {
-    const leg = this.leg;
-    for (const pile of [leg.deck, leg.discard]) {
-      const i = pile.findIndex((c) => c.defId === defId);
-      if (i >= 0) return pile.splice(i, 1)[0];
-    }
-    return newCard(this.night, defId);
-  }
-
-  /** Put these cards on top of the deck so the NEXT deal shows them. */
-  private arrangeNext(defIds: string[]): void {
-    const cards = defIds.map((d) => this.take(d));
-    this.leg.deck.unshift(...cards);
-  }
-
-  /** Replace the current hand immediately (before any throw). */
-  private setHand(defIds: string[]): void {
-    const leg = this.leg;
-    const old = leg.hand;
-    leg.hand = [];
-    leg.deck.push(...old);
-    leg.hand = defIds.map((d) => this.take(d));
-    if (this.game) {
-      this.game.hand.deal(leg.hand);
-      this.game.refreshHints();
-    }
-  }
+  // ---------------------------------------------------------------- scripting
 
   private setScore(score: number): void {
     const leg = this.leg;
@@ -121,20 +108,42 @@ class Tutorial {
     if (v && v.throws.length === 0) v.scoreAtVisitStart = score;
     if (this.game) {
       this.game.score.snap(score);
-      this.game.refreshHints();
+      this.game.refresh();
     }
+  }
+
+  /** Chalk exactly these contracts up, so the lesson always has its example. */
+  private setOffer(ids: string[]): void {
+    this.leg.offer = ids.slice();
+    this.game?.refresh();
+  }
+
+  /** Point the sights, and say what the next dart will do when it is thrown. */
+  private script(target: Target, lands: Target = target): void {
+    const g = this.game;
+    if (!g) return;
+    g.aim = { ...target };
+    g.forceLanding = { ...lands };
+    g.refreshPreview();
+    g.hooks.allowedTargets = [target];
+  }
+
+  private freeAim(): void {
+    const g = this.game;
+    if (!g) return;
+    g.forceLanding = null;
+    g.hooks.allowedTargets = null;
+  }
+
+  private allowVerbs(v: SlateVerbId[] | null): void {
+    if (this.game) this.game.hooks.allowedVerbs = v;
   }
 
   // ---------------------------------------------------------------- prompts
 
   private say(p: Prompt): void {
     this.prompt = p;
-    // While a prompt waits on a button the hand is not the subject: lock it,
-    // but drop the card restriction so nothing is drawn as disabled.
-    if (p.button && this.game) {
-      this.game.hand.locked = true;
-      this.game.hand.allowed = null;
-    }
+    this.idle = 0;
     this.buildButtons();
   }
 
@@ -142,8 +151,6 @@ class Tutorial {
     const b = this.buttons;
     b.clear();
     const panel = this.panelRect();
-    // Lay the buttons out right-to-left inside the panel, so a narrow panel
-    // never pushes one off the edge.
     const by = panel.y + panel.h - 20;
     const avail = panel.w - 10;
     const count = (this.prompt?.button ? 1 : 0) + (this.prompt?.second ? 1 : 0);
@@ -181,8 +188,7 @@ class Tutorial {
     b.focusFirst();
   }
 
-  /** Height for `lines` of body text plus the header and any buttons. */
-  private panelHeight(w: number, lines: number): number {
+  private panelHeight(lines: number): number {
     return 12 + lines * 9 + (this.prompt?.button || this.prompt?.second ? 23 : 5);
   }
 
@@ -190,30 +196,24 @@ class Tutorial {
     const t = this.prompt?.target?.();
     const text = this.prompt?.text ?? '';
     if (this.prompt?.place === 'bottom') {
-      // A wide strip that leaves the shop offers visible.
       const w = this.w - 8;
-      const lines = this.lineCount(text, w - 10);
-      const h = this.panelHeight(w, lines);
-      return { x: 4, y: (this.portrait ? 284 : 158) - h - 2, w, h };
+      const h = this.panelHeight(this.lineCount(text, w - 10));
+      return { x: 4, y: (this.portrait ? 284 : 156) - h - 2, w, h };
     }
     if (this.portrait) {
-      // Above the hand by default; over the board when the target is down low.
       const w = this.w - 8;
-      const lines = this.lineCount(text, w - 10);
-      const h = this.panelHeight(w, lines);
-      const low = t !== null && t !== undefined && t.y > 150;
-      return low ? { x: 4, y: 20, w, h } : { x: 4, y: Math.min(300 - h, 316 - h), w, h };
+      const h = this.panelHeight(this.lineCount(text, w - 10));
+      const low = !!t && t.y > 150;
+      return low ? { x: 4, y: 16, w, h } : { x: 4, y: Math.min(300 - h, 302 - h), w, h };
     }
-    // Targets in the right column → panel over the board (left); otherwise right column.
-    const left = !t || t.x >= 120;
-    const w = left ? 118 : 190;
-    const lines = this.lineCount(text, w - 10);
-    const h = this.panelHeight(w, lines);
-    // Sit under the chrome, and never run past the commentary bar.
-    return left ? { x: 4, y: 16, w, h } : { x: 125, y: Math.min(16, 158 - h), w, h };
+    // A target in the right column puts the panel over the board, and the
+    // other way round, so the panel never sits on top of the thing it names.
+    const left = !t || t.x >= 110;
+    const w = left ? 100 : 186;
+    const h = this.panelHeight(this.lineCount(text, w - 10));
+    return left ? { x: 4, y: 16, w, h } : { x: 128, y: Math.min(16, 156 - h), w, h };
   }
 
-  /** Wrapped line count at the 5x7 font, mirroring Renderer.wrap. */
   private lineCount(text: string, maxWidth: number): number {
     let lines = 1;
     let width = 0;
@@ -228,48 +228,11 @@ class Tutorial {
     return lines;
   }
 
-  private allow(defIds: string[] | null): void {
-    if (!this.game) return;
-    if (defIds === null) {
-      this.game.hand.allowed = null;
-      return;
-    }
-    const ids = new Set<string>();
-    for (const c of this.leg.hand) if (defIds.includes(c.defId)) ids.add(c.id);
-    this.game.hand.allowed = ids;
-  }
-
   // ---------------------------------------------------------------- targets
 
   private scoreRect(): Rect {
     const l = (this.game as GameScreen).layout;
-    return { x: l.score.x + 40, y: l.score.y - 2, w: l.score.w - 80, h: 40 };
-  }
-
-  private handRect(): Rect {
-    const l = (this.game as GameScreen).layout;
-    const slots = cardSlots(l, Math.max(1, this.leg.hand.length));
-    const first = slots[0];
-    const last = slots[slots.length - 1];
-    return { x: first.x - 2, y: first.y - 8, w: last.x + last.w - first.x + 4, h: l.cardH + 10 };
-  }
-
-  private cardRect(defId: string): Rect | null {
-    const l = (this.game as GameScreen).layout;
-    const i = this.leg.hand.findIndex((c) => c.defId === defId);
-    if (i < 0) return this.handRect();
-    const s = cardSlots(l, this.leg.hand.length)[i];
-    return { x: s.x - 2, y: s.y - 8, w: s.w + 4, h: s.h + 10 };
-  }
-
-  private pipsRect(): Rect {
-    const l = (this.game as GameScreen).layout;
-    return l.orientation === 'landscape' ? { x: 118, y: 0, w: 90, h: 12 } : { x: 70, y: 0, w: 60, h: 12 };
-  }
-
-  private checkoutRect(): Rect {
-    const l = (this.game as GameScreen).layout;
-    return { x: l.checkoutLine.x - 2, y: l.checkoutLine.y - 2, w: l.checkoutLine.w, h: 11 };
+    return { x: l.score.x + 40, y: l.score.y - 2, w: l.score.w - 80, h: 32 };
   }
 
   private boardRect(): Rect {
@@ -277,17 +240,42 @@ class Tutorial {
     return { x: l.board.x - 2, y: l.board.y - 2, w: l.board.w + 4, h: l.board.h + 4 };
   }
 
-  private heatRect(): Rect {
+  /** A small box around one target on the board, for pointing at the treble. */
+  private spotRect(t: Target): Rect {
     const l = (this.game as GameScreen).layout;
-    return l.orientation === 'landscape' ? { x: l.score.x + l.score.w - 62, y: l.scoreLabel.y - 2, w: 62, h: 11 } : { x: l.w - 66, y: 130, w: 62, h: 11 };
+    const p = pointOf(l, t);
+    return { x: p.x - 5, y: p.y - 5, w: 10, h: 10 };
+  }
+
+  private aimBarRect(): Rect {
+    const l = (this.game as GameScreen).layout;
+    return { x: l.aimBar.x - 1, y: l.aimBar.y - 1, w: l.aimBar.w + 2, h: l.aimBar.h + 2 };
+  }
+
+  private slateRect(index = -1): Rect {
+    const l = (this.game as GameScreen).layout;
+    if (index < 0) return { x: l.slate.x + 2, y: l.slate.y - 2, w: l.slate.w - 4, h: l.slate.h + 4 };
+    const card = this.game?.slate.cards[index];
+    if (!card) return { x: l.slate.x + 2, y: l.slate.y - 2, w: l.slate.w - 4, h: l.slate.h + 4 };
+    return { x: card.rect.x - 2, y: card.rect.y - 2, w: card.rect.w + 4, h: card.rect.h + 4 };
+  }
+
+  private throwRect(): Rect {
+    const l = (this.game as GameScreen).layout;
+    return { x: l.throwBtn.x - 1, y: l.throwBtn.y - 1, w: l.throwBtn.w + 2, h: l.throwBtn.h + 2 };
+  }
+
+  private checkoutRect(): Rect {
+    const l = (this.game as GameScreen).layout;
+    return { x: l.checkoutLine.x - 2, y: l.checkoutLine.y - 2, w: l.checkoutLine.w, h: 11 };
   }
 
   private chalkRect(): Rect {
     const l = (this.game as GameScreen).layout;
-    return { x: l.chalkStrip.x, y: l.chalkStrip.y, w: 70, h: 24 };
+    return { x: l.chalkStrip.x, y: l.chalkStrip.y, w: 62, h: 20 };
   }
 
-  // ---------------------------------------------------------------- script
+  // ---------------------------------------------------------------- the script
 
   start(): void {
     this.w = this.app.screen.width;
@@ -299,12 +287,12 @@ class Tutorial {
   private gameHooks() {
     return {
       ownsFlow: true,
+      allowedTargets: null as Target[] | null,
+      allowedVerbs: null as SlateVerbId[] | null,
       onReady: (screen: GameScreen) => this.onReady(screen),
       onEvent: (e: EngineEvent, screen: GameScreen) => this.onEvent(e, screen),
       draw: (r: Renderer) => this.draw(r),
-      update: (dt: number) => {
-        this.time += dt;
-      },
+      update: (dt: number) => this.update(dt),
       onDown: (p: Pointer) => this.onDown(p),
       onKey: (key: string) => this.onKey(key),
     };
@@ -314,252 +302,294 @@ class Tutorial {
     this.game = screen;
     this.w = this.app.screen.width;
     this.h = this.app.screen.height;
-    screen.hand.locked = true;
-    switch (this.stage) {
-      case 'welcome': {
-        this.setHand(['t20', 's5', 's1', 's20']);
-        this.arrangeNext(['s20', 't19', 's7', 's12']);
-        this.say({
-          text: 'Welcome to the oche. This is your score. Get it to exactly zero: 301 in the short game, 501 later. The last dart has to land on a DOUBLE.',
-          target: () => this.scoreRect(),
-          button: 'NEXT',
-          onNext: () => this.gotoCards(),
-        });
+    this.enter(this.stage);
+  }
+
+  private go(stage: Stage): void {
+    this.stage = stage;
+    this.enter(stage);
+  }
+
+  /** Set the world up for a stage, then put its prompt on. */
+  private enter(stage: Stage): void {
+    const g = this.game;
+    if (!g) return;
+    g.locked = true;
+    this.allowVerbs([]);
+    this.freeAim();
+    switch (stage) {
+      case 'aim':
+        g.locked = false;
         break;
-      }
-      case 'leaves': {
-        this.say({
-          text: 'Sixty off, three cards for two darts. No dart is certain: the percentage on a card is its chance of landing, or, in red, its chance of a BUST. Under that is what it LEAVES if it lands. Green: you could finish from there. Red: a dead end.',
-          target: () => this.handRect(),
-          button: 'NEXT',
-          onNext: () => {
-            this.stage = 'keep';
-            this.onReady(this.game as GameScreen);
-          },
-        });
+      case 'risk':
+        this.script(S20, S20);
+        g.locked = false;
         break;
-      }
-      case 'throw3': {
-        this.say({ text: 'One more dart finishes the visit.', target: () => this.handRect() });
-        this.unlock(null);
+      case 'throw_safe':
+        this.script(S20, S20);
+        g.locked = false;
         break;
-      }
-      case 'keep': {
-        this.say({
-          text: 'One more thing. Pick a card and hit KEEP: it goes in your pocket and comes back every visit until you throw it. That is how you have the right double ready when you get down to it.',
-          target: () => (this.game as GameScreen).layout.pocket,
-          button: 'GOT IT',
-          onNext: () => {
-            this.stage = 'throw2';
-            this.say({ text: 'Two darts left. Any card you like.', target: () => this.handRect() });
-            this.unlock(null);
-          },
-        });
+      case 'throw_treble':
+        this.script(T20, T20);
+        g.locked = false;
         break;
-      }
-      case 'heat': {
-        this.say({
-          text: 'Visit over, and the crowd warmed up. Every pip steadies your hand: a better chance on every dart. Four clean visits and the leg pays DOUBLE. One bust, or a walk to the wall, and it is gone. That is the gamble.',
-          target: () => this.heatRect(),
-          button: 'NEXT',
-          onNext: () => {
-            this.stage = 'finish_intro';
-            this.onReady(this.game as GameScreen);
-          },
-        });
+      case 'throw_miss':
+        this.script(T20, S5);
+        g.locked = false;
         break;
-      }
-      case 'finish_intro': {
-        // New visit: jump to 100 and teach the finish.
-        this.setScore(100);
-        this.setHand(['t20', 'd20', 's1', 's5']);
-        this.arrangeNext(['d20', 't20', 's20', 's1']);
-        this.say({
-          text: "Let's jump ahead: 100 left. The chalkboard suggests a route: T20 leaves 40, then D20 finishes. A double is the thin outer ring of the board.",
-          target: () => this.checkoutRect(),
-          button: 'NEXT',
-          onNext: () => {
-            this.stage = 'throw_t20';
-            this.say({ text: 'Throw the T20. It leaves 40.', target: () => this.cardRect('t20') });
-            this.unlock(['t20']);
-          },
-        });
+      case 'slate_intro':
+        this.setScore(301);
+        this.setOffer(['ton', 'treble', 'clean_hands']);
         break;
-      }
-      case 'decide': {
-        this.say({
-          text: '40 left. D20 is exactly 40 on a double: GAME SHOT. T20 is 60: too many, a BUST, and the visit is wasted. S20 leaves 20. Your call.',
-          target: () => this.handRect(),
-          button: 'NEXT',
-          onNext: () => {
-            this.stage = 'throw_decide';
-            this.say({ text: 'D20 finishes. T20 busts. S20 leaves 20. Choose.', target: () => this.handRect() });
-            this.unlock(null);
-          },
-        });
+      case 'take':
+        this.setOffer(['ton', 'treble', 'clean_hands']);
+        this.allowVerbs(['TAKE']);
+        g.locked = false;
         break;
-      }
-      case 'busted': {
-        this.setHand(['d20', 't20', 's20', 's1']);
-        this.say({
-          text: 'BUST. Too many: the score went straight back to 40 and that visit is gone. Nothing else is lost.',
-          target: () => this.scoreRect(),
-          button: 'NEXT',
-          onNext: () => {
-            this.say({
-              text: 'When every card would bust, hit MISS: the dart goes into the wall on purpose. Your score survives, but the visit ends there. Real players do this. It is not free.',
-              target: () => (this.game as GameScreen).layout.miss,
-              button: 'GOT IT',
-              onNext: () => {
-                this.stage = 'throw_decide';
-                this.say({ text: 'D20 finishes. T20 busts. S20 leaves 20.', target: () => this.handRect() });
-                this.unlock(null);
-              },
-            });
-          },
-        });
+      case 'throw_contract':
+        this.script(T20, T20);
+        g.locked = false;
         break;
-      }
-      case 'twenty': {
-        this.setHand(['d10', 's5', 's1', 's3']);
-        this.say({
-          text: '20 left. No card for 20 on a double in your deck… so we have slipped you a D10. In a real night you buy those in the shop.',
-          target: () => this.cardRect('d10'),
-          button: 'NEXT',
-          onNext: () => {
-            this.stage = 'throw_decide';
-            this.say({ text: 'Double 10 is exactly 20. Throw it.', target: () => this.cardRect('d10') });
-            this.unlock(['d10']);
-          },
-        });
+      case 'decide':
+        this.allowVerbs(['BANK', 'PRESS']);
+        g.locked = false;
         break;
-      }
-      case 'leg2': {
-        this.setHand(['t20', 's20', 's5', 's1']);
-        this.say({
-          text: `Leg 2. You hold ${hasChalk(this.night, 'hot_twenty') ? 'HOT TWENTY' : 'chalk'}: trebles in the 20 bed score x4. Chalk fires by itself. Throw the T20 and watch the chain.`,
-          target: () => this.chalkRect(),
-          button: 'NEXT',
-          onNext: () => {
-            this.stage = 'throw_chalk';
-            this.say({ text: 'Throw the T20.', target: () => this.cardRect('t20') });
-            this.unlock(['t20']);
-          },
-        });
+      case 'throw_press':
+        this.script(T20, T20);
+        g.locked = false;
         break;
-      }
-      case 'chain': {
-        this.say({
-          text: 'Hot Twenty fired: 60 became 80. Chalk resolves in the order you bought it, one after another. Five slots. Some pairs are brilliant. Some are traps.',
-          target: () => this.chalkRect(),
-          button: 'NEXT',
-          onNext: () => this.gotoDone(),
-        });
+      case 'bust_intro':
+        this.setScore(40);
+        this.setOffer(['ton', 'left_pretty', 'clean_hands']);
         break;
-      }
+      case 'throw_bust':
+        this.setScore(40);
+        this.script(T19, T19);
+        g.locked = false;
+        break;
+      case 'finish_intro':
+        this.setScore(40);
+        break;
+      case 'throw_finish':
+        this.setScore(40);
+        this.script(D20, D20);
+        g.locked = false;
+        break;
       default:
         break;
     }
+    const p = this.promptFor(stage);
+    if (p) this.say(p);
   }
 
-  private gotoCards(): void {
-    this.stage = 'cards';
-    this.say({
-      text: 'You never aim. A VISIT is three darts, and you get FIVE cards to spend on them. Spend the big one now and you throw whatever is left. Spare cards are binned when the visit ends.',
-      target: () => this.handRect(),
-      button: 'NEXT',
-      onNext: () => {
-        this.stage = 'throw1';
-        this.say({
-          text: this.app.input.isTouch ? 'T20 is treble twenty: sixty. Flick it up at the board.' : 'T20 is treble twenty: sixty. Flick it up at the board, or click it twice.',
-          target: () => this.cardRect('t20'),
-        });
-        this.unlock(['t20']);
-      },
-    });
-  }
-
-  private unlock(defIds: string[] | null): void {
-    if (!this.game) return;
-    this.game.hand.locked = false;
-    this.allow(defIds);
-  }
-
-  private onEvent(e: EngineEvent, screen: GameScreen): void {
-    switch (e.type) {
-      case 'THROW': {
-        if (this.stage === 'throw1') {
-          this.stage = 'leaves';
-          this.onReady(screen);
-        } else if (this.stage === 'throw2') {
-          this.stage = 'throw3';
-          this.onReady(screen);
-        } else if (this.stage === 'throw3') {
-          this.stage = 'heat';
-          this.prompt = null;
-        } else if (this.stage === 'throw_t20') {
-          // Mid-visit: no new hand is dealt, so nothing else will put the next
-          // prompt up or lift the previous step's card restriction. Do it here.
-          this.stage = 'decide';
-          this.onReady(screen);
-        } else if (this.stage === 'throw_decide') {
-          const r = e.result;
-          if (r.outcome === 'BUST') {
-            // The bust ends the visit; the next deal runs onReady for us.
-            this.bustCount++;
-            this.stage = 'busted';
-            this.prompt = null;
-          } else if (r.outcome === 'CHECKOUT') {
-            this.stage = 'gameshot';
-            this.prompt = null;
-          } else {
-            this.stage = 'twenty';
-            this.onReady(screen);
-          }
-        } else if (this.stage === 'throw_chalk') {
-          this.stage = 'chain';
-          this.onReady(screen);
-        }
-        break;
-      }
-      case 'VISIT_END':
-        // The heat lesson lands once the first full visit is thrown out.
-        if (this.stage === 'heat') this.onReady(screen);
-        break;
-      case 'HAND_DEALT':
-        // onReady follows and sets up the next step.
-        break;
-      case 'CHECKOUT': {
-        this.stage = 'gameshot';
-        screen.hand.locked = true;
-        this.say({
-          text: `GAME SHOT! That's a leg. The Pot pays for it: ${this.leg.reward?.total ?? 0} coins, more for spare visits and a clean leg. Between legs there's a shop.`,
+  /**
+   * Every prompt in one place, keyed only by stage. Nothing else may set
+   * `this.prompt`, so there is no path where a stage change leaves the screen
+   * with nothing on it and no way forward.
+   */
+  private promptFor(stage: Stage): Prompt | null {
+    const leg = this.leg;
+    switch (stage) {
+      case 'welcome':
+        return {
+          text: 'Welcome to the oche. This is your score. Get it to exactly zero. The last dart has to land on a DOUBLE.',
+          target: () => this.scoreRect(),
+          button: 'NEXT',
+          onNext: () => this.go('aim'),
+        };
+      case 'aim':
+        return {
+          text: 'You aim wherever you like, every dart, all night. Tap the board to move the sights. Try a few places.',
+          target: () => this.boardRect(),
+        };
+      case 'risk':
+        return {
+          text: 'The dots round the sights are where the dart might actually finish. A single twenty lands 97 times in a hundred. Tap the TREBLE twenty — the thin band — and watch that number.',
+          target: () => this.spotRect(T20),
+        };
+      case 'throw_safe':
+        return {
+          text: 'Forty-five percent, for triple the score. That gap is the whole game: the safe dart is nearly certain, and everything better is a gamble. Throw the single first.',
+          target: () => this.throwRect(),
+        };
+      case 'after_safe':
+        return {
+          text: 'Twenty, exactly as called. Now the treble.',
+          target: () => this.aimBarRect(),
+          button: 'NEXT',
+          onNext: () => this.go('throw_treble'),
+        };
+      case 'throw_treble':
+        return { text: 'Sixty if it lands. Throw it.', target: () => this.throwRect() };
+      case 'after_treble':
+        return {
+          text: 'Sixty. That is what you are playing for. Throw one more at the treble.',
+          target: () => this.throwRect(),
+          button: 'NEXT',
+          onNext: () => this.go('throw_miss'),
+        };
+      case 'throw_miss':
+        return { text: 'Same dart, same aim.', target: () => this.throwRect() };
+      case 'after_miss':
+        return {
+          text: 'Five. Miss a treble and you usually land in the bed beside it, and once in a while nowhere at all. Nobody took that off you. You chose it.',
+          target: () => this.boardRect(),
+          button: 'NEXT',
+          onNext: () => this.go('slate_intro'),
+        };
+      case 'slate_intro':
+        return {
+          text: 'Now the interesting part. Every visit, three contracts go up on the slate. Take one and you stake Pot on it. Land it before your three darts run out and it pays the printed price.',
+          target: () => this.slateRect(),
+          button: 'NEXT',
+          onNext: () => this.go('take'),
+        };
+      case 'take':
+        return {
+          text: 'They pull in different directions on purpose. A TON wants the trebles. CLEAN HANDS wants three safe darts. You cannot have both. Take A TREBLE.',
+          target: () => this.slateRect(this.offerIndex('treble')),
+        };
+      case 'after_take':
+        return {
+          text: 'Two off the Pot, and it pays two back on top if it lands. Now throw the treble.',
+          target: () => this.throwRect(),
+          button: 'NEXT',
+          onNext: () => this.go('throw_contract'),
+        };
+      case 'throw_contract':
+        return { text: 'Aim called. Throw it.', target: () => this.throwRect() };
+      case 'decide':
+        return {
+          text: 'It landed, and now you decide. BANK takes the money and nothing can touch it. PRESS tears it up and rewrites it as TWO TREBLES at double the stake. Press it.',
+          target: () => this.slateRect(0),
+        };
+      case 'after_press':
+        return {
+          text: 'Four on it now, paying seven. You need a second treble before the visit ends, or the lot goes. This is the only decision that matters in this game, and you will make three of them a visit.',
+          target: () => this.slateRect(0),
+          button: 'NEXT',
+          onNext: () => this.go('throw_press'),
+        };
+      case 'throw_press':
+        return { text: 'One more treble. Throw it.', target: () => this.throwRect() };
+      case 'bust_intro':
+        return {
+          text: `Forty left, and something you need to see. Go over, or land on one, and it is a BUST: the score goes back and every contract still riding on the slate goes with it. Banked money survives. Riding money does not.`,
+          target: () => this.scoreRect(),
+          button: 'NEXT',
+          onNext: () => this.go('throw_bust'),
+        };
+      case 'throw_bust':
+        return { text: 'Fifty-seven on forty left. Throw it and watch.', target: () => this.throwRect() };
+      case 'after_bust':
+        return {
+          text: 'Back to forty, and the slate wiped. That is what banking is for, and why walking away from a visit is sometimes the right dart.',
+          target: () => this.scoreRect(),
+          button: 'NEXT',
+          onNext: () => this.go('finish_intro'),
+        };
+      case 'finish_intro':
+        return {
+          text: `Forty left. The OUT line names the finish: ${this.routeText()}. Doubles miss half the time and go off the board when they do, which is why the last dart is the hard one.`,
+          target: () => this.checkoutRect(),
+          button: 'NEXT',
+          onNext: () => this.go('throw_finish'),
+        };
+      case 'throw_finish':
+        return { text: 'Double twenty for the leg. Throw it.', target: () => this.throwRect() };
+      case 'gameshot':
+        return {
+          text: `Game shot. The Pot pays ${leg.reward?.total ?? 0} for the leg, and whatever you took off the slate is already in there. Between legs there is a shop.`,
           target: () => this.scoreRect(),
           button: 'TO THE SHOP',
           onNext: () => this.gotoShop(),
-        });
+        };
+      case 'done':
+        return {
+          text: 'That is the whole game. Eight legs, fewer visits each time. Aim where you like, take what you fancy, and know when to stop. Have a good night.',
+          button: 'PLAY',
+          onNext: () => this.finish(true),
+          second: { label: 'MENU', onPress: () => this.finish(false) },
+        };
+      default:
+        return null;
+    }
+  }
+
+  private offerIndex(defId: string): number {
+    const cards = this.game?.slate.cards ?? [];
+    const i = cards.findIndex((c) => c.defId === defId && c.mode === 'OFFER');
+    return i >= 0 ? i : -1;
+  }
+
+  private routeText(): string {
+    const best = this.game?.hints?.best;
+    return best ? best.targets.map(targetNotation).join(' then ') : 'double twenty';
+  }
+
+  // ---------------------------------------------------------------- reactions
+
+  private onEvent(e: EngineEvent, screen: GameScreen): void {
+    this.game = screen;
+    switch (e.type) {
+      case 'THROW': {
+        switch (this.stage) {
+          case 'throw_safe':
+            this.go('after_safe');
+            break;
+          case 'throw_treble':
+            this.go('after_treble');
+            break;
+          case 'throw_miss':
+            this.go('after_miss');
+            break;
+          case 'throw_contract':
+            this.go('decide');
+            break;
+          case 'throw_press':
+            this.go('bust_intro');
+            break;
+          case 'throw_bust':
+            this.go('after_bust');
+            break;
+          default:
+            break;
+        }
         break;
       }
+      case 'CONTRACT_TAKEN':
+        if (this.stage === 'take') this.go('after_take');
+        break;
+      case 'CONTRACT_PRESSED':
+        if (this.stage === 'decide') this.go('after_press');
+        break;
+      case 'CONTRACT_SETTLED':
+        if (this.stage === 'decide' && e.contract.settled?.how === 'BANKED') this.go('after_press');
+        break;
+      case 'CHECKOUT':
+        this.go('gameshot');
+        break;
       case 'LEG_TIMEOUT':
-      case 'NIGHT_LOST': {
-        // Should not happen (12 visits), but never trap the player.
+      case 'NIGHT_LOST':
+        // Should never happen inside the script, but never trap the player.
         this.finish(false);
         break;
-      }
       default:
         break;
     }
   }
+
+  // ---------------------------------------------------------------- shop, end
 
   private gotoShop(): void {
     this.stage = 'shop';
     const n = this.night;
-    n.pot = Math.max(n.pot, 12);
+    n.pot = Math.max(n.pot, 14);
     const slots: ShopSlot[] = [
-      { kind: 'CARD', defId: 't19', cost: 5, sold: false },
-      { kind: 'CARD', defId: 'd16', cost: 3, sold: false },
+      { kind: 'KIT', defId: 'steady', cost: 3, sold: false },
+      { kind: 'KIT', defId: 'again', cost: 4, sold: false },
       { kind: 'CHALK', chalkId: 'hot_twenty', cost: 6, sold: false },
-      { kind: 'SERVICE', service: 'REMOVE', cost: 2, sold: false },
+      { kind: 'SERVICE', service: 'STEADY', cost: 2, sold: false },
     ];
     n.shop = { slots, refreshed: false, afterLeg: 0 };
     n.phase = 'SHOP';
@@ -569,37 +599,30 @@ class Tutorial {
         this.shop = s;
         this.say({
           place: 'bottom',
-          text: 'Cards join your deck. Chalk bends the rules. THE BIN takes cards out, and it stays open. Buy HOT TWENTY, then head TO THE OCHE.',
-          target: () => (s.portrait ? { x: 6, y: 102, w: 82, h: 84 } : { x: 162, y: 16, w: 74, h: 90 }),
+          text: 'Chalk bends the rules for the rest of the night. Kit is one-shot, spent on a dart you have already chosen. Buy HOT TWENTY, then head TO THE OCHE.',
         });
       },
       onBuy: (slot) => {
         if (slot.kind === 'CHALK') {
           this.say({
             place: 'bottom',
-            text: 'That chalk now sits in a slot. It fires on every throw it applies to, in the order you bought it.',
-            target: () => (this.shop?.portrait ? { x: 4, y: 246, w: 122, h: 26 } : { x: 4, y: 127, w: 84, h: 18 }),
+            text: 'That chalk sits in a slot now and fires on every throw it applies to, in the order you bought it. Five slots, and a night is not long enough to fill them twice.',
           });
-        } else if (slot.kind === 'SERVICE' && slot.service === 'REMOVE') {
+        } else if (slot.kind === 'KIT') {
           this.say({
             place: 'bottom',
-            text: 'Gone for good. A smaller deck deals you the card you want more often, so binning the filler is the cheapest way to get sharper.',
+            text: 'Kit goes on the strip under the board. Arm one, then throw, and it changes that dart. It never tells you where to aim.',
           });
         }
       },
       onLeave: () => {
         if (!hasChalk(n, 'hot_twenty')) addChalk(n, 'hot_twenty');
-        this.stage = 'leg2';
         this.app.sfx('ui_confirm');
-        shopLeave(n);
-        this.game = new GameScreen(this.app, this.gameHooks());
-        this.app.scenes.go(this.game);
+        this.gotoDone();
         return true;
       },
       draw: (r) => this.draw(r),
-      update: (dt) => {
-        this.time += dt;
-      },
+      update: (dt) => this.update(dt),
       onDown: (p) => this.onDown(p),
     });
     this.app.scenes.go(this.shop);
@@ -607,12 +630,9 @@ class Tutorial {
 
   private gotoDone(): void {
     this.stage = 'done';
-    this.say({
-      text: 'That is the whole game. Eight legs, fewer visits each time. Keep the crowd warm or bank it. Win legs without a bust and the sheet pays treble. Hit the Shanghai and the leg is yours. Have a good night.',
-      button: 'PLAY',
-      onNext: () => this.finish(true),
-      second: { label: 'MENU', onPress: () => this.finish(false) },
-    });
+    shopLeave(this.night);
+    this.game = new GameScreen(this.app, this.gameHooks());
+    this.app.scenes.go(this.game);
   }
 
   private finish(play: boolean): void {
@@ -625,13 +645,41 @@ class Tutorial {
 
   // ---------------------------------------------------------------- input / draw
 
+  private update(dt: number): void {
+    this.time += dt;
+    const g = this.game;
+    if (!g || this.stage === 'shop') return;
+    // The dead-end guard. If the screen is sitting idle with no prompt on it,
+    // put the current stage's prompt back up. A tutorial must always have a
+    // next thing to do.
+    if (!this.prompt) {
+      this.idle += dt;
+      if (this.idle > 0.6) this.enter(this.stage);
+    } else {
+      this.idle = 0;
+    }
+  }
+
   private onDown(p: Pointer): boolean {
     if (this.buttons.down(p.x, p.y)) {
-      // Buttons act on up; emulate a press here so a tap works in one go.
       this.buttons.up(p.x, p.y);
       return true;
     }
     if (this.prompt?.button && inRect(p.x, p.y, this.panelRect())) return true;
+    // The aim lesson advances once the player has actually moved the sights.
+    if (this.stage === 'aim' && this.game) {
+      const before = { ...this.game.aim };
+      queueMicrotask(() => {
+        const g = this.game;
+        if (g && this.stage === 'aim' && !sameTarget(g.aim, before)) this.go('risk');
+      });
+    }
+    if (this.stage === 'risk' && this.game) {
+      queueMicrotask(() => {
+        const g = this.game;
+        if (g && this.stage === 'risk' && g.aim.region === 'T') this.go('throw_safe');
+      });
+    }
     return false;
   }
 
@@ -649,7 +697,6 @@ class Tutorial {
 
   private draw(r: Renderer): void {
     const p = this.prompt;
-    // skip button always
     this.buttons.draw(r, false);
     if (!p) return;
     const panel = this.panelRect();
@@ -657,7 +704,6 @@ class Tutorial {
     if (target) {
       const on = Math.floor(this.time * 3) % 2 === 0;
       r.rectOutline(target.x - 1, target.y - 1, target.w + 2, target.h + 2, on ? P.BRASS_LIT : P.BRASS);
-      // pointer arrow from the panel side
       const ax = target.x + Math.floor(target.w / 2) - 4;
       const above = panel.y + panel.h <= target.y;
       const bob = Math.round(Math.sin(this.time * 6) * 2);
@@ -684,4 +730,4 @@ export function startTutorial(app: App): void {
   t.start();
 }
 
-export { cardDef };
+export { contractDef, slateSlots };

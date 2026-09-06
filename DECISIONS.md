@@ -308,3 +308,102 @@ the shop offers, does better than the bot's numbers.
     were retuned for the new expected scoring (`docs/decisions/balance.md`, sixth
     pass). This is the change the whole loop was missing: the decision on every card
     is now "how much do I want it, and at what odds".
+
+## The oche problem: giving the aim back (after the fourth playtest)
+
+The third rebuild changed nothing the developer could feel. The verdict came back
+a third time in the same words — "picking the highest number until I get to a miss
+point and then missing on purpose", "no strategy, no creativity, no consequence",
+"dreadfully boring" — so the next step was to stop arguing and measure it.
+`tools/decisions.ts` plays every night twice on one seed, once with the naive rule
+the playtester describes and once with the full planner. The full table, the
+research behind it and the design that follows are in `docs/decisions/design.md`;
+these are the decisions it produced.
+
+69. **The deck of dealt targets is deleted.** This is the whole diagnosis. A third
+    of darts had one legal option or none, a quarter of the rest were answered by
+    "give up on this visit", and 44% of visits ended at the wall. Darts has exactly
+    one decision — where do I aim, given what I need — and a hand of randomly dealt
+    legal targets removes it. Every pub variant surveyed (Killer, Cricket, Halve-It,
+    Shanghai, Mickey Mouse, Golf, High-Low) modifies the payoff, the risk or the win
+    condition; not one restricts where you may throw. The one that comes closest,
+    Around the Clock, is a beginner practice drill with no strategy in it, and that
+    is what the deck had turned this into. So `DartCard`, `src/core/deck.ts`,
+    `src/content/cards.ts`, `LegState.hand/deck/discard/pocket`, `NightState.library`
+    and the whole draw-and-discard economy are gone. `resolveThrow` takes a `Target`.
+    The player aims at any of the sixty-two targets, every dart, all night.
+
+70. **The safe dart is near-certain again.** `AIM_BASE` moves to S 97, D 50, T 45,
+    OB 60, IB 30, and `STEADY_MAX` caps how far steadiness can lift any of them, so
+    a treble stays a gamble however much the build stacks. Decision #68 made
+    everything wobble, which sounds like risk and is the opposite: risk requires a
+    reliable thing you chose to give up. A professional aiming at a safe single hits
+    it about 97.5% of the time, and that is precisely why going for the treble is a
+    decision. Missed trebles now land the way real ones do — mostly in their own
+    single, sometimes the bed beside it, 8% of the miss mass off the board entirely —
+    and missed doubles go off the board 36% of the time, which is why the checkout
+    is the hard part of darts and now the hard part of this.
+
+71. **The slate replaces the deck.** Three contracts are chalked up at the start of
+    every visit (`src/core/slate.ts`). Taking one stakes Pot against a printed
+    price. They pull in deliberately different directions — A TON wants the trebles,
+    NO SCRAPS wants nothing under fifteen, THE QUIET wants a visit under 25, ODD JOB
+    wants three odd numbers, IN A BED wants all three darts in one number — so
+    "where do I aim" stops answering itself. Nothing on the slate ever restricts the
+    board; it only changes what a visit is worth. A contract that is already
+    impossible from the current position is never offered, because a dead contract
+    is the dead card the deck used to deal.
+
+72. **The press, the bank and the pull.** After every dart: PULL a live contract for
+    the stake back plus one Pot per dart it survived; BANK one that has landed for
+    the printed price, safely; or PRESS it — tear it up and rewrite it as its harder
+    tier at double the stake, with the extra stake taken now. Three decisions a
+    visit, each of them the craps table's only real question. The interest on a pull
+    is what makes stopping positive-value; without it the safe move loses money and
+    a push-your-luck loop with no worthwhile stop has no push in it.
+
+73. **A bust takes the slate with it.** The single rule that makes the rest work.
+    Banked money survives a bust, riding money does not, so the greed is priced
+    against something real rather than against a number going down. The On Tick
+    chalk buys an exemption for contracts already made, at 7 Pot.
+
+74. **The house shortens your price.** Every time a contract pays, its printed price
+    drops by one for the rest of the night, floored at 1. It is the simplest honest
+    way to stop a night settling into one favourite contract thrown over and over,
+    it reads on the slate as a number that visibly gets worse, and the shop's RUB OUT
+    service buys the worst of it back. The slate is priced off one player's own
+    record and is never a market: nobody can take the other side of it.
+
+75. **The kit replaces the shop's card economy.** Six one-shot interventions —
+    STEADY, AGAIN, CALLED, DOUBLED, INSURED, RUB OUT — spent on a dart the player has
+    already chosen to throw. A dealt card constrains where you may aim, which is
+    input randomness and measurably the less satisfying kind; an intervention
+    modifies the throw you were making anyway, so there is no such thing as a dead
+    one. The DEAL chalk was rebuilt around them and the slate: Wide Grip chalks an
+    extra contract, Tunnel Vision one fewer for +20% on every throw, Practice Board
+    is a steadier hand all night, Chalked Up shows next visit's contracts early.
+
+76. **Shanghai stops being a leg mechanic and becomes a contract.** It was a
+    special case with its own state, its own bonus, its own commentary and an
+    exploit history (decisions #63 and #66). As one line on the slate it does the
+    same job with none of that, and it competes for the visit against the other two
+    contracts rather than sitting on top of them. `SETUP_BONUS` goes the same way:
+    LEFT PRETTY is the contract version, and an automatic Pot drip only dilutes the
+    thing the player is actually deciding.
+
+77. **The board is the input surface.** Tap or drag to aim, tap again to throw;
+    arrows step round the beds and through the rings, Enter throws. The outcome fan
+    (`src/ui/aim.ts`) draws every place the dart could finish, sized by likelihood,
+    with the chance of the wall shown as a bar outside the board. Hiding that would
+    make the press-your-luck choice a superstition rather than a decision. Checkout
+    routes are now the real darts finish table rather than a search of the cards
+    held, and the game shows the route, because teaching the table is a feature for
+    the player this is aimed at rather than a hint that spoils anything.
+
+78. **The tutorial can no longer dead-end.** The previous one trapped the player at
+    "40 left" because a mid-visit stage change cleared the prompt and nothing put
+    another one up. Prompts are now a pure function of the stage (`promptFor`) and
+    `update` re-issues the current one whenever the screen sits idle without one, so
+    there is no code path that leaves the player with nothing to do. Scripted darts
+    force their own landing (`ThrowOptions.forceLanding`), which is how the lesson
+    about risk can show a miss on cue instead of waiting for the RNG to supply one.

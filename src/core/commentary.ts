@@ -6,10 +6,11 @@
  */
 import { BARKS } from '../content/barks';
 import { CHALK_BY_ID } from '../content/chalkdefs';
-import { targetNotation } from './board';
+import { targetLongName } from './board';
 import { createRng, nextInt } from './rng';
+import { CONTRACT_BY_ID } from './slate';
 import { currentLeg, currentVisit, legName, visitTotal } from './state';
-import type { BarkContext, BarkTrigger, EngineEvent, LegState, NightState, Rng, ThrowResult } from './types';
+import type { BarkContext, BarkTrigger, EngineEvent, LegState, NightState, Rng, TakenContract, ThrowResult } from './types';
 
 export interface Bark {
   speaker: 'BARREL' | 'NOCK';
@@ -22,6 +23,17 @@ const NO_REPEAT_WINDOW = 8;
 
 export function describeChalkChain(firedChalk: string[]): string {
   return firedChalk.map((id) => CHALK_BY_ID[id]?.name ?? id).join(' then ');
+}
+
+/** The name chalked on the slate for a contract id, e.g. "THE FISH". */
+export function contractName(defId: string): string {
+  return CONTRACT_BY_ID[defId]?.name ?? defId;
+}
+
+/** The contract a slate event is about, if this event is one. */
+function eventContract(event: BarkContext['event']): TakenContract | null {
+  if (event.type === 'CONTRACT_TAKEN' || event.type === 'CONTRACT_SETTLED' || event.type === 'CONTRACT_PRESSED') return event.contract;
+  return null;
 }
 
 export class Commentary {
@@ -89,6 +101,7 @@ export class Commentary {
   private fill(line: string, ctx: BarkContext): string {
     const tr = ctx.throwResult;
     const leg = ctx.leg;
+    const c = eventContract(ctx.event);
     const vals: Record<string, string> = {
       score: String(tr ? tr.scoreCommitted : leg.score),
       total: String(ctx.visitTotal),
@@ -96,9 +109,14 @@ export class Commentary {
       chalk: describeChalkChain(tr ? tr.firedChalk : []),
       leg: legName(leg.index),
       pot: String(ctx.night.pot),
-      card: tr ? targetNotation(tr.intent.card.target) : '',
+      // Free aim: the interesting thing about a dart is now where it was sent.
+      target: tr ? targetLongName(tr.intent.target) : '',
       n180: String(ctx.night.stats.oneEighties),
-      number: String(leg.shanghai),
+      // The slate.
+      contract: c ? contractName(c.defId) : '',
+      price: String(c ? c.price : 0),
+      payout: String(c && c.settled ? c.settled.pot : 0),
+      from: ctx.event.type === 'CONTRACT_PRESSED' ? contractName(ctx.event.from) : '',
     };
     return line.replace(/\{(\w+)\}/g, (m, k: string) => (k in vals ? vals[k] : m));
   }
@@ -109,17 +127,14 @@ const EMPTY_LEG: LegState = {
   visitLimit: 12,
   score: 501,
   visits: [],
-  deck: [],
-  discard: [],
-  hand: [],
   bustsThisLeg: 0,
   forgivenessUsed: false,
   status: 'ACTIVE',
-  peek: [],
-  pocket: null,
+  offer: [],
+  nextOffer: [],
+  slate: [],
+  ledger: [],
   heat: 0,
-  setupBonuses: 0,
-  shanghai: 20,
   dirty: false,
 };
 

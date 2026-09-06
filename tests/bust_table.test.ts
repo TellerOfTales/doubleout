@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { ALL_TARGETS, targetNotation } from '../src/core/board.ts';
 import { classifyBase, isFinishableBase, type Classification } from '../src/core/rules.ts';
 import { BED_ORDER, type Target } from '../src/core/types.ts';
-import { defIdOf, resolve } from './helpers.ts';
+import { resolve } from './helpers.ts';
 
 // ---------------------------------------------------------------- reference, from first principles
 
@@ -176,7 +176,7 @@ describe('resolveThrow with no chalk agrees with the reference on every cell', (
       for (const t of ALL_TARGETS) {
         cells++;
         const want = row.get(targetNotation(t));
-        const r = resolve(defIdOf(t), s);
+        const r = resolve(t, s);
         if (r.outcome !== want) mismatches.push(`${s} ${targetNotation(t)}: want ${want} got ${r.outcome}`);
       }
     }
@@ -189,7 +189,7 @@ describe('resolveThrow with no chalk agrees with the reference on every cell', (
     const bad: string[] = [];
     for (const s of SCORES) {
       for (const t of ALL_TARGETS) {
-        const r = resolve(defIdOf(t), s, [], { scoreAtVisitStart: VISIT_START });
+        const r = resolve(t, s, [], { scoreAtVisitStart: VISIT_START });
         const after = s - refValue(t);
         if (r.scoreAfter !== after) bad.push(`${s} ${targetNotation(t)} scoreAfter ${r.scoreAfter} ≠ ${after}`);
         if (r.totalValue !== refValue(t)) bad.push(`${s} ${targetNotation(t)} value ${r.totalValue}`);
@@ -204,7 +204,7 @@ describe('resolveThrow with no chalk agrees with the reference on every cell', (
   it('countsAsDouble is exactly the double ring plus the inner bull, on every cell', () => {
     for (const t of ALL_TARGETS) {
       for (const s of [2, 40, 170, 501]) {
-        const r = resolve(defIdOf(t), s);
+        const r = resolve(t, s);
         expect(r.hits[0].countsAsDouble).toBe(refIsDouble(t));
       }
     }

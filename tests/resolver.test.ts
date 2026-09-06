@@ -6,10 +6,10 @@
 import { describe, expect, it } from 'vitest';
 import { CHALK_DEFS } from '../src/content/chalkdefs.ts';
 import { ALL_TARGETS, anticlockwiseAdjacent, clockwiseAdjacent, oppositeBed, targetNotation } from '../src/core/board.ts';
-import { VISIT_HAND_SPARE, resolveThrow, throwsPerVisitFor, visitHandSizeFor } from '../src/core/resolver.ts';
+import { resolveThrow, throwsPerVisitFor } from '../src/core/resolver.ts';
 import { nextFloat } from '../src/core/rng.ts';
 import { BED_ORDER, type Bed, type Target } from '../src/core/types.ts';
-import { baseOf, defIdOf, deflectingRng, mkCard, mkChalk, nonDeflectingRng, resolve, value } from './helpers.ts';
+import { baseOf, deflectingRng, mkChalk, nonDeflectingRng, resolve, value } from './helpers.ts';
 
 const MULT = { S: 1, D: 2, T: 3, W: 0 } as const;
 function expectedBase(t: Target): number {
@@ -29,7 +29,7 @@ describe('base values, no chalk (TDD §3.1)', () => {
   });
 
   it.each(TARGET_ROWS)('%s resolves to bed × multiplier', (_n, t) => {
-    const r = resolve(defIdOf(t), 501);
+    const r = resolve(t, 501);
     expect(r.totalValue).toBe(expectedBase(t));
     expect(r.hits).toHaveLength(1);
     expect(r.hits[0].target).toEqual(t);
@@ -46,14 +46,14 @@ describe('base values, no chalk (TDD §3.1)', () => {
   });
 
   it('the card table agrees with the pipeline for every target', () => {
-    for (const t of ALL_TARGETS) expect(baseOf(defIdOf(t))).toBe(expectedBase(t));
+    for (const t of ALL_TARGETS) expect(baseOf(t)).toBe(expectedBase(t));
   });
 
   it('maximum single throw is 60 and the intent is echoed', () => {
     const r = resolve('t20', 501, [], { throwIndex: 2 });
     expect(r.totalValue).toBe(60);
     expect(r.intent.visitThrowIndex).toBe(2);
-    expect(r.intent.card.defId).toBe('t20');
+    expect(r.intent.target).toEqual({ region: 'T', bed: 20 });
   });
 });
 
@@ -75,7 +75,7 @@ describe('hot_twenty (VALUE)', () => {
   });
   it('only the 20 bed treble is affected across all targets', () => {
     for (const t of ALL_TARGETS) {
-      const v = value(defIdOf(t), ['hot_twenty']);
+      const v = value(t, ['hot_twenty']);
       expect(v).toBe(t.region === 'T' && t.bed === 20 ? 80 : expectedBase(t));
     }
   });
@@ -113,7 +113,7 @@ describe('heavy_tips (VALUE)', () => {
   });
   it('fires on every throw', () => {
     for (const t of ALL_TARGETS) {
-      const r = resolve(defIdOf(t), 501, ['heavy_tips']);
+      const r = resolve(t, 501, ['heavy_tips']);
       expect(r.totalValue).toBe(expectedBase(t) + 5);
       expect(r.firedChalk).toEqual(['heavy_tips']);
     }
@@ -137,7 +137,7 @@ describe('oiled (VALUE, odd beds +50% floored)', () => {
   it('every odd bed target is floor(base × 1.5)', () => {
     for (const t of ALL_TARGETS) {
       const odd = t.bed !== undefined && t.bed % 2 === 1;
-      expect(value(defIdOf(t), ['oiled'])).toBe(odd ? Math.floor(expectedBase(t) * 1.5) : expectedBase(t));
+      expect(value(t, ['oiled'])).toBe(odd ? Math.floor(expectedBase(t) * 1.5) : expectedBase(t));
     }
   });
 });
@@ -154,7 +154,7 @@ describe('even_keel (VALUE, even beds +50% floored)', () => {
   it('every even bed target is floor(base × 1.5)', () => {
     for (const t of ALL_TARGETS) {
       const even = t.bed !== undefined && t.bed % 2 === 0;
-      expect(value(defIdOf(t), ['even_keel'])).toBe(even ? Math.floor(expectedBase(t) * 1.5) : expectedBase(t));
+      expect(value(t, ['even_keel'])).toBe(even ? Math.floor(expectedBase(t) * 1.5) : expectedBase(t));
     }
   });
 });
@@ -348,7 +348,7 @@ describe('magnetised (BOARD, base value < 10 → S20)', () => {
   });
   it('threshold is exactly 10 across all targets', () => {
     for (const t of ALL_TARGETS) {
-      const r = resolve(defIdOf(t), 501, ['magnetised']);
+      const r = resolve(t, 501, ['magnetised']);
       if (expectedBase(t) < 10) expect(r.totalValue).toBe(20);
       else expect(r.totalValue).toBe(expectedBase(t));
     }
@@ -376,7 +376,7 @@ describe('narrow_beds (BOARD, S ↔ T)', () => {
   });
   it('swaps every single and treble', () => {
     for (const t of ALL_TARGETS) {
-      const r = resolve(defIdOf(t), 501, ['narrow_beds']);
+      const r = resolve(t, 501, ['narrow_beds']);
       const want = t.region === 'S' ? 'T' : t.region === 'T' ? 'S' : t.region;
       expect(r.hits[0].target.region).toBe(want);
     }
@@ -404,11 +404,11 @@ describe('wide_doubles (RULE-evaluated BOARD chalk)', () => {
     expect(r.firedChalk).toEqual([]);
   });
   it('values are unchanged', () => {
-    for (const t of ALL_TARGETS) expect(value(defIdOf(t), ['wide_doubles'])).toBe(expectedBase(t));
+    for (const t of ALL_TARGETS) expect(value(t, ['wide_doubles'])).toBe(expectedBase(t));
   });
   it('only the 16, 18 and 20 beds count', () => {
     for (const t of ALL_TARGETS) {
-      const r = resolve(defIdOf(t), 501, ['wide_doubles']);
+      const r = resolve(t, 501, ['wide_doubles']);
       const wide = t.bed === 16 || t.bed === 18 || t.bed === 20;
       expect(r.hits[0].countsAsDouble).toBe(wide || t.region === 'D' || t.region === 'IB');
     }
@@ -535,7 +535,7 @@ describe('straight_out (RULE)', () => {
   });
   it('not fired on a plain CONTINUE', () => expect(resolve('s20', 100, ['straight_out']).firedChalk).toEqual([]));
   it('every target checks out from exactly its value', () => {
-    for (const t of ALL_TARGETS) expect(resolve(defIdOf(t), expectedBase(t), ['straight_out']).outcome).toBe('CHECKOUT');
+    for (const t of ALL_TARGETS) expect(resolve(t, expectedBase(t), ['straight_out']).outcome).toBe('CHECKOUT');
   });
 });
 
@@ -589,24 +589,8 @@ describe('chalk_dust (RULE)', () => {
 // ---------------------------------------------------------------- DEAL chalk
 
 describe('DEAL chalk', () => {
-  it('a visit deals its darts plus the spare, and 3 throws per visit', () => {
-    expect(visitHandSizeFor([])).toBe(3 + VISIT_HAND_SPARE);
+  it('a visit is three darts', () => {
     expect(throwsPerVisitFor([])).toBe(3);
-  });
-  it('wide_grip → one more card in the visit hand', () => expect(visitHandSizeFor(mkChalk(['wide_grip']))).toBe(4 + VISIT_HAND_SPARE));
-  it('tunnel_vision → one fewer', () => expect(visitHandSizeFor(mkChalk(['tunnel_vision']))).toBe(2 + VISIT_HAND_SPARE));
-  it('wide_grip and tunnel_vision cancel out, in either order', () => {
-    expect(visitHandSizeFor(mkChalk(['wide_grip', 'tunnel_vision']))).toBe(3 + VISIT_HAND_SPARE);
-    expect(visitHandSizeFor(mkChalk(['tunnel_vision', 'wide_grip']))).toBe(3 + VISIT_HAND_SPARE);
-  });
-  it('fourth_dart deals for the extra dart too', () => {
-    expect(visitHandSizeFor(mkChalk(['fourth_dart']))).toBe(4 + VISIT_HAND_SPARE);
-  });
-  it('other chalk leaves the visit hand alone', () => {
-    for (const id of ALL_CHALK_IDS) {
-      if (id === 'wide_grip' || id === 'tunnel_vision' || id === 'fourth_dart') continue;
-      expect(visitHandSizeFor(mkChalk([id]))).toBe(3 + VISIT_HAND_SPARE);
-    }
   });
   it('fourth_dart → 4 throws per visit', () => expect(throwsPerVisitFor(mkChalk(['fourth_dart']))).toBe(4));
   it('other chalk leaves throws per visit at 3', () => {
@@ -630,7 +614,7 @@ describe('DEAL chalk', () => {
   });
   it.each(['wide_grip', 'fourth_dart', 'practice_board', 'chalked_up'])('%s has no value effect and never fires', (id) => {
     for (const t of ALL_TARGETS) {
-      const r = resolve(defIdOf(t), 501, [id]);
+      const r = resolve(t, 501, [id]);
       expect(r.totalValue).toBe(expectedBase(t));
       expect(r.hits[0].target).toEqual(t);
       expect(r.firedChalk).toEqual([]);
@@ -652,7 +636,7 @@ describe('acquisition order within a stage (TDD §5.5)', () => {
     const out = resolve('t20', 501, ['heavy_tips', 'hot_twenty']);
     expect(out.totalValue).toBe(86);
     // same orders, reversed array → same answer
-    const rr = resolveThrow(out.intent.card, {
+    const rr = resolveThrow(out.intent.target, {
       chalk,
       rng: null,
       scoreBefore: 501,
@@ -837,7 +821,7 @@ describe('flooring (TDD §7 4.3): values are integers and never round up', () =>
     for (const t of ALL_TARGETS) {
       for (const ti of [0, 1, 2, 3] as const) {
         const exact = f(t, expectedBase(t), ti);
-        const v = value(defIdOf(t), [id], { throwIndex: ti });
+        const v = value(t, [id], { throwIndex: ti });
         expect(Number.isInteger(v)).toBe(true);
         expect(v).toBe(Math.floor(exact + 1e-9));
         expect(v).toBeLessThanOrEqual(exact + 1e-9);
@@ -857,7 +841,7 @@ describe('flooring (TDD §7 4.3): values are integers and never round up', () =>
     for (const id of ALL_CHALK_IDS) {
       for (const t of ALL_TARGETS) {
         for (const ti of [0, 1, 2, 3] as const) {
-          const r = resolve(defIdOf(t), 501, [id], { throwIndex: ti, rng: deflectingRng() });
+          const r = resolve(t, 501, [id], { throwIndex: ti, rng: deflectingRng() });
           expect(Number.isInteger(r.totalValue)).toBe(true);
           expect(r.totalValue).toBeGreaterThanOrEqual(0);
           for (const h of r.hits) expect(Number.isInteger(h.value)).toBe(true);
@@ -870,7 +854,7 @@ describe('flooring (TDD §7 4.3): values are integers and never round up', () =>
   it('all 24 chalk held at once still produce integer totals with no duplicate fired ids', () => {
     for (const t of ALL_TARGETS) {
       for (const ti of [0, 1, 2, 3] as const) {
-        const r = resolve(defIdOf(t), 501, ALL_CHALK_IDS, { throwIndex: ti, rng: deflectingRng() });
+        const r = resolve(t, 501, ALL_CHALK_IDS, { throwIndex: ti, rng: deflectingRng() });
         expect(Number.isInteger(r.totalValue)).toBe(true);
         expect(new Set(r.firedChalk).size).toBe(r.firedChalk.length);
       }
@@ -882,7 +866,7 @@ describe('flooring (TDD §7 4.3): values are integers and never round up', () =>
 
 describe('firedChalk', () => {
   it('is empty with no chalk for every target', () => {
-    for (const t of ALL_TARGETS) expect(resolve(defIdOf(t), 501).firedChalk).toEqual([]);
+    for (const t of ALL_TARGETS) expect(resolve(t, 501).firedChalk).toEqual([]);
   });
   it.each([
     ['hot_twenty', 's20', 501],
@@ -926,7 +910,7 @@ describe('firedChalk', () => {
   });
   it('the fired ids are all real chalk ids the throw was resolved with', () => {
     for (const t of ALL_TARGETS) {
-      const r = resolve(defIdOf(t), 100, ALL_CHALK_IDS, { rng: deflectingRng() });
+      const r = resolve(t, 100, ALL_CHALK_IDS, { rng: deflectingRng() });
       for (const id of r.firedChalk) expect(ALL_CHALK_IDS).toContain(id);
     }
   });
@@ -941,31 +925,34 @@ describe('firedChalk', () => {
 describe('pipeline invariants', () => {
   it('hits[i].countsAsDouble is false for every non-final hit', () => {
     for (const t of ALL_TARGETS) {
-      const r = resolve(defIdOf(t), 501, ['split_tips', 'wide_doubles', 'straight_out']);
+      const r = resolve(t, 501, ['split_tips', 'wide_doubles', 'straight_out']);
       for (let i = 0; i < r.hits.length - 1; i++) expect(r.hits[i].countsAsDouble).toBe(false);
     }
   });
   it('totalValue is always the sum of the hits', () => {
     for (const id of ALL_CHALK_IDS) {
       for (const t of ALL_TARGETS) {
-        const r = resolve(defIdOf(t), 501, [id, 'split_tips'], { rng: deflectingRng() });
+        const r = resolve(t, 501, [id, 'split_tips'], { rng: deflectingRng() });
         expect(r.totalValue).toBe(r.hits.reduce((a, h) => a + h.value, 0));
         expect(r.scoreAfter === r.scoreBefore - r.totalValue || r.firedChalk.includes('chalk_dust')).toBe(true);
       }
     }
   });
-  it('the input card is never mutated by BOARD chalk', () => {
-    const card = mkCard('t20');
-    resolveThrow(card, { chalk: mkChalk(['mirrored', 'narrow_beds', 'split_tips']), rng: null, scoreBefore: 501, scoreAtVisitStart: 501, visitThrowIndex: 0, forgivenessUsed: false });
-    expect(card.target).toEqual({ region: 'T', bed: 20 });
+  it('the aimed target is never mutated by BOARD chalk, and the intent still reads T20', () => {
+    const aimed: Target = { region: 'T', bed: 20 };
+    const r = resolveThrow(aimed, { chalk: mkChalk(['mirrored', 'narrow_beds', 'split_tips']), rng: null, scoreBefore: 501, scoreAtVisitStart: 501, visitThrowIndex: 0, forgivenessUsed: false }).result;
+    expect(aimed).toEqual({ region: 'T', bed: 20 });
+    expect(r.intent.target).toEqual({ region: 'T', bed: 20 });
+    expect(r.aimed).toEqual({ region: 'T', bed: 20 });
+    expect(r.hits[0].target).not.toEqual({ region: 'T', bed: 20 });
   });
   it('a checkout always commits 0 and a plain bust always commits the visit start', () => {
     for (const t of ALL_TARGETS) {
       const v = expectedBase(t);
-      const k = resolve(defIdOf(t), v, ['straight_out'], { scoreAtVisitStart: 300 });
+      const k = resolve(t, v, ['straight_out'], { scoreAtVisitStart: 300 });
       expect(k.outcome).toBe('CHECKOUT');
       expect(k.scoreCommitted).toBe(0);
-      const b = resolve(defIdOf(t), v - 1, [], { scoreAtVisitStart: 300 });
+      const b = resolve(t, v - 1, [], { scoreAtVisitStart: 300 });
       expect(b.outcome).toBe('BUST');
       expect(b.scoreCommitted).toBe(300);
     }
@@ -979,106 +966,5 @@ describe('pipeline invariants', () => {
   });
 });
 
-// ---------------------------------------------------------------- the aim (DECISIONS.md #68)
-
-import { AIM_BASE, AIM_CAP, STEADY_PER_HEAT, hitChance, landingDistribution, rollLanding } from '../src/core/resolver.ts';
-import { createRng } from '../src/core/rng.ts';
-import { parseTarget } from '../src/core/board.ts';
-
-describe('the aim: every target has odds', () => {
-  const sum = (t: string, steady = 0) => landingDistribution(parseTarget(t), steady).reduce((a, l) => a + l.p, 0);
-  it.each(['s20', 't20', 'd16', 'ob', 'ib', 's1', 'd20', 't5'])('%s: the landings sum to 1 and the hit comes first at its base chance', (t) => {
-    expect(sum(t)).toBeCloseTo(1, 9);
-    const dist = landingDistribution(parseTarget(t));
-    expect(dist[0].kind).toBe('hit');
-    expect(targetNotation(dist[0].target)).toBe(targetNotation(parseTarget(t)));
-    expect(dist[0].p).toBeCloseTo(AIM_BASE[parseTarget(t).region as keyof typeof AIM_BASE] / 100, 9);
-  });
-  it('singles are big, doubles thin, trebles thinner, the bull smallest', () => {
-    expect(AIM_BASE.S).toBeGreaterThan(AIM_BASE.D);
-    expect(AIM_BASE.D).toBeGreaterThan(AIM_BASE.T);
-    expect(AIM_BASE.T).toBeGreaterThan(AIM_BASE.IB);
-    expect(hitChance(parseTarget('s20'))).toBe(AIM_BASE.S);
-    expect(hitChance(parseTarget('ib'))).toBe(AIM_BASE.IB);
-  });
-  it('a treble that misses mostly drops into its own single; a double can go in the wall; a single can find its treble', () => {
-    const t = landingDistribution(parseTarget('t20'));
-    expect(targetNotation(t[1].target)).toBe('S20');
-    expect(t[1].p).toBeGreaterThan(t[2].p + t[3].p);
-    expect(t.map((l) => targetNotation(l.target)).sort()).toEqual(['S20', 'T1', 'T20', 'T5']);
-    const d = landingDistribution(parseTarget('d16'));
-    expect(d.some((l) => l.kind === 'wall' && l.target.region === 'W')).toBe(true);
-    expect(d.filter((l) => l.target.region !== 'W').map((l) => targetNotation(l.target)).sort()).toEqual(['D16', 'D7', 'D8', 'S16']);
-    const s = landingDistribution(parseTarget('s20'));
-    const lucky = s.find((l) => l.kind === 'lucky');
-    expect(lucky && targetNotation(lucky.target)).toBe('T20');
-    expect(s.map((l) => targetNotation(l.target)).sort()).toEqual(['S1', 'S20', 'S5', 'T20']);
-  });
-  it('the bull strays to the top of the board, and the outer bull can drop in', () => {
-    const ob = landingDistribution(parseTarget('ob'));
-    expect(ob.find((l) => l.kind === 'lucky')?.target.region).toBe('IB');
-    expect(ob.filter((l) => l.target.region === 'S').map((l) => l.target.bed).sort()).toEqual([1, 20, 5]);
-    const ib = landingDistribution(parseTarget('ib'));
-    expect(ib.find((l) => l.target.region === 'OB')?.kind).toBe('drift');
-  });
-  it('steadiness raises every hit chance by its points, never past the cap, never below zero', () => {
-    expect(hitChance(parseTarget('t20'), 12)).toBe(AIM_BASE.T + 12);
-    expect(hitChance(parseTarget('s20'), 40)).toBe(AIM_CAP);
-    expect(hitChance(parseTarget('d16'), -50)).toBe(AIM_BASE.D);
-    expect(sum('t20', 12)).toBeCloseTo(1, 9);
-    expect(STEADY_PER_HEAT * 4).toBeLessThan(AIM_CAP - AIM_BASE.T);
-  });
-  it('the wall lands in the wall', () => {
-    expect(landingDistribution({ region: 'W' })).toEqual([{ target: { region: 'W' }, p: 1, kind: 'wall' }]);
-  });
-  it('rolling consumes one float and follows the distribution over many rolls', () => {
-    const rng = createRng(7);
-    const counts = new Map<string, number>();
-    const N = 4000;
-    for (let i = 0; i < N; i++) {
-      const before = rng.s;
-      const l = rollLanding(parseTarget('t20'), 0, rng);
-      expect(rng.s).not.toBe(before);
-      counts.set(targetNotation(l.target), (counts.get(targetNotation(l.target)) ?? 0) + 1);
-    }
-    const hit = (counts.get('T20') ?? 0) / N;
-    expect(hit).toBeGreaterThan(AIM_BASE.T / 100 - 0.04);
-    expect(hit).toBeLessThan(AIM_BASE.T / 100 + 0.04);
-    expect((counts.get('S20') ?? 0) / N).toBeGreaterThan((1 - AIM_BASE.T / 100) * 0.6 - 0.04);
-    expect(counts.size).toBe(4);
-  });
-  it('a hypothetical (no RNG) lands where it is aimed; a forced landing resolves that target through the chalk', () => {
-    const plain = resolve('t20', 501);
-    expect(plain.aim).toBe('hit');
-    expect(targetNotation(plain.hits[0].target)).toBe('T20');
-    const forced = resolveThrow(mkCard('t20'), { chalk: mkChalk(['heavy_tips']), rng: null, scoreBefore: 501, scoreAtVisitStart: 501, visitThrowIndex: 0, forgivenessUsed: true, landing: parseTarget('s20') }).result;
-    expect(forced.aim).toBe('drift');
-    expect(targetNotation(forced.aimed)).toBe('T20');
-    expect(targetNotation(forced.hits[0].target)).toBe('S20');
-    expect(forced.totalValue).toBe(25); // S20 + heavy tips
-    expect(forced.firedChalk).toEqual(['heavy_tips']);
-  });
-  it('a dart in the wall scores nothing, fires no chalk, and is not a deliberate miss', () => {
-    const r = resolveThrow(mkCard('d16'), { chalk: mkChalk(['heavy_tips', 'split_tips']), rng: null, scoreBefore: 32, scoreAtVisitStart: 32, visitThrowIndex: 0, forgivenessUsed: true, landing: { region: 'W' } }).result;
-    expect(r.aim).toBe('wall');
-    expect(r.hits).toEqual([]);
-    expect(r.totalValue).toBe(0);
-    expect(r.outcome).toBe('CONTINUE');
-    expect(r.scoreCommitted).toBe(32);
-    expect(r.firedChalk).toEqual([]);
-    expect(r.miss).toBe(false);
-  });
-  it('true aim skips the roll and leaves the RNG alone', () => {
-    const rng = createRng(3);
-    const before = rng.s;
-    const r = resolveThrow(mkCard('t20'), { chalk: [], rng, trueAim: true, scoreBefore: 501, scoreAtVisitStart: 501, visitThrowIndex: 0, forgivenessUsed: true }).result;
-    expect(r.aim).toBe('hit');
-    expect(rng.s).toBe(before);
-  });
-  it('with the RNG the roll is seeded: the same seed lands the same way, and the steadiness is recorded', () => {
-    const a = resolveThrow(mkCard('d16'), { chalk: [], rng: createRng(11), steadiness: 9, scoreBefore: 100, scoreAtVisitStart: 100, visitThrowIndex: 0, forgivenessUsed: true }).result;
-    const b = resolveThrow(mkCard('d16'), { chalk: [], rng: createRng(11), steadiness: 9, scoreBefore: 100, scoreAtVisitStart: 100, visitThrowIndex: 0, forgivenessUsed: true }).result;
-    expect(targetNotation(a.hits[0]?.target ?? { region: 'W' })).toBe(targetNotation(b.hits[0]?.target ?? { region: 'W' }));
-    expect(a.steadiness).toBe(9);
-  });
-});
+// The aim model — the landing distributions, steadiness and the interventions
+// that bend them — has its own file: tests/aim.test.ts.

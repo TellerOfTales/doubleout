@@ -18,14 +18,47 @@ export interface Target {
   bed?: Bed;
 }
 
-// ---------- Cards ----------
+// ---------- Interventions ----------
 
-export interface DartCard {
-  id: string; // unique per instance (deterministic counter, see state.ts)
-  defId: string; // e.g. "t20" — shared by all copies
-  target: Target;
-  /** Cosmetic only. Drives flight-trail palette index. */
-  flight: 0 | 1 | 2 | 3;
+/**
+ * The kit: one-shot modifiers spent on a dart the player has ALREADY chosen to
+ * throw. They replaced the deck of dealt targets, and the difference is the
+ * whole point — a dealt target tells you where you may aim, an intervention
+ * changes what happens to the throw you were making anyway. There is no such
+ * thing as a dead one. See docs/decisions/design.md §5.6.
+ */
+export interface InterventionDef {
+  id: string;
+  /** Printed on the kit strip. 9 characters at most. */
+  name: string;
+  /** One line. 46 characters at most. */
+  blurb: string;
+  /** Shop price in Pot. */
+  cost: number;
+  /** AIM: spend it before the dart flies. SLATE: spend it on the slate, before the visit. */
+  when: 'AIM' | 'SLATE';
+}
+
+// ---------- The slate ----------
+
+export type ContractOutcome = 'PAID' | 'LOST' | 'PULLED' | 'BANKED';
+
+/** A contract the player has staked Pot on this visit. */
+export interface TakenContract {
+  defId: string;
+  /** Pot staked. Doubles on every press. */
+  stake: number;
+  /** Price locked in when it was taken, after the night's decay. */
+  price: number;
+  /** How many darts had been thrown when it was taken. */
+  takenAt: number;
+  /** How many darts had been thrown when it first landed, or null if it has not. */
+  madeAt: number | null;
+  /** Times it has been pressed into a harder tier. */
+  pressed: number;
+  status: 'LIVE' | 'MADE' | 'DEAD';
+  /** Once it is off the slate: what it paid back in total, and why. */
+  settled: { pot: number; how: ContractOutcome } | null;
 }
 
 // ---------- Chalk ----------
@@ -50,7 +83,8 @@ export interface Chalk {
 // ---------- Throw resolution ----------
 
 export interface ThrowIntent {
-  card: DartCard;
+  /** Where the player aimed. Free aim: any of the 62 targets, or the wall. */
+  target: Target;
   visitThrowIndex: 0 | 1 | 2 | 3; // 3 only reachable with fourth_dart
 }
 
@@ -84,8 +118,6 @@ export interface ThrowResult {
   deflected: boolean;
   /** True for a deliberate miss: the dart went at the wall, nothing resolved. */
   miss: boolean;
-  /** True when this throw completed a Shanghai and won the leg outright. */
-  shanghai: boolean;
   /** Where the dart was aimed, before the odds and before any BOARD chalk. */
   aimed: Target;
   /** How the aim went: it hit, it drifted to a neighbour, it drifted somewhere better, or it went in the wall. */
@@ -123,29 +155,22 @@ export interface LegState {
   visitLimit: number;
   score: number; // remaining; starts at the leg's `start` (301 or 501)
   visits: VisitState[];
-  deck: DartCard[];
-  discard: DartCard[];
-  hand: DartCard[];
   bustsThisLeg: number;
   forgivenessUsed: boolean; // for forgiving_oche
   status: 'ACTIVE' | 'CHECKED_OUT' | 'TIMED_OUT';
-  /** Cards peeked by chalked_up at the start of the current visit (ids). */
-  peek: string[];
-  /**
-   * The pocket: one card set aside for later. It joins the hand every visit
-   * until it is thrown, which is how you plan a finish several visits out
-   * instead of waiting for the right card to be dealt.
-   */
-  pocket: DartCard | null;
+  /** The three contracts chalked up for the current visit. Ids into CONTRACTS. */
+  offer: string[];
+  /** Next visit's offer, visible early with the Chalked Up chalk. */
+  nextOffer: string[];
+  /** Contracts taken this visit, in the order they were taken. */
+  slate: TakenContract[];
+  /** Everything settled this leg, oldest first, for the readout. */
+  ledger: TakenContract[];
   /**
    * Consecutive visits ended without a bust, capped at HEAT_CAP. The crowd
    * warms up and the leg's Pot reward scales with it; a bust wipes it to 0.
    */
   heat: number;
-  /** "Left it right" bonuses banked this leg (score left finishable). */
-  setupBonuses: number;
-  /** The number called for Shanghai this leg (single + double + treble in one visit wins). */
-  shanghai: number;
   /** True once this leg has seen a bust: the clean sheet is off. */
   dirty: boolean;
   /** Pot awarded for this leg once checked out. */
@@ -154,18 +179,13 @@ export interface LegState {
 
 export interface PotBreakdown {
   base: number;
-  unusedVisits: number;
   bigFinish: number;
   cleanLeg: number;
   nineDarter: number;
-  /** "Left it right" bonuses banked during the leg. */
-  setup: number;
   /** Heat at checkout (0..HEAT_CAP). */
   heat: number;
   /** Extra Pot the heat multiplier added. */
   heatBonus: number;
-  /** Pot for a Shanghai finish (0 otherwise). */
-  shanghai: number;
   /** Clean-sheet streak this leg counts as (1 = first clean leg). 0 if the leg was dirty. */
   streak: number;
   /** Multiplier the clean sheet applied to everything above. */
@@ -178,10 +198,10 @@ export interface PotBreakdown {
   visitsUsed: number;
 }
 
-export type ServiceKind = 'REMOVE' | 'DUPLICATE' | 'SHARPEN';
+export type ServiceKind = 'STEADY' | 'CREDIT' | 'RUB_OUT';
 
 export type ShopSlot =
-  | { kind: 'CARD'; defId: string; cost: number; sold: boolean }
+  | { kind: 'KIT'; defId: string; cost: number; sold: boolean }
   | { kind: 'CHALK'; chalkId: string; cost: number; sold: boolean }
   | { kind: 'SERVICE'; service: ServiceKind; cost: number; sold: boolean };
 
@@ -206,18 +226,22 @@ export interface NightStats {
   chalkFires: number;
   potEarned: number;
   potSpent: number;
-  cardsBought: number;
+  kitBought: number;
+  /** Contracts taken, paid, and the Pot won and staked on them. */
+  contractsTaken: number;
+  contractsPaid: number;
+  contractsPressed: number;
+  potStaked: number;
+  potWon: number;
+  /** Best single contract payout of the night. */
+  bestPayout: number;
   bigFinishes: number;
   cleanLegs: number;
   maxChalkHeld: number;
   /** Deliberate wall throws. */
   misses: number;
-  /** "Left it right" bonuses earned. */
-  setups: number;
   /** Highest heat reached in the night. */
   bestHeat: number;
-  /** Shanghais: legs won by one plus trios hit in the scoring phase. */
-  shanghais: number;
   /** Longest clean sheet of the night. */
   bestStreak: number;
 }
@@ -233,7 +257,10 @@ export interface NightState {
   seed: number;
   legIndex: number;
   pot: number;
-  library: DartCard[]; // the persistent throw deck across legs
+  /** The kit: intervention def ids held, spendable at any oche. */
+  kit: string[];
+  /** Times each contract has paid tonight. The house shortens your price. */
+  paid: Record<string, number>;
   chalk: Chalk[]; // max 5 (6 on The Wide)
   legs: LegState[];
   status: 'ACTIVE' | 'WON' | 'LOST';
@@ -241,8 +268,6 @@ export interface NightState {
   oche: OcheId;
   phase: NightPhase;
   rng: Rng;
-  /** Next card instance id counter (deterministic ids). */
-  nextCardId: number;
   /** Next chalk acquisition index. */
   nextChalkOrder: number;
   chalkSlots: number;
@@ -252,8 +277,6 @@ export interface NightState {
   achievements: OcheId[];
   /** Consecutive busts across the night, for commentary escalation. Reset on a non-bust visit end. */
   consecutiveBusts: number;
-  /** Shanghai number called for each leg, drawn at the start of the night. */
-  shanghaiNumbers: number[];
   /** The clean sheet: consecutive legs won with no bust and no wall. */
   streak: number;
   /**
@@ -268,15 +291,15 @@ export interface NightState {
 
 export type EngineEvent =
   | { type: 'LEG_START'; legIndex: number }
-  | { type: 'HAND_DEALT'; hand: DartCard[]; visitIndex: number; throwIndex: number }
+  | { type: 'SLATE_OFFERED'; offer: string[]; visitIndex: number }
+  | { type: 'CONTRACT_TAKEN'; contract: TakenContract }
+  | { type: 'CONTRACT_SETTLED'; contract: TakenContract }
+  | { type: 'CONTRACT_PRESSED'; contract: TakenContract; from: string }
+  | { type: 'KIT_SPENT'; defId: string }
   | { type: 'THROW'; result: ThrowResult }
   | { type: 'VISIT_END'; visit: VisitState; total: number; busted: boolean; missed: boolean; heat: number }
-  | { type: 'SETUP_BONUS'; score: number; pot: number }
-  | { type: 'POCKETED'; card: DartCard }
   | { type: 'HEAT_LOST'; from: number; reason: 'BUST' | 'MISS' }
   | { type: 'STREAK_LOST'; from: number }
-  /** A single, a double and a treble of the called number in one visit. `won` when it was in range and closed the leg. */
-  | { type: 'SHANGHAI'; number: number; total: number; won: boolean; pot: number }
   | { type: 'ONE_EIGHTY'; total: number }
   | { type: 'CHECKOUT'; legIndex: number; reward: PotBreakdown | null }
   | { type: 'LEG_TIMEOUT'; legIndex: number }

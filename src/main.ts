@@ -3,7 +3,9 @@
  */
 import { Sprites } from './art/sprites';
 import { AudioEngine } from './audio/sfx';
+import * as board from './core/board';
 import { Commentary } from './core/commentary';
+import * as slate from './core/slate';
 import * as state from './core/state';
 const { beginLeg, createNight } = state;
 import type { OcheId } from './core/types';
@@ -112,7 +114,10 @@ function boot(): void {
   scenes.go(new TitleScreen(app), true);
 
   // Test/automation hooks (harmless in production; no network, no state leak).
-  (window as unknown as { __do: unknown }).__do = Object.assign(app, { state });
+  // The playtest harness in tools/screenshot.ts drives the game through these:
+  // `board` so a scenario can name a target the way a darts player would, and
+  // `slate` so it can assert on contracts by id rather than by pixel.
+  (window as unknown as { __do: unknown }).__do = Object.assign(app, { state, board, slate });
 
   let last = performance.now();
   const frame = (now: number) => {

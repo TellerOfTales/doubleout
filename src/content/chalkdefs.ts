@@ -23,17 +23,21 @@ export const CHALK_DEFS: ChalkDef[] = [
   { id: 'wide_doubles', name: 'Wide Doubles', stage: 'BOARD', cost: 9, blurb: 'Anything in the 16, 18 or 20 bed counts as a double.' },
   { id: 'mirrored', name: 'Mirrored', stage: 'BOARD', cost: 5, blurb: 'Darts land in the bed directly opposite.' },
   // ---- RULE ----
-  { id: 'cheap_chalk', name: 'Cheap Chalk', stage: 'RULE', cost: 8, blurb: 'A bust drops your score to 2 instead of putting it back. The sheet forgives it; the crowd does not.' },
-  { id: 'forgiving_oche', name: 'Forgiving Oche', stage: 'RULE', cost: 10, blurb: 'The first bust of each leg never happened. The crowd still saw it.' },
+  { id: 'cheap_chalk', name: 'Cheap Chalk', stage: 'RULE', cost: 8, blurb: 'A bust drops your score to 2, not back. The sheet forgives it.' },
+  { id: 'forgiving_oche', name: 'Forgiving Oche', stage: 'RULE', cost: 10, blurb: 'The first bust of each leg never happened.' },
   { id: 'straight_out', name: 'Straight Out', stage: 'RULE', cost: 10, blurb: 'You no longer need a double to finish.' },
   { id: 'overshoot', name: 'Overshoot', stage: 'RULE', cost: 12, blurb: 'A finishing double may go 1 or 2 below zero and still count.' },
   { id: 'chalk_dust', name: 'Chalk Dust', stage: 'RULE', cost: 4, blurb: 'Landing on 1 is legal. It is treated as 2.' },
+  // ---- RULE (the slate) ----
+  { id: 'short_price', name: 'Short Price', stage: 'RULE', cost: 5, blurb: 'Pulling a contract pays 3 a dart instead of 1.' },
+  { id: 'long_prices', name: 'Long Prices', stage: 'RULE', cost: 9, blurb: 'Every contract on the slate is printed at +2.' },
+  { id: 'on_tick', name: 'On Tick', stage: 'RULE', cost: 7, blurb: 'A bust no longer takes contracts you already made.' },
   // ---- DEAL ----
-  { id: 'wide_grip', name: 'Wide Grip', stage: 'DEAL', cost: 8, blurb: 'Deal one extra card at the start of every visit.' },
-  { id: 'tunnel_vision', name: 'Tunnel Vision', stage: 'DEAL', cost: 6, blurb: 'Deal one card fewer each visit, but every throw scores +20%.' },
+  { id: 'wide_grip', name: 'Wide Grip', stage: 'DEAL', cost: 8, blurb: 'One extra contract chalked up every visit.' },
+  { id: 'tunnel_vision', name: 'Tunnel Vision', stage: 'DEAL', cost: 6, blurb: 'One contract fewer, but every throw scores +20%.' },
   { id: 'fourth_dart', name: 'Fourth Dart', stage: 'DEAL', cost: 12, blurb: 'Four darts per visit instead of three.' },
-  { id: 'practice_board', name: 'Practice Board', stage: 'DEAL', cost: 5, blurb: 'Cards you do not throw go back under the deck, not the bin.' },
-  { id: 'chalked_up', name: 'Chalked Up', stage: 'DEAL', cost: 4, blurb: 'See the next 3 cards of the deck at the start of each visit.' },
+  { id: 'practice_board', name: 'Practice Board', stage: 'DEAL', cost: 5, blurb: 'A steadier hand: +8 on every chance, all night.' },
+  { id: 'chalked_up', name: 'Chalked Up', stage: 'DEAL', cost: 4, blurb: 'See next visit\u2019s contracts before this one ends.' },
 ];
 
 export const CHALK_BY_ID: Record<string, ChalkDef> = Object.fromEntries(CHALK_DEFS.map((c) => [c.id, c]));
