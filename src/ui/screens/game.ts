@@ -258,10 +258,17 @@ export class GameScreen implements Scene {
         if (o.outcome === 'CHECKOUT' || trio) finish += l.p;
         else if (o.outcome === 'BUST') bust += l.p;
       }
-      this.hand.odds.set(c.id, { hit: hitChance(c.target, steady), bust: Math.round(bust * 100), finish: Math.round(finish * 100) });
       // The third piece of an in-range Shanghai wins the leg whatever the
       // arithmetic says: it reads as a finish, never as a bust.
       const wins = !!visit && visit.scoreAtVisitStart <= SHANGHAI_RANGE && completesShanghai(visit.throws, r, leg.shanghai);
+      // With true aim (the tutorial's scripted throws) the dart lands where it
+      // is aimed, so the card shows certainty rather than a chance it does not face.
+      const certain = this.night.trueAim;
+      this.hand.odds.set(c.id, {
+        hit: certain ? 100 : hitChance(c.target, steady),
+        bust: certain ? (r.outcome === 'BUST' && !wins ? 100 : 0) : Math.round(bust * 100),
+        finish: certain ? (r.outcome === 'CHECKOUT' || wins ? 100 : 0) : Math.round(finish * 100),
+      });
       if (r.outcome === 'BUST' && !wins) this.hand.bustIds.add(c.id);
       if (this.hints.byHandCard.get(c.id) || wins) this.hand.routeStarts.add(c.id);
       // What this card leaves, and whether that is somewhere worth being.

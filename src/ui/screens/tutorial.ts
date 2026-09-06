@@ -498,22 +498,27 @@ class Tutorial {
           this.stage = 'heat';
           this.prompt = null;
         } else if (this.stage === 'throw_t20') {
+          // Mid-visit: no new hand is dealt, so nothing else will put the next
+          // prompt up or lift the previous step's card restriction. Do it here.
           this.stage = 'decide';
-          this.prompt = null;
+          this.onReady(screen);
         } else if (this.stage === 'throw_decide') {
           const r = e.result;
           if (r.outcome === 'BUST') {
+            // The bust ends the visit; the next deal runs onReady for us.
             this.bustCount++;
             this.stage = 'busted';
+            this.prompt = null;
           } else if (r.outcome === 'CHECKOUT') {
             this.stage = 'gameshot';
+            this.prompt = null;
           } else {
             this.stage = 'twenty';
+            this.onReady(screen);
           }
-          this.prompt = null;
         } else if (this.stage === 'throw_chalk') {
           this.stage = 'chain';
-          this.prompt = null;
+          this.onReady(screen);
         }
         break;
       }
