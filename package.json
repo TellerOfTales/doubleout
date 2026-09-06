@@ -14,7 +14,8 @@
     "balance": "vite-node tools/balance.ts",
     "balance:pairs": "vite-node tools/balance.ts --pairs",
     "screenshots": "node --experimental-strip-types tools/screenshot.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "decisions": "vite-node tools/decisions.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
