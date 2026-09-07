@@ -10,7 +10,7 @@
  */
 import { P } from '../art/palette';
 import { BED_ORDER, type Bed, type Target } from '../core/types';
-import { bedIndex, sameTarget, targetNotation } from '../core/board';
+import { baseValue, bedIndex, sameTarget, targetNotation } from '../core/board';
 import type { Landing } from '../core/resolver';
 import type { Renderer } from './draw';
 import type { GameLayout } from './layout';
@@ -128,4 +128,164 @@ export function drawFan(r: Renderer, l: GameLayout, aimed: Target, dist: Landing
 /** "T20 · 45%" for the aim bar. */
 export function aimLabel(t: Target, chance: number): string {
   return `${targetNotation(t)}  ${Math.round(chance)}%`;
+}
+
+// ------------------------------------------------------------ the magnifier
+
+/**
+ * THE SCOPE — a magnified window on the board under the thumb.
+ *
+ * The board is ninety-six pixels across and the double band is four of them.
+ * On a phone that band sits under a thumb that is wider than it, so the player
+ * cannot see the thing they are pointing at, which is the one complaint the
+ * fourth playtest made about free aim. The scope answers it directly: a window
+ * showing the board around the sights at three times life size, parked in the
+ * corner of the board furthest from where the thumb is, with the target's own
+ * notation chalked underneath it.
+ *
+ * It never moves under the finger — the corner is chosen by distance, so the
+ * hand can be anywhere on the board and the window is always somewhere it is
+ * not.
+ */
+export const SCOPE = {
+  /**
+   * Magnification, against the 128-pixel board art. The board on screen is
+   * the 96-pixel cut of the same parametric drawing, so magnifying the larger
+   * one shows real detail rather than fatter pixels: a brass wire stays a
+   * wire instead of becoming a three-pixel bar. Twice the 128 art is a little
+   * under three times the board the player is looking at, which is enough to
+   * put a whole double band and the single either side of it in the glass —
+   * more magnification than that and the window shows one colour and tells
+   * the player nothing about where to move.
+   */
+  zoom: 2,
+  /** The art the glass looks through, and its size. */
+  src: 128,
+  /** Pixels of that art shown, before magnification. */
+  srcW: 21,
+  srcH: 16,
+  /** The magnified view. */
+  viewW: 42,
+  viewH: 32,
+  /** The panel around it, including the callout band. */
+  w: 46,
+  h: 48,
+  /** Height of the callout band under the view. */
+  callout: 11,
+  /** Gap kept between the panel and the edge of the board. */
+  inset: 2,
+};
+
+/** A dart already in the board, in screen pixels, for the scope to redraw. */
+export interface ScopeDart {
+  x: number;
+  y: number;
+  flight: number;
+}
+
+/**
+ * Where the scope sits: whichever corner of the board is furthest from the
+ * point being aimed at, so it never covers the sights or the thumb on them.
+ */
+export function scopeRect(l: GameLayout, at: { x: number; y: number }): { x: number; y: number; w: number; h: number } {
+  const b = l.board;
+  const xs = [b.x + SCOPE.inset, b.x + b.w - SCOPE.inset - SCOPE.w];
+  const ys = [b.y + SCOPE.inset, b.y + b.h - SCOPE.inset - SCOPE.h];
+  let best = { x: xs[0], y: ys[0] };
+  let far = -1;
+  for (const x of xs) {
+    for (const y of ys) {
+      const cx = x + SCOPE.w / 2;
+      const cy = y + SCOPE.h / 2;
+      const d = (cx - at.x) * (cx - at.x) + (cy - at.y) * (cy - at.y);
+      if (d > far) {
+        far = d;
+        best = { x, y };
+      }
+    }
+  }
+  return { x: best.x, y: best.y, w: SCOPE.w, h: SCOPE.h };
+}
+
+/**
+ * Draw the scope. `boardSprite` is the board art itself, which is already a
+ * canvas of palette colours the same size as the board on screen, so the
+ * magnified view is an exact nearest-neighbour blit of it — no second render
+ * pass, no read-back, and nothing that can leave the sixteen colours.
+ */
+export function drawScope(
+  r: Renderer,
+  l: GameLayout,
+  t: Target,
+  darts: ScopeDart[],
+  phase: number,
+  opts: { chance?: number; sprite?: string } = {},
+): void {
+  const at = pointOf(l, t);
+  const box = scopeRect(l, at);
+  const vx = box.x + 2;
+  const vy = box.y + 2;
+  // The window is centred on the sights, in the art's own pixels: board-local
+  // coordinates scaled from the 96 the player sees to the 128 being read.
+  const k = SCOPE.src / l.board.w;
+  const sx = (at.x - l.board.x) * k - SCOPE.srcW / 2;
+  const sy = (at.y - l.board.y) * k - SCOPE.srcH / 2;
+
+  r.panel(box.x, box.y, box.w, box.h, P.INK, P.BRASS);
+  // The ground behind the view, for the part of the window that is off the
+  // board: a dart aimed at the very edge still gets a whole window.
+  r.rect(vx, vy, SCOPE.viewW, SCOPE.viewH, P.DEEP);
+  const name = opts.sprite && r.sprites.has(opts.sprite) ? opts.sprite : 'board_128';
+  if (r.sprites.has(name)) r.magnify(r.sprites.get(name).canvas, sx, sy, SCOPE.srcW, SCOPE.srcH, vx, vy, SCOPE.zoom);
+
+  // Darts already in the board, so the scope shows the same board the player
+  // is looking at rather than an empty copy of it.
+  for (const d of darts) {
+    const px = vx + ((d.x - l.board.x) * k - sx) * SCOPE.zoom;
+    const py = vy + ((d.y - l.board.y) * k - sy) * SCOPE.zoom;
+    if (px < vx - 3 || px > vx + SCOPE.viewW + 3 || py < vy - 3 || py > vy + SCOPE.viewH + 3) continue;
+    for (let i = 0; i < 3; i++) {
+      const qx = Math.round(px + i);
+      const qy = Math.round(py - i);
+      if (qx < vx || qx >= vx + SCOPE.viewW || qy < vy || qy >= vy + SCOPE.viewH) continue;
+      r.pixel(qx, qy, i === 0 ? P.CHALK : P.STONE);
+    }
+  }
+
+  // The sights, at the middle of the window, big enough to read at this size.
+  const cx = vx + Math.floor(SCOPE.viewW / 2);
+  const cy = vy + Math.floor(SCOPE.viewH / 2);
+  const blink = Math.sin(phase * 6) > -0.4;
+  const c = blink ? P.CHALK : P.BRASS_LIT;
+  // Shadowed, because the glass is often full of one colour and a pale
+  // crosshair on the claret of a double would be invisible.
+  for (const [dx, dy] of [
+    [0, 1],
+    [0, 0],
+  ] as const) {
+    const k = dy === 1 ? P.INK : c;
+    r.line(cx - 6 + dx, cy + dy, cx - 2 + dx, cy + dy, k);
+    r.line(cx + 2 + dx, cy + dy, cx + 6 + dx, cy + dy, k);
+    r.line(cx + dx, cy - 6 + dy, cx + dx, cy - 2 + dy, k);
+    r.line(cx + dx, cy + 2 + dy, cx + dx, cy + 6 + dy, k);
+  }
+  r.pixel(cx, cy + 1, P.INK);
+  r.pixel(cx, cy, P.EMBER);
+  r.rectOutline(vx, vy, SCOPE.viewW, SCOPE.viewH, P.SHADE);
+
+  // What the dart is worth, chalked in the corner of the glass.
+  const worth = `${baseValue(t)}`;
+  const ww = worth.length * 6;
+  r.rect(vx + 1, vy + 1, ww, 8, P.INK);
+  r.text(worth, vx + 2, vy + 2, { font: 5, color: P.BRASS_LIT });
+  if (opts.chance !== undefined) {
+    const pc = `${Math.round(opts.chance)}%`;
+    r.rect(vx + SCOPE.viewW - 1 - pc.length * 6, vy + 1, pc.length * 6, 8, P.INK);
+    r.text(pc, vx + SCOPE.viewW - 2, vy + 2, { font: 5, color: opts.chance >= 90 ? P.BAIZE_LIT : opts.chance >= 60 ? P.BRASS : P.EMBER, align: 'right' });
+  }
+
+  // The callout: the number, said out loud under the glass.
+  const label = targetNotation(t);
+  const cy2 = box.y + 3 + SCOPE.viewH;
+  r.text(label, box.x + Math.floor(box.w / 2), cy2, { font: 9, color: P.CHALK, align: 'center', shadow: P.INK });
 }

@@ -11,13 +11,18 @@
  * purpose — one wants a hundred, one wants three darts in the same bed, one
  * wants nothing under fifteen — so "where do I aim" stops answering itself.
  *
- * After every dart a live contract can be:
- *   PULL   — take the stake back plus one Pot per dart it survived, and walk.
- *   BANK   — a contract already MADE pays its printed price now, safely.
- *   PRESS  — a contract already MADE is torn up and rewritten as its harder
- *            tier at double stake. Make the harder one by the end of the visit
- *            or lose the lot. This is the whole push-your-luck beat.
- *   (leave it) — it settles on its own when the visit ends.
+ * The offer stays open until there are two darts left, at a price that
+ * lengthens with the darts already gone, so what happens on the board can
+ * still be wagered on. After every dart:
+ *   SETTLE — take the money on a contract still going, for a share of what it
+ *            would pay that grows with every dart it has survived.
+ *   PRESS  — a contract that has landed and been paid puts the winnings back
+ *            up on its harder tier at double stake. Make the harder one by the
+ *            end of the visit or lose that stake. This is the push-your-luck
+ *            beat, and it is the only one where the money is already yours.
+ *   (leave it) — a contract pays the instant it lands, and anything still
+ *            going when the visit ends, busts, or takes a dart in the wall is
+ *            lost.
  *
  * Nothing here is hidden. Prices are printed, conditions are printed, the
  * landing odds are drawn on the board, and a contract that pays back less than
@@ -50,7 +55,11 @@ export type ContractStatus = 'LIVE' | 'MADE' | 'DEAD';
 
 export interface ContractDef {
   id: string;
-  /** Chalked on the board. Nine characters at most: the slate strip is narrow. */
+  /**
+   * Chalked on the board. Eight characters at most, because the narrowest
+   * place it is printed is a fifty-five pixel card on a portrait phone and a
+   * name that has to be cut short is a name the player cannot read back.
+   */
   name: string;
   /** One line under the name. Keep to 30 characters: the slate strip is narrow. */
   blurb: string;
@@ -87,7 +96,7 @@ function gate(done: boolean, possible: boolean): ContractStatus {
  *
  * The invariant is checked at every step, so the moment it breaks the contract
  * is DEAD and stays dead — an earlier version consulted it only while darts
- * remained and then asked a different question at the end, which let NO SCRAPS
+ * remained and then asked a different question at the end, which let 15 UP
  * die on the first dart and come back to life on the third. Writing conditions
  * as "this must be true of every dart so far" makes that impossible, and it
  * means a contract can say "every dart" and mean it however many darts the
@@ -106,7 +115,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'ton',
     name: 'A TON',
-    blurb: 'A hundred or more.',
+    blurb: '100 or more.',
     stake: 2,
     price: 4,
     pressTo: 'fish',
@@ -117,7 +126,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'fish',
     name: 'THE FISH',
-    blurb: 'A hundred and forty.',
+    blurb: '140 or more.',
     stake: 4,
     price: 10,
     pressTo: 'maximum',
@@ -128,7 +137,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'maximum',
     name: 'MAXIMUM',
-    blurb: 'One hundred and eighty.',
+    blurb: '180. The lot.',
     stake: 8,
     price: 44,
     weight: 0,
@@ -150,7 +159,7 @@ export const CONTRACTS: ContractDef[] = [
   },
   {
     id: 'two_trebles',
-    name: '2 TREBLES',
+    name: 'A PAIR',
     blurb: 'Two trebles.',
     stake: 4,
     price: 7,
@@ -161,7 +170,7 @@ export const CONTRACTS: ContractDef[] = [
   },
   {
     id: 'three_trebles',
-    name: 'ALL THREE',
+    name: 'A TRIO',
     blurb: 'Three trebles.',
     stake: 8,
     price: 32,
@@ -182,7 +191,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'in_a_bed',
     name: 'IN A BED',
-    blurb: 'Three darts, one number.',
+    blurb: 'All darts, one bed.',
     stake: 3,
     price: 15,
     weight: 7,
@@ -197,7 +206,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'shanghai',
     name: 'SHANGHAI',
-    blurb: 'S, D and T of one number.',
+    blurb: 'One bed, all three.',
     stake: 4,
     price: 38,
     weight: 3,
@@ -215,29 +224,36 @@ export const CONTRACTS: ContractDef[] = [
   // --- RESTRAINT: these are why a safe single is worth aiming at.
   {
     id: 'nothing_cheap',
-    name: 'NO SCRAPS',
-    blurb: 'Every dart fifteen up.',
+    name: '15 UP',
+    blurb: 'No dart under 15.',
     stake: 2,
     price: 9,
-    pressTo: 'nothing_cheaper',
+    // No pressTo. A contract judged at the end of the visit can only ever
+    // reach MADE with no darts left, and a press needs darts to make the
+    // harder one in — so the button was advertised and could never appear.
+    // Nothing in this game may print an offer it cannot honour (§6).
     weight: 11,
     pull: 'RESTRAINT',
     check: (v) => atEnd(v, v.values.every((x) => x >= 15)),
   },
   {
     id: 'nothing_cheaper',
-    name: 'TWENTY UP',
-    blurb: 'Every dart twenty up.',
+    name: '20 UP',
+    blurb: 'No dart under 20.',
     stake: 4,
     price: 15,
-    weight: 0,
+    // Offered in its own right, now that nothing presses into it. It used to be
+    // the pressed tier of 15 UP, which could never happen: a contract judged at
+    // the end of the visit only ever reaches MADE with no darts left, and a
+    // press needs darts to make the harder one in.
+    weight: 5,
     pull: 'RESTRAINT',
     check: (v) => atEnd(v, v.values.every((x) => x >= 20)),
   },
   {
     id: 'quiet_one',
-    name: 'THE QUIET',
-    blurb: 'Score, but under 25.',
+    name: 'QUIET',
+    blurb: 'Score under 25.',
     stake: 2,
     price: 14,
     weight: 9,
@@ -250,7 +266,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'clean_hands',
     name: 'CLEAN',
-    blurb: 'Three on the board, no bust.',
+    blurb: 'All on, no bust.',
     stake: 2,
     price: 6,
     weight: 9,
@@ -261,7 +277,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'plain_numbers',
     name: 'SINGLES',
-    blurb: 'Every dart in a single.',
+    blurb: 'Singles only.',
     stake: 2,
     price: 8,
     weight: 10,
@@ -270,8 +286,8 @@ export const CONTRACTS: ContractDef[] = [
   },
   {
     id: 'cheap_seats',
-    name: 'CHEAP END',
-    blurb: 'Every dart on a ten or under.',
+    name: 'CHEAP',
+    blurb: 'Every dart 10 or less.',
     stake: 2,
     price: 13,
     weight: 8,
@@ -280,8 +296,8 @@ export const CONTRACTS: ContractDef[] = [
   },
   {
     id: 'two_doubles',
-    name: '2 DOUBLES',
-    blurb: 'Two doubles in one visit.',
+    name: 'TWO OUTS',
+    blurb: 'Two doubles.',
     stake: 3,
     price: 15,
     weight: 7,
@@ -292,7 +308,7 @@ export const CONTRACTS: ContractDef[] = [
   // --- FINISH: these only matter down at the business end of a leg.
   {
     id: 'game_shot',
-    name: 'GAME SHOT',
+    name: 'THE SHOT',
     blurb: 'Win the leg this visit.',
     stake: 3,
     price: 10,
@@ -305,8 +321,8 @@ export const CONTRACTS: ContractDef[] = [
   },
   {
     id: 'left_pretty',
-    name: 'LEFT NICE',
-    blurb: 'End on an even under 41.',
+    name: 'A LEAVE',
+    blurb: 'Even leave, 40 max.',
     stake: 2,
     price: 7,
     weight: 9,
@@ -323,8 +339,8 @@ export const CONTRACTS: ContractDef[] = [
   // --- SHAPE: pure aiming puzzles. These are the ones that make a visit odd.
   {
     id: 'ladder_up',
-    name: 'LADDER UP',
-    blurb: 'Each dart beats the last.',
+    name: 'LADDER',
+    blurb: 'Each dart bigger.',
     stake: 3,
     price: 12,
     weight: 9,
@@ -339,7 +355,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'ladder_down',
     name: 'DOWNHILL',
-    blurb: 'Each dart under the last.',
+    blurb: 'Each dart smaller.',
     stake: 3,
     price: 12,
     weight: 9,
@@ -354,7 +370,7 @@ export const CONTRACTS: ContractDef[] = [
   {
     id: 'odd_job',
     name: 'ODD JOB',
-    blurb: 'Every dart an odd number.',
+    blurb: 'Every dart odd.',
     stake: 2,
     price: 11,
     weight: 9,
@@ -363,8 +379,8 @@ export const CONTRACTS: ContractDef[] = [
   },
   {
     id: 'three_ways',
-    name: 'ALL RINGS',
-    blurb: 'A single, double and treble.',
+    name: 'ONE EACH',
+    blurb: 'Single, double, treble.',
     stake: 3,
     price: 12,
     weight: 9,
@@ -393,7 +409,7 @@ export function contractDef(id: string): ContractDef {
  * The arithmetic: three darts at the treble twenty average about a hundred, and
  * three safe singles about sixty, so a contract that asks you to play safe has
  * to be worth roughly forty points of score, which at `POT_IN_POINTS` is four
- * Pot — before the chance of missing it. That is why NO SCRAPS pays eight
+ * Pot — before the chance of missing it. That is why 15 UP pays eight
  * rather than the three it was first printed at, and why every contract that
  * pulls AWAY from the treble twenty is dear while the two that agree with it
  * (A TON, A TREBLE) stay cheap. `npm run decisions` measures whether it
@@ -414,19 +430,59 @@ export function priceOf(def: ContractDef, timesPaid: number): number {
   return Math.max(PRICE_FLOOR, def.price - Math.max(0, timesPaid));
 }
 
-/** Pot returned by a PULL: half the stake, rounded down. The rest is the price of having taken it. */
+/** Pot returned by a PULL: half the stake, rounded down. The floor under SETTLE. */
 export function pullValue(stake: number, share: number): number {
   return Math.floor(stake * share);
 }
 
 /**
- * Pot returned by a contract that landed and was left to settle on its own:
- * the stake, the price, and the carry it earned for every dart it survived
- * after landing. Banking pays the same without the carry, which is the whole
- * choice — certainty costs you the carry.
+ * SETTLE — what a contract still riding is worth if you take the money now.
+ *
+ * This is the verb the fourth playtest was missing. Before it, the money on
+ * the slate did nothing between darts: a contract paid itself the instant it
+ * landed, and the only thing you could do to one still going was give up on it
+ * for half your stake, which is not a decision anybody makes twice. So the
+ * visit had exactly one moment with money in it — the purchase, before the
+ * first dart — and then three darts of watching.
+ *
+ * Now a live contract is worth something that grows with every dart it
+ * survives, and that number is on the card, moving. Riding it out pays the
+ * lot; settling pays a share of it, now, for certain. The share is deliberately
+ * under the fair price — a contract two darts into three is worth roughly two
+ * thirds of its own odds and settles for sixty percent of that — so settling
+ * everything is never free money, and neither is riding everything, because a
+ * dart in the wall takes the lot. That gap is where the decision lives.
+ *
+ * It never pays less than a PULL used to, so the old escape hatch is intact
+ * underneath it.
  */
-export function settleValue(stake: number, price: number, carry: number): number {
-  return stake + price + Math.max(0, carry);
+export const SETTLE_SHARE = 0.6;
+/** Short Price: the house settles at a better share. */
+export const SETTLE_SHARE_SHORT = 0.8;
+
+export function settleNow(stake: number, price: number, survived: number, window: number, share = SETTLE_SHARE, floor = 0.5): number {
+  const along = window > 0 ? Math.max(0, Math.min(1, survived / window)) : 0;
+  return Math.max(Math.floor(stake * floor), Math.floor((stake + price) * along * share));
+}
+
+/**
+ * The premium on a contract taken after the visit has started.
+ *
+ * The offer used to close the moment the first dart left the hand, which meant
+ * every wager on the slate was made blind and nothing that happened on the
+ * board could be wagered on. It stays open now, but the house prices on the
+ * darts left rather than on how the visit is going: fewer darts is a harder
+ * contract, so it pays more. Reading whether the visit has gone well enough to
+ * make a standing price generous is the player's edge, and it is the reason to
+ * keep looking at the slate after the first dart.
+ *
+ * It closes with two darts to go, so nobody can wait until they are on a
+ * double they were going to throw anyway and take the money for it.
+ */
+export const LATE_PREMIUM = 0.5;
+
+export function latePrice(price: number, thrown: number): number {
+  return Math.round(price * (1 + LATE_PREMIUM * Math.max(0, thrown)));
 }
 
 /** A pressed contract costs double and pays the harder tier's price. */

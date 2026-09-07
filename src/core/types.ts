@@ -317,6 +317,13 @@ export type EngineEvent =
   | { type: 'CONTRACT_TAKEN'; contract: TakenContract }
   | { type: 'CONTRACT_SETTLED'; contract: TakenContract }
   | { type: 'CONTRACT_PRESSED'; contract: TakenContract; from: string }
+  /**
+   * A contract that has just become impossible. It is not settled yet — a dead
+   * contract still sits on the slate until the visit ends — but the dart that
+   * killed it is the moment the player needs to be told, not four seconds
+   * later in a batch with everything else.
+   */
+  | { type: 'CONTRACT_DEAD'; contract: TakenContract }
   | { type: 'KIT_SPENT'; defId: string }
   | { type: 'THROW'; result: ThrowResult }
   | { type: 'VISIT_END'; visit: VisitState; total: number; busted: boolean; missed: boolean; heat: number }

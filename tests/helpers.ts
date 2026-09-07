@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { chalkDef } from '../src/content/chalkdefs.ts';
 import { ALL_TARGETS, baseValue, parseTarget, targetDefId, targetNotation } from '../src/core/board.ts';
 import { computeCheckoutHints } from '../src/core/checkout.ts';
-import { resolveThrow, rollLanding } from '../src/core/resolver.ts';
+import { resolveThrow, throwOnMeter } from '../src/core/resolver.ts';
 import { createRng, nextFloat } from '../src/core/rng.ts';
 import { contractDef } from '../src/core/slate.ts';
 import {
@@ -135,8 +135,11 @@ export function deflectingRng(): Rng {
 
 /** A seeded RNG whose next aim roll at `t` puts the dart in the wall. */
 export function wallRng(t: TargetLike, steadiness = 0): Rng {
-  for (let s = 1; s < 100000; s++) {
-    if (rollLanding(target(t), steadiness, createRng(s)).target.region === 'W') return createRng(s);
+  // The dart is thrown on the meter now, so the seed has to be one that puts
+  // an ordinary hand's stop right at the top of the scale — which is where the
+  // wall lives.
+  for (let s = 1; s < 1000000; s++) {
+    if (throwOnMeter(target(t), steadiness, createRng(s), undefined).target.region === 'W') return createRng(s);
   }
   throw new Error('no wall seed found');
 }
@@ -295,7 +298,7 @@ export function checkVisit(
 export type ScriptStep =
   | { kind: 'TAKE'; defId: string }
   | { kind: 'RUBOUT' }
-  | { kind: 'THROW'; target: Target; use?: string }
+  | { kind: 'THROW'; target: Target; use?: string; stop?: number }
   | { kind: 'MISS' }
   | { kind: 'PRESS'; index: number }
   | { kind: 'PULL'; index: number }
@@ -311,7 +314,7 @@ export function applyStep(n: NightState, s: ScriptStep): void {
       useRubOut(n);
       break;
     case 'THROW':
-      commitThrow(n, s.target, s.use ? { use: s.use } : {});
+      commitThrow(n, s.target, { ...(s.use ? { use: s.use } : {}), ...(s.stop !== undefined ? { stop: s.stop } : {}) });
       break;
     case 'MISS':
       commitMiss(n);
@@ -488,6 +491,8 @@ export function botShopDeep(n: NightState, log?: ScriptStep[]): void {
 }
 
 export interface DriveOpts {
+  /** Meter stops to play, cycled. Leave out and every dart is thrown by an ordinary hand. */
+  stops?: number[];
   /** Stop before the step that would make this true. */
   stopWhen?: (n: NightState) => boolean;
   /** The greedier bot: presses contracts, spends the kit, buys chalk. */
@@ -501,16 +506,21 @@ export interface DriveOpts {
  * scripted bot: take contracts, throw, press what it can, repeat.
  */
 export function continueScripted(n: NightState, opts: DriveOpts = {}): NightState {
-  const { stopWhen, deep = false, log } = opts;
+  const { stopWhen, deep = false, log, stops } = opts;
   let guard = 0;
+  let dart = 0;
   while (n.status === 'ACTIVE' && guard++ < 20000) {
     if (stopWhen && stopWhen(n)) break;
     if (n.phase === 'LEG') {
       const leg = currentLeg(n);
       botTakeContracts(n, leg, log);
       const t = botTarget(n, leg);
+      // A thumb, when one is asked for: a fixed sequence of meter stops, so a
+      // night played by a player rather than by an ordinary hand still has to
+      // replay byte for byte from what was written down.
+      const stop = stops ? stops[dart++ % stops.length] : undefined;
       if (!t) step(n, { kind: 'MISS' }, log);
-      else step(n, { kind: 'THROW', target: t, use: deep ? botUse(n, t) : undefined }, log);
+      else step(n, { kind: 'THROW', target: t, use: deep ? botUse(n, t) : undefined, ...(stop !== undefined ? { stop } : {}) }, log);
       if (n.phase === 'LEG' && currentLeg(n).status === 'ACTIVE') botSettleSlate(n, currentLeg(n), deep, log);
     } else if (n.phase === 'SHOP') {
       if (deep) botShopDeep(n, log);

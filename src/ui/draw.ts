@@ -177,6 +177,40 @@ export class Renderer {
     this.ctx.drawImage(c, frame * fw, 0, fw, fh, Math.round(x + this.ox), Math.round(y + this.oy), fw, fh);
   }
 
+  /**
+   * Blit a rectangle of a canvas magnified by an integer factor, nearest
+   * neighbour, clipped to the source. This is what the aiming magnifier is
+   * made of: the board art is already a canvas of palette colours, so a
+   * scaled `drawImage` off it is exact — every destination pixel is one
+   * source pixel repeated, and nothing leaves the sixteen colours.
+   *
+   * A source rectangle that hangs off the edge of the canvas is trimmed and
+   * the destination moved to match, so the caller can centre the window on
+   * any point without arithmetic of its own.
+   */
+  magnify(c: HTMLCanvasElement, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, scale: number): void {
+    let x0 = Math.round(sx);
+    let y0 = Math.round(sy);
+    let w = Math.round(sw);
+    let h = Math.round(sh);
+    let ddx = Math.round(dx + this.ox);
+    let ddy = Math.round(dy + this.oy);
+    if (x0 < 0) {
+      ddx += -x0 * scale;
+      w += x0;
+      x0 = 0;
+    }
+    if (y0 < 0) {
+      ddy += -y0 * scale;
+      h += y0;
+      y0 = 0;
+    }
+    w = Math.min(w, c.width - x0);
+    h = Math.min(h, c.height - y0);
+    if (w <= 0 || h <= 0) return;
+    this.ctx.drawImage(c, x0, y0, w, h, ddx, ddy, w * scale, h * scale);
+  }
+
   /** Draw a sprite frame scaled by an integer factor. */
   spriteScaled(name: string, x: number, y: number, scale: number, frame = 0): void {
     if (!this.sprites.has(name)) return this.fallback(name, x, y, 8 * scale, 8 * scale);

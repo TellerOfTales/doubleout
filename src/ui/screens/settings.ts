@@ -52,6 +52,8 @@ export class SettingsScreen implements Scene {
       { id: 'volume', label: `VOLUME: ${Math.round(s.volume * 10)}`, onPress: () => { s.volume = s.volume >= 0.99 ? 0.1 : Math.min(1, s.volume + 0.1); } },
       { id: 'hint', label: `CHECKOUT HINT: ${s.checkoutHint ? 'ON' : 'OFF'}`, onPress: () => { s.checkoutHint = !s.checkoutHint; } },
       { id: 'tap', label: `TAP TO THROW: ${s.tapToThrow ? 'ON' : 'OFF'}`, onPress: () => { s.tapToThrow = !s.tapToThrow; } },
+      { id: 'scope', label: `AIM MAGNIFIER: ${s.scope ? 'ON' : 'OFF'}`, onPress: () => { s.scope = !s.scope; } },
+      { id: 'meter', label: `TIMED THROW: ${s.meter ? 'ON' : 'OFF'}`, onPress: () => { s.meter = !s.meter; } },
       { id: 'shake', label: `SCREEN SHAKE: ${s.screenShake ? 'ON' : 'OFF'}`, onPress: () => { s.screenShake = !s.screenShake; } },
       { id: 'flash', label: `FLASHES: ${s.flashes ? 'ON' : 'OFF'}`, onPress: () => { s.flashes = !s.flashes; } },
       { id: 'orient', label: `SCREEN: ${['AUTO', 'LANDSCAPE', 'PORTRAIT'][s.orientation]}`, onPress: () => { s.orientation = ((s.orientation + 1) % 3) as 0 | 1 | 2; } },

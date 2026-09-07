@@ -29,9 +29,9 @@ export const CHALK_DEFS: ChalkDef[] = [
   { id: 'overshoot', name: 'Overshoot', stage: 'RULE', cost: 12, blurb: 'A finishing double may go 1 or 2 below zero and still count.' },
   { id: 'chalk_dust', name: 'Chalk Dust', stage: 'RULE', cost: 4, blurb: 'Landing on 1 is legal. It is treated as 2.' },
   // ---- RULE (the slate) ----
-  { id: 'short_price', name: 'Short Price', stage: 'RULE', cost: 5, blurb: 'Pulling a contract pays 3 a dart instead of 1.' },
+  { id: 'short_price', name: 'Short Price', stage: 'RULE', cost: 5, blurb: 'Settling a contract pays four fifths, not three.' },
   { id: 'long_prices', name: 'Long Prices', stage: 'RULE', cost: 9, blurb: 'Every contract on the slate is printed at +2.' },
-  { id: 'on_tick', name: 'On Tick', stage: 'RULE', cost: 7, blurb: 'Pulling out of a contract returns the whole stake.' },
+  { id: 'on_tick', name: 'On Tick', stage: 'RULE', cost: 7, blurb: 'Settling never pays less than the whole stake back.' },
   // ---- DEAL ----
   { id: 'wide_grip', name: 'Wide Grip', stage: 'DEAL', cost: 8, blurb: 'One extra contract chalked up every visit.' },
   { id: 'tunnel_vision', name: 'Tunnel Vision', stage: 'DEAL', cost: 6, blurb: 'One contract fewer, but every throw scores +20%.' },

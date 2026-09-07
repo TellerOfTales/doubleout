@@ -15,10 +15,10 @@ import { INTERVENTIONS, interventionDef } from '../../content/interventions';
 import { OCHE_BY_ID } from '../../content/oches';
 import { baseValue, sameTarget, targetNotation } from '../../core/board';
 import { computeCheckoutHints, routeNotation, type CheckoutHints } from '../../core/checkout';
-import { HEAT_CAP, LEGS, PULL_RETURN, streakMultiplier } from '../../content/legs';
+import { HEAT_CAP, LEGS, streakMultiplier } from '../../content/legs';
 import { buildBarkContext } from '../../core/commentary';
 import { contractDef } from '../../core/slate';
-import { hitChance, resolveThrow, spreadFor, type Landing } from '../../core/resolver';
+import { hitChance, meterFor, resolveThrow, spreadFor, type Landing } from '../../core/resolver';
 import {
   commitMiss,
   commitThrow,
@@ -28,8 +28,11 @@ import {
   pressable,
   kitCount,
   legName,
+  offerOpen,
+  offerPrice,
   pressContract,
   pullContract,
+  settleWorth,
   slateSize,
   steadinessOf,
   takeContract,
@@ -40,7 +43,9 @@ import {
 } from '../../core/state';
 import type { EngineEvent, LegState, NightState, Target, ThrowResult } from '../../core/types';
 import type { App } from '../app';
-import { aimLabel, drawAimMark, drawFan, pointOf, stepBed, stepRing, targetAt } from '../aim';
+import { aimLabel, drawAimMark, drawFan, drawScope, pointOf, stepBed, stepRing, targetAt } from '../aim';
+import { drawMeter } from '../meter';
+import { SWEEP, isSweet, markerAt, type MeterBand } from '../../core/meter';
 import { BoardView } from '../boardview';
 import { CommentaryBar } from '../commentarybar';
 import type { Renderer } from '../draw';
@@ -157,6 +162,19 @@ export class GameScreen implements Scene {
   private dragging = false;
   /** Seconds the screen has been locked with nothing happening. See `update`. */
   private stuckFor = 0;
+  /**
+   * THE METER. The marker never stops: the tap that throws the dart is the tap
+   * that reads it, so there is no second button and no mode to be in. `scale`
+   * is rebuilt whenever the aim or the kit changes.
+   */
+  meterScale: MeterBand[] = [];
+  /** Where the marker sits right now, 0 at the bottom of the column. */
+  marker = 0.5;
+  /** Where the last dart was released, left on the column until the next call. */
+  private heldStop: number | null = null;
+  private heldSweet = false;
+  private meterFlash = new Pulse();
+  private lastTick = -1;
   /** Slate slots with nothing in them, drawn as empties so the row keeps its shape. */
   private emptySlots: Rect[] = [];
 
@@ -167,6 +185,15 @@ export class GameScreen implements Scene {
   private legBanner: { text: string; sub: string; t: number } | null = null;
   private checkoutPanelT = 0;
   private scoreBump = new Pulse();
+  /**
+   * The Pot, tweened. It was raw text straight from state, which meant the
+   * number the entire wager system moves was the only number on the screen
+   * that never moved. Money has to be seen arriving.
+   */
+  private potCount: Counter;
+  private potBump = new Pulse();
+  /** +1 while the Pot is climbing, -1 while it is falling, 0 at rest. */
+  private potWay = 0;
 
   constructor(
     public app: App,
@@ -177,6 +204,11 @@ export class GameScreen implements Scene {
     this.board = new BoardView(this.layout);
     this.score = new Counter(this.night ? currentLeg(this.night).score : 501);
     this.score.onTick = () => app.sfx('tick', { volume: 0.35, pitch: 1 + rndRange(-0.05, 0.05) });
+    this.potCount = new Counter(this.night ? this.night.pot : 0);
+    // One coin per Pot, counted out. The pitch climbs as it goes in and falls
+    // as it goes out, so the ear knows which way the money went before the eye.
+    this.potCount.onTick = (v) =>
+      app.sfx('pot', { volume: 0.3, pitch: this.potWay < 0 ? 1.5 - Math.min(0.5, v * 0.02) : 1.1 + Math.min(0.7, v * 0.03) });
     this.bar.blip = (s, ch) => (app.save.data.settings.voice ? app.audio.blip(s, ch) : s === 'BARREL' ? 18 : 34);
   }
 
@@ -189,11 +221,15 @@ export class GameScreen implements Scene {
   }
 
   /** True before the first dart of a visit, when contracts may still be taken. */
+  /**
+   * Is the offer still open? It used to close the instant the first dart left
+   * the hand, which put every money decision of the visit before any of the
+   * darts. It now closes with two darts to go.
+   */
   get takingPhase(): boolean {
     const leg = this.leg;
     if (!leg || leg.status !== 'ACTIVE') return false;
-    const v = currentVisit(leg);
-    return !!v && v.throws.length === 0;
+    return offerOpen(this.night, leg);
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -335,6 +371,10 @@ export class GameScreen implements Scene {
       wall: Math.round(wall * 100),
       dist,
     };
+    // The column beside the board is rebuilt with the preview, because it is
+    // the same information said a second way: every band on it is exactly as
+    // tall as its own chance.
+    this.meterScale = this.night.trueAim ? [] : meterFor(this.aim, steady, use, this.night.chalk);
   }
 
   /** The line under the board: what this dart is for. */
@@ -415,14 +455,20 @@ export class GameScreen implements Scene {
     }
     const riding = leg.slate.filter((c) => !c.settled);
     const showOffer = this.takingPhase;
-    // The strip keeps a fixed number of slots all visit. During the throwing
-    // phase the gaps left by settled contracts show what they did instead of
-    // going blank, so the row reads as a ledger rather than emptying out.
+    // The strip keeps a fixed number of slots all visit, and everything that
+    // still carries a decision comes first. The offer stays up mid-visit now,
+    // so it has to share the row with contracts already riding and with any
+    // that have paid and can still be pressed — that press is the most
+    // valuable button on the screen and must never be crowded off it.
     const slots = slateSize(this.night);
     type Item = { taken?: (typeof riding)[number]; offer?: string; done?: (typeof riding)[number] };
+    const paid = leg.slate.filter((c) => c.settled);
     const items: Item[] = riding.map((c) => ({ taken: c }));
+    for (const c of paid) if (pressable(this.night, leg, c)) items.push({ done: c });
     if (showOffer) for (const id of leg.offer) items.push({ offer: id });
-    else for (const c of leg.slate) if (c.settled) items.push({ done: c });
+    // Whatever is left of the row becomes the visit's ledger: what the
+    // contracts already settled this visit did, rather than a blank.
+    for (const c of paid) if (!pressable(this.night, leg, c)) items.push({ done: c });
     const rects = slateSlots(l, Math.max(slots, Math.min(slots + 1, items.length)));
     for (let i = 0; i < rects.length; i++) {
       const rect = rects[i];
@@ -433,8 +479,11 @@ export class GameScreen implements Scene {
       }
       if (it.offer) {
         const def = contractDef(it.offer);
-        const price = currentPrice(this.night, it.offer);
+        const price = offerPrice(this.night, it.offer);
         const poor = this.night.pot < def.stake;
+        // Mid-visit only a contract still genuinely open can be taken, and the
+        // price has lengthened because there are fewer darts to do it in.
+        const settled = currentVisit(leg).throws.length > 0 && def.check(visitProgress(this.night, leg)) !== 'LIVE';
         cards.push({
           defId: it.offer,
           rect,
@@ -443,9 +492,9 @@ export class GameScreen implements Scene {
           stake: def.stake,
           price,
           status: 'LIVE',
-          unaffordable: poor,
+          unaffordable: poor || settled,
           prices: { leftLabel: '', left: def.stake, rightLabel: 'PAYS ', right: price },
-          verbs: layoutVerbs(rect, [{ id: 'TAKE', label: 'TAKE', disabled: poor || this.locked || !this.verbAllowed('TAKE') }]),
+          verbs: layoutVerbs(rect, [{ id: 'TAKE', label: 'TAKE', disabled: poor || settled || this.locked || !this.verbAllowed('TAKE') }]),
         });
         continue;
       }
@@ -474,9 +523,11 @@ export class GameScreen implements Scene {
       const c = it.taken as (typeof riding)[number];
       const index = leg.slate.indexOf(c);
       const dead = c.status === 'DEAD';
-      const verbs = showOffer
-        ? []
-        : layoutVerbs(rect, [...(!dead ? [{ id: 'PULL' as SlateVerbId, label: 'PULL', disabled: this.locked || !this.verbAllowed('PULL') }] : [])]);
+      const verbs = layoutVerbs(rect, [
+        ...(!dead && currentVisit(leg).throws.length > c.takenAt
+          ? [{ id: 'PULL' as SlateVerbId, label: 'SETTLE', disabled: this.locked || !this.verbAllowed('PULL') }]
+          : []),
+      ]);
       cards.push({
         defId: c.defId,
         rect,
@@ -486,12 +537,25 @@ export class GameScreen implements Scene {
         price: c.price,
         status: c.status,
         unaffordable: false,
-        // What getting out now pays, against what landing it would pay.
-        prices: { leftLabel: 'OUT ', left: this.pullWorth(c), rightLabel: '', right: c.stake + c.price },
+        // What the money is worth now, against what landing it would pay. Both
+        // numbers move as the darts go, which is the whole point of them.
+        prices: { leftLabel: 'NOW ', left: this.pullWorth(c), rightLabel: 'ALL ', right: c.stake + c.price },
         verbs,
       });
     }
     this.slate.cards = cards;
+  }
+
+  /**
+   * Chalked Up: what is coming up next visit, chalked in the corner of the
+   * strip. The engine has always rolled it — `leg.nextOffer` — and until now
+   * nothing drew it, so a four-Pot chalk did nothing whatsoever.
+   */
+  private nextUp(): void {
+    const leg = this.leg;
+    if (!leg || !leg.nextOffer.length) return;
+    const names = leg.nextOffer.map((id) => contractDef(id).name).join(', ');
+    this.readout = `${this.readout ? `${this.readout} · ` : ''}NEXT UP: ${names}`;
   }
 
   private verbAllowed(v: SlateVerbId): boolean {
@@ -500,7 +564,7 @@ export class GameScreen implements Scene {
   }
 
   private pullWorth(c: LegState['slate'][number]): number {
-    return Math.floor(c.stake * PULL_RETURN);
+    return settleWorth(this.night, this.leg, c);
   }
 
   // ---------------------------------------------------------------- the slate
@@ -529,7 +593,7 @@ export class GameScreen implements Scene {
     if (verb === 'TAKE') {
       this.app.sfx('card_flip');
       this.slate.taken.fire(0.4);
-      this.float(`-${def.stake}`, mid.x, mid.y, P.MIST, 1, 0.9);
+      this.float(`-${def.stake}`, mid.x, mid.y, P.CLARET_LIT, 1, 0.9);
       this.readout = `${def.name} TAKEN FOR ${def.stake}. IT PAYS ${card.price}.`;
       this.readoutColor = P.CHALK;
     } else if (verb === 'PRESS') {
@@ -541,12 +605,17 @@ export class GameScreen implements Scene {
       this.readout = `PRESSED INTO ${nd.name}. ${now.stake} ON IT NOW, PAYING ${now.price}.`;
       this.readoutColor = P.EMBER;
     } else {
+      // Taking the money. It is a win, so it sounds and looks like one — the
+      // one moment in the visit where the player decides to be paid.
       const settled = this.leg.ledger[this.leg.ledger.length - 1];
       const pot = settled?.settled?.pot ?? 0;
-      this.app.sfx('pot');
-      this.float(`+${pot}`, mid.x, mid.y, P.MIST, 1, 1.2);
-      this.readout = `PULLED OUT OF ${def.name} FOR ${pot}. HALF BACK IS BETTER THAN NONE.`;
-      this.readoutColor = P.MIST;
+      const up = pot - card.stake;
+      this.slate.paid.fire(0.6);
+      this.app.sfx('pot', { volume: 0.36, pitch: 1.25 });
+      this.app.audio.crowdRoar(0.28);
+      this.float(`+${pot}`, mid.x, mid.y, up > 0 ? P.BRASS_LIT : P.MIST, 1, 1.2);
+      this.readout = up > 0 ? `SETTLED ${def.name} FOR ${pot}. ${up} UP, AND SAFE.` : `SETTLED ${def.name} FOR ${pot}. OUT WITH MOST OF IT.`;
+      this.readoutColor = up > 0 ? P.BRASS_LIT : P.MIST;
     }
     for (const e of out.events) this.bark(e);
     this.refresh();
@@ -650,6 +719,37 @@ export class GameScreen implements Scene {
    */
   forceLanding: Target | null = null;
 
+  /**
+   * Everything on the slate that a bust, or a dart off the board, would take:
+   * the stakes still riding plus what they would have paid. This is the figure
+   * a wager is actually about, and until now it was nowhere on the screen.
+   */
+  atRisk(): number {
+    const leg = this.night?.legs?.[this.night.legIndex];
+    if (!leg || leg.status !== 'ACTIVE') return 0;
+    let n = 0;
+    for (const c of leg.slate) {
+      if (c.settled || c.status === 'DEAD') continue;
+      n += c.stake + c.price;
+    }
+    return n;
+  }
+
+  /** Is the meter running? Only when a dart is actually waiting to be thrown. */
+  get meterLive(): boolean {
+    return (
+      !!this.night &&
+      !this.busy &&
+      !this.locked &&
+      !this.dart &&
+      this.overlay === 'none' &&
+      this.night.phase === 'LEG' &&
+      this.leg?.status === 'ACTIVE' &&
+      !this.night.trueAim &&
+      this.meterScale.length > 0
+    );
+  }
+
   /** Commit the dart at the current aim. */
   throwDart(): void {
     if (this.busy || this.locked || this.leg.status !== 'ACTIVE') return;
@@ -664,9 +764,26 @@ export class GameScreen implements Scene {
     this.app.input.touchActivity();
     this.idleBarked = false;
     const armed = this.armed;
+    // The release. Where the marker is at this instant IS the throw, so it is
+    // read here and nowhere else — one tap, no second button, no mode.
+    const live = this.app.save.data.settings.meter && this.meterScale.length > 0;
+    // The tutorial scripts where its darts land, so the meter cannot decide
+    // those — but the marker is still left where the player stopped it, so the
+    // column tells the truth about the tap even in a lesson.
+    const stop = live && !this.forceLanding ? this.marker : null;
+    this.heldStop = live ? this.marker : null;
+    this.heldSweet = this.heldStop !== null && isSweet(this.heldStop);
+    if (this.heldSweet) {
+      this.meterFlash.fire(0.5);
+      this.app.sfx('wire', { volume: 0.4 });
+    }
     let out: { result: ThrowResult; events: EngineEvent[] };
     try {
-      out = commitThrow(this.night, this.aim, { ...(armed ? { use: armed } : {}), ...(this.forceLanding ? { forceLanding: this.forceLanding } : {}) });
+      out = commitThrow(this.night, this.aim, {
+        ...(armed ? { use: armed } : {}),
+        ...(this.forceLanding ? { forceLanding: this.forceLanding } : {}),
+        ...(stop !== null ? { stop } : {}),
+      });
     } catch (e) {
       console.error(e);
       this.busy = false;
@@ -855,9 +972,19 @@ export class GameScreen implements Scene {
         const profit = s.pot - c.stake;
         const spot = { x: l.slate.x + l.slate.w / 2, y: l.slate.y - 2 };
         if (s.how === 'PAID') {
-          this.app.sfx('pot');
-          this.app.audio.crowdRoar(0.4);
-          this.float(`${def.name} +${profit}`, spot.x, spot.y, P.BRASS_LIT, 1, 1.5);
+          // A payout is felt in proportion to its size. A one and a
+          // thirty-eight used to arrive with the same coin chime and the same
+          // little grey crowd, which taught the player that money did not
+          // matter. Big money now shakes the room.
+          const big = Math.min(1, profit / 20);
+          this.slate.paid.fire(0.7);
+          this.app.sfx('pot', { volume: 0.32 + big * 0.5, pitch: 1 + big * 0.5 });
+          this.app.audio.crowdRoar(0.35 + big * 0.6);
+          this.float(`${def.name} +${profit}`, spot.x, spot.y, P.BRASS_LIT, 1 + Math.round(big), 1.6);
+          if (profit >= 8) {
+            this.goldFlash.fire(0.3 + big * 0.5);
+            if (profit >= 14) this.shake.hit(1 + big * 2, 0.25);
+          }
           this.readout = `${def.name} PAYS. ${s.pot} INTO THE POT.`;
           this.readoutColor = P.BRASS_LIT;
         } else if (s.how === 'LOST') {
@@ -866,10 +993,27 @@ export class GameScreen implements Scene {
           this.float(`${def.name} LOST ${c.stake}`, spot.x, spot.y, P.EMBER, 1, 1.5);
           this.readout = `${def.name} GOES. ${c.stake} OFF THE SLATE.`;
           this.readoutColor = P.EMBER;
+        } else if (s.how === 'PULLED') {
+          this.slate.taken.fire(0.6);
+          this.app.sfx('pot', { volume: 0.24, pitch: 0.8 });
+          this.float(`${def.name} PULLED ${s.pot}`, spot.x, spot.y, P.MIST, 1, 1.4);
         }
         this.bark(e, result);
         this.refresh();
         yield s.how === 'LOST' || s.how === 'PAID' ? 0.5 : 0.15;
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'CONTRACT_DEAD': {
+        // Said on the dart that did it, not four seconds later in a batch.
+        const def = contractDef(e.contract.defId);
+        this.slate.lost.fire(0.5);
+        this.app.sfx('error', { volume: 0.35, pitch: 0.85 });
+        this.float(`${def.name} GONE`, l.slate.x + l.slate.w / 2, l.slate.y - 2, P.CLARET_LIT, 1, 1.1);
+        this.readout = `${def.name} IS DEAD. ${e.contract.stake} STILL ON THE SLATE.`;
+        this.readoutColor = P.EMBER;
+        this.refresh();
+        yield 0.35;
         this.hooks.onEvent?.(e, this);
         break;
       }
@@ -904,9 +1048,10 @@ export class GameScreen implements Scene {
         const v = currentVisit(this.leg);
         if (this.leg.visits.length > 1) {
           const steady = steadinessOf(this.night, this.leg);
-          this.readout = `VISIT ${v.index + 1} OF ${this.leg.visitLimit} · THREE UP ON THE SLATE${steady > 0 ? ` · CROWD +${steady} ON EVERY CHANCE` : ''}`;
+          this.readout = `VISIT ${v.index + 1} OF ${this.leg.visitLimit} · ${this.leg.offer.length} UP ON THE SLATE${steady > 0 ? ` · CROWD +${steady} ON EVERY CHANCE` : ''}`;
           this.readoutColor = this.leg.visitLimit - v.index <= 2 ? P.EMBER : P.MIST;
         }
+        this.nextUp();
         this.bark(e, result);
         yield 0.3;
         this.locked = false;
@@ -1265,6 +1410,34 @@ export class GameScreen implements Scene {
     this.particles.update(dt);
     this.shake.update(dt);
     this.score.update(dt);
+    this.meterFlash.update(dt);
+    // The marker never stops while a dart is waiting to be thrown. Freezing it
+    // between darts would turn the throw into a second button press; leaving
+    // it running means the tap that throws is the tap that times.
+    if (this.meterLive) {
+      this.marker = markerAt(this.time, SWEEP);
+      // A tick as the marker crosses into and out of the band you called, so
+      // the timing can be learnt by ear as well as by eye.
+      const band = this.meterScale.find((b) => b.how === 'hit');
+      if (band && this.app.save.data.settings.meter) {
+        const inside = this.marker >= band.from && this.marker < band.to ? 1 : 0;
+        if (this.lastTick !== inside) {
+          if (this.lastTick >= 0) this.app.sfx('tick', { volume: inside ? 0.24 : 0.12, pitch: inside ? 1.7 : 1.1 });
+          this.lastTick = inside;
+        }
+      }
+    } else {
+      this.lastTick = -1;
+    }
+    this.potCount.update(dt);
+    this.potBump.update(dt);
+    if (this.night && this.potCount.target !== this.night.pot) {
+      this.potWay = this.night.pot > this.potCount.target ? 1 : -1;
+      this.potCount.set(this.night.pot, 0.5);
+      this.potBump.fire(0.45);
+    } else if (this.potCount.shown === this.potCount.target) {
+      this.potWay = 0;
+    }
     this.flash.update(dt);
     this.goldFlash.update(dt);
     this.bustStamp.update(dt);
@@ -1347,6 +1520,7 @@ export class GameScreen implements Scene {
       this.drawChrome(r);
       this.drawScore(r);
       for (const slot of this.emptySlots) drawEmptySlot(r, slot);
+    this.drawNextUp(r);
       this.slate.draw(r);
       this.drawChalkStrip(r);
       this.drawDart(r);
@@ -1359,6 +1533,7 @@ export class GameScreen implements Scene {
     if (r.sprites.has('vignette') && l.orientation === 'landscape') r.sprite('vignette', 0, 0);
     r.offset(this.shake.x, this.shake.y, () => {
       this.drawKitStrip(r);
+      this.drawMeterColumn(r);
       this.drawAimBar(r);
       this.drawButtons(r);
       this.drawReadout(r);
@@ -1375,12 +1550,21 @@ export class GameScreen implements Scene {
     this.hooks.draw?.(r, this);
   }
 
-  /** The sights and the fan of where the dart could actually finish. */
+  /** The sights, the fan of where the dart could finish, and the scope. */
   private drawAim(r: Renderer): void {
     if (this.dart || this.busy || this.leg.status !== 'ACTIVE') return;
     const p = this.preview;
     if (p && this.app.save.data.settings.checkoutHint) drawFan(r, this.layout, this.aim, p.dist);
     drawAimMark(r, this.layout, this.aim, this.time);
+    // The scope goes on last so the magnified board sits over the fan rather
+    // than under it. It is off while the tutorial is holding the floor, which
+    // is the one time the player is being pointed at something else.
+    if (this.app.save.data.settings.scope && !this.locked) {
+      drawScope(r, this.layout, this.aim, this.board.stuck, this.time, {
+        ...(p ? { chance: p.hit } : {}),
+        sprite: this.board.wired.active ? 'board_wired_128' : 'board_128',
+      });
+    }
   }
 
   private drawBackground(r: Renderer): void {
@@ -1423,7 +1607,7 @@ export class GameScreen implements Scene {
     r.rect(0, 12, l.w, 1, P.STONE);
     const used = leg.visits.length - (leg.status === 'ACTIVE' && currentVisit(leg)?.throws.length === 0 ? 1 : 0);
     const pipW = leg.visitLimit * 4;
-    const pot = `${this.night.pot}`;
+    const pot = `${Math.round(this.potCount.shown)}`;
     const potX = l.w - 16;
     const pipX = l.w - 44 - pipW;
     const title = l.orientation === 'landscape' ? `${leg.index + 1}/8 ${legName(leg.index).toUpperCase()}` : `${leg.index + 1}/8`;
@@ -1437,8 +1621,13 @@ export class GameScreen implements Scene {
       r.text(sheet, Math.floor((gapL + pipX) / 2), 3, { color: leg.dirty ? P.STONE : mult >= 3 ? P.BRASS_LIT : mult === 2 ? P.BRASS : P.PEWTER, align: 'center' });
     }
     drawVisitPips(r, pipX, 3, used, leg.visitLimit);
-    r.text(pot, potX, 3, { color: P.BRASS_LIT, align: 'right' });
-    r.sprite('icons', potX - measureText(5, pot) - 10, 2, 5);
+    // The Pot, and the money riding on this visit under it. Brass while it
+    // climbs, ember while it drains, and lifted a pixel either way so the
+    // change is felt at the top of the eye rather than merely reported.
+    const bump = this.potBump.active ? Math.round(this.potBump.value * 2) : 0;
+    const potColour = this.potWay < 0 ? P.EMBER : this.potWay > 0 ? P.BAIZE_LIT : P.BRASS_LIT;
+    r.text(pot, potX, 3 - bump, { color: potColour, align: 'right' });
+    r.sprite('icons', potX - measureText(5, pot) - 10, 2 - bump, 5);
     r.sprite('icons', l.w - 10, 2, 14);
   }
 
@@ -1480,6 +1669,14 @@ export class GameScreen implements Scene {
       }
       const vl = l.visitLine;
       r.text(`VISIT ${v.index + 1}/${leg.visitLimit}`, vl.x, vl.y, { color: leg.visitLimit - v.index <= 1 ? P.EMBER : P.PEWTER });
+      // What is riding on this visit, said in one number beside the darts.
+      // Nothing on the screen used to total it, so the amount the player was
+      // carrying into a risky dart was theirs to work out in their head.
+      const risk = this.atRisk();
+      if (risk > 0) {
+        const hot = Math.sin(this.time * 5) > 0;
+        r.text(`ON THE SLATE ${risk}`, vl.x + 58, vl.y, { color: hot ? P.EMBER : P.CLARET_LIT });
+      }
       const darts = parts.join(' ');
       r.text(darts, vl.x + vl.w, vl.y, { color: P.MIST, align: 'right' });
       const total = visitTotal(v);
@@ -1573,7 +1770,39 @@ export class GameScreen implements Scene {
     if (!right.length) right.push(`LEAVES ${p.leaves}`);
     r.text(right[0], b.x + b.w - 1, b.y + 1, { color: p.finish > 0 ? P.BRASS_LIT : risky ? P.EMBER : P.MIST, align: 'right' });
     r.text(`SCORES ${p.value}`, b.x + 1, b.y + 10, { color: P.MIST });
+    // A dart off the board wipes the slate, so while there is money on it the
+    // wall chance is the most expensive number on the screen and gets said
+    // whatever else is going on. It used to be third in a queue of one.
+    const risk = this.atRisk();
     if (this.armed) r.text(interventionDef(this.armed).name, b.x + b.w - 1, b.y + 10, { color: P.SKY_LIT, align: 'right' });
+    else if (risk > 0 && p.wall > 0) r.text(`WALL ${p.wall}% · ${risk}`, b.x + b.w - 1, b.y + 10, { color: P.EMBER, align: 'right' });
+    else if (risk > 0) r.text(`${risk} ON THE SLATE`, b.x + b.w - 1, b.y + 10, { color: P.BRASS, align: 'right' });
+  }
+
+  /** Chalked Up, on the strip: the contracts already chalked for next visit. */
+  private drawNextUp(r: Renderer): void {
+    const leg = this.leg;
+    if (!leg || !leg.nextOffer.length || !this.emptySlots.length) return;
+    const slot = this.emptySlots[this.emptySlots.length - 1];
+    r.text('NEXT UP', slot.x + 3, slot.y + 3, { font: 5, color: P.PEWTER });
+    let y = slot.y + 12;
+    for (const id of leg.nextOffer) {
+      if (y > slot.y + slot.h - 8) break;
+      r.text(contractDef(id).name, slot.x + 3, y, { font: 5, color: P.STONE });
+      y += 8;
+    }
+  }
+
+  /** The accuracy meter beside the board. */
+  private drawMeterColumn(r: Renderer): void {
+    if (!this.app.save.data.settings.meter) return;
+    if (!this.meterScale.length) return;
+    drawMeter(r, this.layout.meter, this.meterScale, this.marker, {
+      live: this.meterLive,
+      held: this.heldStop,
+      sweet: this.heldSweet,
+      flash: this.meterFlash.active ? this.meterFlash.value : 0,
+    });
   }
 
   private drawButtons(r: Renderer): void {

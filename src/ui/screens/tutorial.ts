@@ -30,6 +30,7 @@ type Stage =
   | 'welcome'
   | 'aim'
   | 'risk'
+  | 'meter'
   | 'throw_safe'
   | 'after_safe'
   | 'throw_treble'
@@ -40,6 +41,7 @@ type Stage =
   | 'take'
   | 'after_take'
   | 'throw_contract'
+  | 'settle'
   | 'decide'
   | 'after_press'
   | 'throw_press'
@@ -282,6 +284,11 @@ class Tutorial {
     return { x: p.x - 5, y: p.y - 5, w: 10, h: 10 };
   }
 
+  private meterRect(): Rect {
+    const l = (this.game as GameScreen).layout;
+    return { x: l.meter.x - 1, y: l.meter.y - 1, w: l.meter.w + 2, h: l.meter.h + 2 };
+  }
+
   private aimBarRect(): Rect {
     const l = (this.game as GameScreen).layout;
     return { x: l.aimBar.x - 1, y: l.aimBar.y - 1, w: l.aimBar.w + 2, h: l.aimBar.h + 2 };
@@ -363,6 +370,9 @@ class Tutorial {
         this.script(S20, S20);
         g.locked = false;
         break;
+      case 'meter':
+        this.script(S20, S20);
+        break;
       case 'throw_safe':
         this.script(S20, S20);
         g.locked = false;
@@ -394,6 +404,9 @@ class Tutorial {
       case 'throw_contract':
         this.script(T20, T20);
         g.locked = false;
+        break;
+      case 'settle':
+        this.noThrow();
         break;
       case 'decide':
         this.allowVerbs(['PRESS']);
@@ -459,9 +472,16 @@ class Tutorial {
           text: 'The dots round the sights are where the dart might actually finish. A single twenty lands 97 times in a hundred. Tap the TREBLE twenty — the thin band — and watch that number.',
           target: () => this.spotRect(T20),
         };
+      case 'meter':
+        return {
+          text: 'Forty-five percent, for triple the score. Look at the column beside the board: that is the same number as a height. The green band is the dart you called, and it is only that wide because a treble is only that likely. A single fills nearly the whole column.',
+          target: () => this.meterRect(),
+          button: 'NEXT',
+          onNext: () => this.go('throw_safe'),
+        };
       case 'throw_safe':
         return {
-          text: 'Forty-five percent, for triple the score. That gap is the whole game: the safe dart is near enough certain, and everything better is a risk you choose. Throw the single first.',
+          text: 'The marker never stops. Tap THROW as it crosses the green and the dart goes where you called it; high and it goes long, low and it drops short. That gap is the whole game. Throw the single first.',
           target: () => this.throwRect(),
         };
       case 'after_safe':
@@ -498,7 +518,7 @@ class Tutorial {
         };
       case 'take':
         return {
-          text: 'They pull in different directions on purpose: A TON wants the trebles, CLEAN HANDS wants three safe darts, and you cannot have both. Start with the cheap one. Take A TREBLE.',
+          text: 'They pull in different directions on purpose: A TON wants the trebles, CLEAN wants three safe darts, and you cannot have both. Start with the cheap one. Take A TREBLE.',
           target: () => this.slateRect(this.offerIndex('treble')),
         };
       case 'after_take':
@@ -510,9 +530,16 @@ class Tutorial {
         };
       case 'throw_contract':
         return { text: 'Aim called. Throw it.', target: () => this.throwRect() };
+      case 'settle':
+        return {
+          text: 'Two things to know before it lands. The offer stays open until two darts are left, at a longer price — so what happens on the board can still be wagered on. And a contract still going can be SETTLED for a share of what it would pay, which grows with every dart it survives.',
+          target: () => this.slateRect(),
+          button: 'NEXT',
+          onNext: () => this.go('decide'),
+        };
       case 'decide':
         return {
-          text: 'It landed, and it has already paid: that money is in the Pot and nothing on that board can reach it. Now the choice. PRESS puts double the stake back up on TWO TREBLES, using the darts you have left. Press it.',
+          text: 'That one landed, and it has already paid: the money is in the Pot and nothing on the board can reach it. Now the choice. PRESS puts double the stake back up on A PAIR, using the darts you have left. Press it.',
           target: () => this.slateRect(0),
         };
       case 'after_press':
@@ -526,7 +553,7 @@ class Tutorial {
         return { text: 'One more treble. Throw it.', target: () => this.throwRect() };
       case 'bust_intro':
         return {
-          text: `Forty left, and something you need to see. Go over, or land on one, and it is a BUST: the score goes back and every contract still riding on the slate goes with it. Banked money survives. Riding money does not.`,
+          text: `Forty left, and something you need to see. Go over, or land on one, and it is a BUST: the score goes back and every contract still riding on the slate goes with it. Money already paid, or settled, is safe. Money still riding is not.`,
           target: () => this.scoreRect(),
           button: 'NEXT',
           onNext: () => this.go('throw_bust'),
@@ -596,7 +623,7 @@ class Tutorial {
             this.go('after_miss');
             break;
           case 'throw_contract':
-            this.go('decide');
+            this.go('settle');
             break;
           case 'throw_press':
             this.go('bust_intro');
@@ -621,7 +648,7 @@ class Tutorial {
         break;
       case 'CONTRACT_SETTLED':
         // The contract paid the moment it landed; the press window opens now.
-        if (this.stage === 'throw_contract' && e.contract.settled?.how === 'PAID') this.go('decide');
+        if (this.stage === 'throw_contract' && e.contract.settled?.how === 'PAID') this.go('settle');
         break;
       case 'CHECKOUT':
         this.go('gameshot');
@@ -720,7 +747,7 @@ class Tutorial {
       return;
     }
     if (this.stage === 'risk' && g.aim.region === 'T') {
-      this.go('throw_safe');
+      this.go('meter');
       return;
     }
     // A scripted step will not accept a dart at anything but the target it

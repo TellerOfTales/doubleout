@@ -8,6 +8,7 @@
  * to lose by carrying on. Nothing here restricts where the dart may go.
  */
 import { P } from '../art/palette';
+import { measureText } from '../art/sprites';
 import type { Renderer } from './draw';
 import { CONTRACT_BY_ID } from '../core/slate';
 import type { TakenContract } from '../core/types';
@@ -65,14 +66,32 @@ export class SlateView {
   cards: SlateCardView[] = [];
   /** defId or slate index the pointer is over. */
   hover = -1;
+  /** Money going out: a contract taken or pulled. */
   taken = new Pulse();
+  /** Money coming in: a contract that landed. */
+  paid = new Pulse();
+  /** Money gone: a contract dead or lost. */
   lost = new Pulse();
   time = 0;
 
   update(dt: number): void {
     this.time += dt;
     this.taken.update(dt);
+    this.paid.update(dt);
     this.lost.update(dt);
+  }
+
+  /**
+   * The strip's flash. These three pulses were built and ticked every frame
+   * and no draw code read them, so staking, winning and losing money all
+   * looked exactly the same: like nothing. The strip now takes the colour of
+   * whatever the money just did.
+   */
+  flash(): { color: number; v: number } | null {
+    if (this.paid.active) return { color: P.BRASS_LIT, v: this.paid.value };
+    if (this.lost.active) return { color: P.EMBER, v: this.lost.value };
+    if (this.taken.active) return { color: P.CHALK, v: this.taken.value };
+    return null;
   }
 
   at(x: number, y: number): SlateCardView | null {
@@ -93,13 +112,14 @@ export class SlateView {
   }
 
   draw(r: Renderer): void {
-    for (let i = 0; i < this.cards.length; i++) drawContract(r, this.cards[i], this.hover === i, this.time);
+    const f = this.flash();
+    for (let i = 0; i < this.cards.length; i++) drawContract(r, this.cards[i], this.hover === i, this.time, f);
   }
 }
 
 const STATUS_COLOUR: Record<string, number> = { LIVE: P.MIST, MADE: P.BAIZE_LIT, DEAD: P.EMBER };
 
-export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, time: number): void {
+export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, time: number, flash: { color: number; v: number } | null = null): void {
   const def = CONTRACT_BY_ID[c.defId];
   if (!def) return;
   const { x, y, w, h } = c.rect;
@@ -109,9 +129,18 @@ export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, ti
   const dim = c.unaffordable || dead || gone;
   const edge = dead ? P.CLARET : made ? P.BAIZE_LIT : hovered ? P.CHALK : P.STONE;
   r.panel(x, y, w, h, gone ? P.INK : made ? P.SHADE : P.DEEP, gone ? P.SHADE : edge);
+  if (flash && flash.v > 0.15) {
+    // The whole strip takes the colour of the money for a beat.
+    r.rectOutline(x, y, w, h, flash.color);
+    r.dither(x + 1, y + 1, w - 2, h - 2, flash.color, Math.round(flash.v * 5));
+  }
 
-  // The name, on the chalk line at the top.
-  r.text(def.name, x + 3, y + 3, { font: 5, color: dim ? P.PEWTER : P.CHALK });
+  // The name, on the chalk line at the top, trimmed to the panel. With Wide
+  // Grip the strip carries a fourth card and every one of them narrows; a name
+  // that overruns its own frame reads as a rendering fault, not as a contract.
+  let name = def.name;
+  while (name.length > 1 && measureText(5, name) > w - 6) name = name.slice(0, -1);
+  r.text(name, x + 3, y + 3, { font: 5, color: dim ? P.PEWTER : P.CHALK });
   r.line(x + 2, y + 11, x + w - 3, y + 11, P.STONE);
 
   // What it asks for. The strip is narrow, so anything that will not fit is

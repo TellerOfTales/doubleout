@@ -80,7 +80,12 @@ describe('§15.2 balance targets', () => {
   });
 
   it('the difficulty ramps: every leg is harder than the one before it, and leg 8 is hardest', () => {
-    const r = simulate(seedRange(N), 'optimal');
+    // A bigger sample than the rest of this file, because the number this test
+    // turns on is the least well sampled one in the game: only about a quarter
+    // of nights reach leg 8 at all, so at 250 nights the leg 8 rate is drawn
+    // from sixty of them and swings five points on nothing. At 600 it is
+    // steady enough to assert against.
+    const r = simulate(seedRange(FULL ? 4000 : 600), 'optimal');
     const c = r.legWinRatesConditional;
     // Leg 1 is the short game (301), and a dart can miss: measured ~74% at 200
     // nights with the expectimax bot (docs/decisions/balance.md, sixth pass).

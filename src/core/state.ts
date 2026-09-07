@@ -33,7 +33,7 @@ import {
   SLATE_SIZE,
   STARTING_POT,
 } from '../content/legs';
-import { CONTRACTS, contractDef, priceOf, pressStake, pullValue } from './slate';
+import { CONTRACTS, SETTLE_SHARE, SETTLE_SHARE_SHORT, contractDef, latePrice, priceOf, pressStake, settleNow } from './slate';
 import type { VisitProgress } from './slate';
 import { STEADY_PER_HEAT, resolveThrow, throwsPerVisitFor } from './resolver';
 import { createRng, nextInt, pickWeighted, shuffle } from './rng';
@@ -189,7 +189,7 @@ function startVisit(n: NightState, leg: LegState): EngineEvent[] {
 // ---------------------------------------------------------------- the slate
 
 /** What the contracts can see: the visit so far. */
-export function visitProgress(n: NightState, leg: LegState, checkedOut = leg.status === 'CHECKED_OUT'): VisitProgress {
+export function visitProgress(n: NightState, leg: LegState, checkedOut = leg.status === 'CHECKED_OUT', busted?: boolean): VisitProgress {
   const visit = currentVisit(leg);
   const values: number[] = [];
   const hits: (Target | null)[] = [];
@@ -213,14 +213,14 @@ export function visitProgress(n: NightState, leg: LegState, checkedOut = leg.sta
     left: Math.max(0, throwsPerVisit(n) - visit.throws.length),
     from: visit.scoreAtVisitStart,
     now: leg.score,
-    busted: visit.busted,
+    busted: busted ?? visit.busted,
     checkedOut,
   };
 }
 
 /**
  * Three contracts, drawn so they pull in different directions. Anything that
- * is already impossible from this position (a GAME SHOT at 400 left) is never
+ * is already impossible from this position (THE SHOT at 400 left) is never
  * offered — a dead contract on the slate is exactly the dead card the deck
  * used to deal, and the point of the rebuild is that there are none.
  */
@@ -257,9 +257,29 @@ function rollOffer(n: NightState, leg: LegState): string[] {
   return out;
 }
 
-/** The price this contract pays tonight, after the house has shortened it. */
+/**
+ * The price this contract pays tonight: the printed price, shortened by every
+ * time it has already paid, lengthened by Long Prices.
+ */
 export function currentPrice(n: NightState, defId: string): number {
   return priceOf(contractDef(defId), n.paid[defId] ?? 0) + (hasChalk(n, 'long_prices') ? 2 : 0);
+}
+
+/**
+ * What the offer is asking for this contract right now: the price above,
+ * lengthened by the darts already gone this visit.
+ *
+ * A press does NOT get this. The premium is what the house pays for taking a
+ * wager late by choice — a press is late by definition, and giving it the
+ * premium turned pressing everything into the best policy in the game.
+ * Measured: presses-everything went from under the planner to 22.9% against
+ * the planner's 20.8%, which is the exact failure the slate was rebuilt to
+ * remove. See docs/decisions/design.md §7.4.
+ */
+export function offerPrice(n: NightState, defId: string): number {
+  const leg = n.legs[n.legIndex];
+  const thrown = leg && leg.status === 'ACTIVE' && leg.visits.length ? currentVisit(leg).throws.length : 0;
+  return latePrice(currentPrice(n, defId), thrown);
 }
 
 export interface SlateOutcome {
@@ -268,16 +288,30 @@ export interface SlateOutcome {
   events: EngineEvent[];
 }
 
-/** Take a contract off the offer and stake it. Only before the first dart. */
+/**
+ * Can a contract still be taken this visit? The offer stays open while there
+ * are two darts left to prove it — long enough for the first dart to be worth
+ * watching, short enough that nobody can wait until they are already on the
+ * double and take the money for a dart they were throwing anyway.
+ */
+export function offerOpen(n: NightState, leg: LegState): boolean {
+  return currentVisit(leg).throws.length <= throwsPerVisit(n) - 2;
+}
+
+/** Take a contract off the offer and stake it. */
 export function takeContract(n: NightState, defId: string): SlateOutcome {
   if (n.status !== 'ACTIVE' || n.phase !== 'LEG') return { ok: false, reason: 'not in a leg', events: [] };
   const leg = currentLeg(n);
   if (leg.status !== 'ACTIVE') return { ok: false, reason: 'leg is over', events: [] };
   const visit = currentVisit(leg);
-  if (visit.throws.length > 0) return { ok: false, reason: 'the visit has started', events: [] };
+  if (!offerOpen(n, leg)) return { ok: false, reason: 'too late in the visit', events: [] };
   const i = leg.offer.indexOf(defId);
   if (i < 0) return { ok: false, reason: 'not on the slate', events: [] };
   const def = contractDef(defId);
+  // Mid-visit, only a contract that is genuinely still open may be taken. One
+  // the darts already thrown have settled is not a wager, it is a receipt.
+  const status = def.check(visitProgress(n, leg));
+  if (visit.throws.length > 0 && status !== 'LIVE') return { ok: false, reason: 'that one is decided', events: [] };
   if (n.pot < def.stake) return { ok: false, reason: 'not enough pot', events: [] };
   n.pot -= def.stake;
   n.stats.potStaked += def.stake;
@@ -286,11 +320,11 @@ export function takeContract(n: NightState, defId: string): SlateOutcome {
   const c: TakenContract = {
     defId,
     stake: def.stake,
-    price: currentPrice(n, defId),
-    takenAt: 0,
+    price: offerPrice(n, defId),
+    takenAt: visit.throws.length,
     madeAt: null,
     pressed: 0,
-    status: def.check(visitProgress(n, leg)),
+    status,
     settled: null,
   };
   leg.slate.push(c);
@@ -300,15 +334,29 @@ export function takeContract(n: NightState, defId: string): SlateOutcome {
   return { ok: true, events };
 }
 
-/** Give up on a live contract: the stake back, plus what it has survived. */
+/**
+ * What a riding contract is worth to settle right now. Grows with every dart
+ * it survives, so the number on the card moves as the visit goes.
+ */
+export function settleWorth(n: NightState, leg: LegState, c: TakenContract): number {
+  if (c.settled || c.status === 'DEAD') return 0;
+  const per = throwsPerVisit(n);
+  const thrown = currentVisit(leg).throws.length;
+  const floor = hasChalk(n, 'on_tick') ? 1 : PULL_RETURN;
+  // Short Price: the house settles at a better share. It used to advertise a
+  // per-dart carry that no longer exists and did nothing at all.
+  const share = hasChalk(n, 'short_price') ? SETTLE_SHARE_SHORT : SETTLE_SHARE;
+  return settleNow(c.stake, c.price, thrown - c.takenAt, Math.max(1, per - c.takenAt), share, floor);
+}
+
+/** Take the money on a live contract now, for a share of what it would pay. */
 export function pullContract(n: NightState, index: number): SlateOutcome {
   const leg = currentLeg(n);
   const c = leg?.slate[index];
-  if (!c || c.settled) return { ok: false, reason: 'nothing to pull', events: [] };
+  if (!c || c.settled) return { ok: false, reason: 'nothing to settle', events: [] };
   if (c.status === 'DEAD') return { ok: false, reason: 'that one is gone', events: [] };
   const events: EngineEvent[] = [];
-  // On Tick: the publican lets you off the whole stake, not half of it.
-  settle(n, leg, c, 'PULLED', pullValue(c.stake, hasChalk(n, 'on_tick') ? 1 : PULL_RETURN), events);
+  settle(n, leg, c, 'PULLED', settleWorth(n, leg, c), events);
   return { ok: true, events };
 }
 
@@ -322,7 +370,7 @@ export function pressable(n: NightState, leg: LegState, c: TakenContract): boole
   if (!harder) return false;
   if (currentVisit(leg).throws.length >= throwsPerVisit(n)) return false;
   // A press must never be dead on arrival. The harder tier reads the whole
-  // visit, so pressing NO SCRAPS into NO SCRAPS+ after a fifteen buys a
+  // visit, so pressing 15 UP into 20 UP after a fifteen buys a
   // contract that has already failed on a dart thrown before the money was
   // taken. Nothing in this game may take a stake for something that cannot
   // happen (docs/decisions/design.md §6).
@@ -404,12 +452,19 @@ function settle(n: NightState, leg: LegState, c: TakenContract, how: ContractOut
  * won and the real decision is what to do next — take it and stop, or press it
  * into something harder. See docs/decisions/design.md §7.3.
  */
-function refreshSlate(n: NightState, leg: LegState, checkedOut: boolean, events: EngineEvent[] = []): void {
-  const progress = visitProgress(n, leg, checkedOut);
+function refreshSlate(n: NightState, leg: LegState, checkedOut: boolean, events: EngineEvent[] = [], busted?: boolean): void {
+  const progress = visitProgress(n, leg, checkedOut, busted);
   const thrown = currentVisit(leg).throws.length;
   for (const c of leg.slate) {
     if (c.settled) continue;
+    const was = c.status;
     c.status = contractDef(c.defId).check(progress);
+    if (c.status === 'DEAD' && was !== 'DEAD') {
+      // Say it out loud on the dart that did it. A loss the player does not
+      // see happen is a loss they cannot learn from.
+      events.push({ type: 'CONTRACT_DEAD', contract: c });
+      continue;
+    }
     if (c.status !== 'MADE') continue;
     c.madeAt = thrown;
     settle(n, leg, c, 'PAID', c.stake + c.price, events);
@@ -492,6 +547,13 @@ export interface ThrowOptions {
    * waiting for the RNG to produce one would make the script non-deterministic.
    */
   forceLanding?: Target;
+  /**
+   * Where the player stopped the accuracy meter (0 bottom, 0.5 dead on, 1
+   * top). Leave it out and the dart is thrown by an ordinary hand. This is a
+   * player input like the target itself, so a recorded script carries it and a
+   * night replays byte for byte. See src/core/meter.ts.
+   */
+  stop?: number;
 }
 
 /**
@@ -526,6 +588,7 @@ export function commitThrow(n: NightState, target: Target, opts: ThrowOptions = 
     steadiness: steadinessOf(n, leg),
     trueAim: n.trueAim,
     landing: opts.forceLanding,
+    stop: opts.stop,
     use,
     scoreBefore: leg.score,
     scoreAtVisitStart: visit.scoreAtVisitStart,
@@ -539,7 +602,10 @@ export function commitThrow(n: NightState, target: Target, opts: ThrowOptions = 
   n.stats.chalkFires += result.firedChalk.length;
   leg.score = result.scoreCommitted;
   events.unshift({ type: 'THROW', result });
-  refreshSlate(n, leg, result.outcome === 'CHECKOUT', events);
+  // The bust is read off the dart that caused it, not off the visit: the visit
+  // is not marked busted until further down this function, and a contract that
+  // says "no bust" must not be paid by the very dart that busts it.
+  refreshSlate(n, leg, result.outcome === 'CHECKOUT', events, result.outcome === 'BUST');
   // A dart that ended up in the wall, whether it was aimed there or not.
   if (result.aim === 'wall' && !missed) wallWipesSlate(n, leg, events);
 

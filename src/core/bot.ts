@@ -25,8 +25,8 @@ import { KIT_CAP, interventionDef } from '../content/interventions';
 import { ANOTHER_GO_CAP, anotherGoCost, HEAT_CAP, LEGS, LEG_COUNT, PULL_RETURN, SERVICE_COST, SHOP_REFRESH_COST } from '../content/legs';
 import { ALL_TARGETS } from './board';
 import { computeCheckoutHints } from './checkout';
-import { STEADY_INTERVENTION, resolveThrow, spreadFor, throwsPerVisitFor } from './resolver';
-import { CONTRACTS, contractDef, pressStake, pullValue } from './slate';
+import { STEADY_INTERVENTION, realSpread, resolveThrow, throwsPerVisitFor } from './resolver';
+import { CONTRACTS, contractDef, pressStake } from './slate';
 import type { ContractDef, VisitProgress } from './slate';
 import {
   addChalk,
@@ -42,6 +42,7 @@ import {
   pressContract,
   pressable,
   pullContract,
+  settleWorth,
   shopBuy,
   shopLeave,
   shopRefresh,
@@ -336,7 +337,7 @@ function spreadTable(steadiness: number, use: string[]): Spread[] {
   if (table) return table;
   evict(SPREAD_CACHE, 200);
   table = ALL_TARGETS.map((t) => {
-    const dist = spreadFor(t, steadiness, use);
+    const dist = realSpread(t, steadiness, use);
     return {
       to: Int32Array.from(dist.map((l) => idxOf(l.target))),
       p: Float64Array.from(dist.map((l) => l.p)),
@@ -1269,12 +1270,14 @@ export function planPress(n: NightState, leg: LegState): { index: number; act: '
     const c = leg.slate[i];
     const def = contractDef(c.defId);
     if (!c.settled) {
-      // A live contract: get out for half the stake, or ride it to the end.
+      // A live contract: settle for what it is worth now, or ride it to the
+      // end. Settling pays more the longer it has survived, so this is a real
+      // comparison on every dart rather than a last resort.
       if (c.status === 'DEAD') continue;
       const leave = ridingValue(ctx, leg, c) * (c.stake + c.price);
-      const pull = pullValue(c.stake, ctx.pullShare);
-      if (pull - leave > bestGain) {
-        bestGain = pull - leave;
+      const now = settleWorth(n, leg, c);
+      if (now - leave > bestGain) {
+        bestGain = now - leave;
         best = { index: i, act: 'PULL' };
       }
       continue;

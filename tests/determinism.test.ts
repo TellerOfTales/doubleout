@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createRng, nextFloat, nextInt, parseSeed, seedToString, shuffle } from '../src/core/rng.ts';
+import { throwOnMeter } from '../src/core/resolver.ts';
 import { createNight, currentLeg, deserialiseNight, serialiseNight } from '../src/core/state.ts';
 import type { NightState, OcheId } from '../src/core/types.ts';
 import { applyScript, botTarget, continueScripted, playDeep, playScripted, sha256, startNight, type ScriptStep } from './helpers.ts';
@@ -24,11 +25,11 @@ const SEED = 12345;
 const aimNight = (seed: number, oche: OcheId = 'local', chalk: string[] = []) => startNight(seed, oche, chalk, false);
 const DEEP_CHALK = ['straight_out', 'overshoot', 'wide_grip', 'wired'];
 /**
- * The deep run's seed: the one whose greedy night reaches the last leg,
+ * The deep run's seed: the one whose greedy night runs deep into the night,
  * deflects darts on `wired`, presses a contract and spends in every shop, so
  * one replay exercises every consumer of the gameplay RNG at once.
  */
-const DEEP_SEED = 13;
+const DEEP_SEED = 7;
 
 function random50(): number[] {
   const r = createRng(0xd00b1e);
@@ -285,6 +286,40 @@ describe('the deep run: wired, the kit and the press', () => {
     console.log(
       `seed ${DEEP_SEED} deep (wired) night sha256 = ${sha256(json)} (${first.status} at leg ${first.legIndex + 1}, ${deflections} deflections, ${first.stats.contractsPressed} presses)`,
     );
+  });
+
+  it('a night thrown on the meter replays byte for byte from the stops that threw it', () => {
+    // The stop is a player input like the target. It is written down, and a
+    // replay must land every dart in exactly the same place — otherwise the
+    // meter would have made the game unreproducible, which is the one thing
+    // §8 does not allow.
+    const stops = [0.5, 0.31, 0.72, 0.5, 0.06, 0.94, 0.49, 0.58, 0.5, 0.2, 0.83, 0.5];
+    for (const seed of [12345, 7, 4242]) {
+      const script: ScriptStep[] = [];
+      const played = continueScripted(aimNight(seed), { stops, log: script });
+      expect(script.filter((s) => s.kind === 'THROW' && s.stop !== undefined).length).toBeGreaterThan(20);
+      const json = serialiseNight(played);
+      for (let i = 0; i < 5; i++) {
+        expect(serialiseNight(continueScripted(aimNight(seed), { stops }))).toBe(json);
+        expect(serialiseNight(applyScript(aimNight(seed), script))).toBe(json);
+      }
+      // And a different thumb is a different night, so the stop is really an input.
+      const other = serialiseNight(continueScripted(aimNight(seed), { stops: stops.map((x) => 1 - x) }));
+      expect(other).not.toBe(json);
+    }
+  });
+
+  it('a dart with a stop and a dart without consume the RNG identically', () => {
+    // The meter reads the one float the aim roll always took, in the same
+    // place, so the stream is the same whoever is throwing.
+    const a = createRng(999);
+    const b = createRng(999);
+    const t = { region: 'T' as const, bed: 20 as const };
+    for (let i = 0; i < 200; i++) {
+      throwOnMeter(t, 0, a, undefined);
+      throwOnMeter(t, 0, b, 0.5);
+    }
+    expect(nextFloat(a)).toBe(nextFloat(b));
   });
 
   it('the recorded script of the deep run carries its kit and press steps', () => {

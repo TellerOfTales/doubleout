@@ -16,15 +16,18 @@
  */
 import { describe, expect, it } from 'vitest';
 import { PULL_RETURN, SLATE_SIZE, STARTING_POT } from '../src/content/legs.ts';
-import { CONTRACTS, CONTRACT_BY_ID, PRICE_FLOOR, contractDef, pressStake, priceOf, pullValue, settleValue } from '../src/core/slate.ts';
+import { CONTRACTS, CONTRACT_BY_ID, LATE_PREMIUM, PRICE_FLOOR, SETTLE_SHARE, contractDef, latePrice, pressStake, priceOf, pullValue, settleNow } from '../src/core/slate.ts';
 import {
   addChalk,
   commitMiss,
   currentLeg,
   currentPrice,
   currentVisit,
+  offerOpen,
+  offerPrice,
   pressContract,
   pullContract,
+  settleWorth,
   takeContract,
   useRubOut,
   visitProgress,
@@ -183,11 +186,9 @@ describe('every contract reads its own visit correctly', () => {
     expect(statusOf(n, 'ton')).toBe('MADE');
   });
 
-  it('a contract taken mid-air is refused: the slate is set before the first dart', () => {
+  it('rubbing out the offer is refused once the visit has started', () => {
     const n = rich();
     throwAt(n, 'S1');
-    currentLeg(n).offer.push('treble');
-    expect(takeContract(n, 'treble').reason).toBe('the visit has started');
     expect(useRubOut(n).reason).toBe('the visit has started');
   });
 });
@@ -472,6 +473,23 @@ describe('a bust takes everything still chasing', () => {
     expect(n.stats.slatesWiped).toBe(1);
   });
 
+  it('the dart that busts the visit cannot pay a contract that forbids a bust', () => {
+    // CLEAN asks for three darts on the board and no bust. It used to be paid
+    // by a visit that busted on the third dart, because the slate was re-read
+    // before the visit was marked busted, so the contract looked at a visit
+    // that had not busted yet and, with no darts left, called itself made.
+    const n = rich();
+    take(n, 'clean_hands');
+    throwAt(n, 'S1');
+    throwAt(n, 'S1');
+    const pot = n.pot;
+    setScore(n, 10);
+    throwAt(n, 'T20'); // three on the board, and a bust on the last one
+    expect(currentLeg(n).visits[0].busted).toBe(true);
+    expect(currentLeg(n).ledger.find((x) => x.defId === 'clean_hands')?.settled).toEqual({ pot: 0, how: 'LOST' });
+    expect(n.pot).toBe(pot);
+  });
+
   it('a contract already DEAD before the bust is still just lost', () => {
     const n = rich();
     take(n, 'nothing_cheap');
@@ -482,20 +500,37 @@ describe('a bust takes everything still chasing', () => {
   });
 });
 
-describe('pulling out: half the stake back', () => {
-  it('returns half the stake, rounded down, and takes the contract off the slate', () => {
+describe('settling: taking the money on a contract still going', () => {
+  it('pays a share of the whole prize, and the share grows with every dart it survives', () => {
     const n = rich();
-    const c = take(n, 'ton');
-    const pot = n.pot;
+    // CLEAN is judged at the end of the visit, so it is still going after two
+    // darts and there is something to settle.
+    const c = take(n, 'clean_hands');
+    const whole = c.stake + c.price;
     throwAt(n, 'S1');
+    const afterOne = settleWorth(n, currentLeg(n), currentLeg(n).slate[0]);
+    expect(afterOne).toBe(settleNow(c.stake, c.price, 1, 3, SETTLE_SHARE, PULL_RETURN));
+    throwAt(n, 'S1');
+    const afterTwo = settleWorth(n, currentLeg(n), currentLeg(n).slate[0]);
+    expect(afterTwo).toBeGreaterThan(afterOne);
+    // and never more than the contract is worth if it lands
+    expect(afterTwo).toBeLessThan(whole);
+    const pot = n.pot;
     const out = pullContract(n, 0);
     expect(out.ok).toBe(true);
-    expect(ev(out.events, 'CONTRACT_SETTLED').contract.settled).toEqual({ pot: pullValue(c.stake, PULL_RETURN), how: 'PULLED' });
-    expect(n.pot).toBe(pot + Math.floor(c.stake * PULL_RETURN));
+    expect(ev(out.events, 'CONTRACT_SETTLED').contract.settled).toEqual({ pot: afterTwo, how: 'PULLED' });
+    expect(n.pot).toBe(pot + afterTwo);
     expect(currentLeg(n).slate[0].settled).not.toBeNull();
   });
 
-  it('is a loss, not a refund: taking a contract has to cost something', () => {
+  it('never pays less than the half-stake the old PULL did', () => {
+    const n = rich();
+    const c = take(n, 'ton');
+    // Settled before it has survived anything at all: the floor holds.
+    expect(settleWorth(n, currentLeg(n), currentLeg(n).slate[0])).toBe(pullValue(c.stake, PULL_RETURN));
+  });
+
+  it('is a loss early on: taking a contract has to cost something', () => {
     const n = rich();
     const c = take(n, 'ton');
     const before = n.pot;
@@ -506,11 +541,55 @@ describe('pulling out: half the stake back', () => {
     expect(n.paid.ton).toBeUndefined();
   });
 
-  it('cannot pull a contract that has already paid, or one that is dead', () => {
+  it('cannot settle a contract that has already paid, or one that is dead', () => {
     const n = rich();
     take(n, 'treble');
     throwAt(n, 'T20');
     expect(pullContract(n, 0).ok).toBe(false);
+  });
+});
+
+describe('the offer stays open into the visit', () => {
+  it('a contract can still be taken after the first dart, at a longer price', () => {
+    const n = rich();
+    const leg = currentLeg(n);
+    leg.offer = ['ton'];
+    const cold = offerPrice(n, 'ton');
+    throwAt(n, 'S1');
+    const late = offerPrice(n, 'ton');
+    expect(late).toBe(latePrice(contractDef('ton').price, 1));
+    expect(late).toBeGreaterThan(cold);
+    const out = takeContract(n, 'ton');
+    expect(out.ok).toBe(true);
+    const c = ev(out.events, 'CONTRACT_TAKEN').contract;
+    expect(c.price).toBe(late);
+    expect(c.takenAt).toBe(1);
+  });
+
+  it('closes with two darts to go, so nobody can take the money for a dart already thrown', () => {
+    const n = rich();
+    const leg = currentLeg(n);
+    leg.offer = ['ton'];
+    throwAll(n, ['S1', 'S1']);
+    expect(offerOpen(n, currentLeg(n))).toBe(false);
+    expect(takeContract(n, 'ton').reason).toBe('too late in the visit');
+  });
+
+  it('refuses a contract the darts already thrown have decided', () => {
+    const n = rich();
+    const leg = currentLeg(n);
+    leg.offer = ['treble', 'quiet_one'];
+    throwAt(n, 'T20');
+    // A TREBLE is already made and QUIET is already dead: neither is a wager.
+    expect(takeContract(n, 'treble').reason).toBe('that one is decided');
+    expect(takeContract(n, 'quiet_one').reason).toBe('that one is decided');
+  });
+
+  it('the late premium rises with the darts gone, not with the score', () => {
+    expect(latePrice(10, 0)).toBe(10);
+    expect(latePrice(10, 1)).toBe(15);
+    expect(latePrice(10, 2)).toBe(20);
+    expect(LATE_PREMIUM).toBeGreaterThan(0);
   });
 });
 
@@ -546,6 +625,8 @@ describe('pressing: tear it up and write a harder one', () => {
     const { events } = throwAt(n, 'T20'); // 180
     const settled = ev(events, 'CONTRACT_SETTLED').contract;
     expect(settled.defId).toBe('fish');
+    // A press pays the cold price: the late premium is what the house pays for
+    // taking a wager late by choice, and a press is late by definition.
     expect(settled.settled).toEqual({ pot: 4 + contractDef('fish').price, how: 'PAID' });
     expect(n.pot).toBe(pot + 4 + contractDef('fish').price);
   });
@@ -665,10 +746,11 @@ describe('the house shortens your price (design.md §5.4.1)', () => {
     expect(n.paid.treble).toBe(1);
     const second = currentPrice(n, 'treble');
     expect(second).toBe(Math.max(PRICE_FLOOR, first.price - 1));
-    // pull the next one and the price stays where it is
+    // settle the next one and the price stays where it is
     throwAll(n, ['S1', 'S1']);
     const c = take(n, 'treble');
     expect(c.price).toBe(second);
+    throwAt(n, 'S1');
     pull(n, 'treble');
     expect(currentPrice(n, 'treble')).toBe(second);
   });

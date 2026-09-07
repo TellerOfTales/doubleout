@@ -37,6 +37,13 @@ export interface GameLayout {
   chalkStrip: Rect;
   /** What the aimed target is and what it would leave. */
   aimBar: Rect;
+  /**
+   * The accuracy meter: a tall thin column beside the board, where the marker
+   * sweeps and the dart is timed. It is vertical because the axis it measures
+   * is vertical — high is long, low is short — and it sits beside the board
+   * because the eye has to hold both at once.
+   */
+  meter: Rect;
   readout: Rect;
   /** Commit the dart. */
   throwBtn: Rect;
@@ -54,7 +61,9 @@ export const SLATE_H = 62;
 export function gameLayout(w: number, h: number): GameLayout {
   if (w >= h) {
     // ---- landscape 320×180 ----
-    const board: Rect = { x: 5, y: 15, w: 96, h: 96 };
+    // The board moved twelve pixels right to make a column for the meter, and
+    // the scoreboard column gave up the same twelve. Nothing else changed.
+    const board: Rect = { x: 14, y: 15, w: 96, h: 96 };
     return {
       orientation: 'landscape',
       w,
@@ -65,19 +74,20 @@ export function gameLayout(w: number, h: number): GameLayout {
       board,
       boardCentre: { x: board.x + 48, y: board.y + 48 },
       boardRadius: 46,
-      scoreLabel: { x: 110, y: 14 },
-      score: { x: 106, y: 18, w: 212, h: 28 },
-      checkoutLine: { x: 110, y: 48, w: 206 },
-      visitLine: { x: 110, y: 56, w: 206 },
-      slate: { x: 106, y: 64, w: 212, h: SLATE_H },
-      kit: { x: 4, y: 113, w: 98, h: 12 },
-      aimBar: { x: 4, y: 127, w: 98, h: 17 },
-      throwBtn: { x: 4, y: 145, w: 64, h: 12 },
-      miss: { x: 70, y: 145, w: 32, h: 12 },
-      chalkStrip: { x: 106, y: 128, w: 130, h: 18 },
-      readout: { x: 106, y: 147, w: 212, h: 10 },
+      scoreLabel: { x: 118, y: 14 },
+      score: { x: 114, y: 18, w: 204, h: 28 },
+      checkoutLine: { x: 118, y: 48, w: 198 },
+      visitLine: { x: 118, y: 56, w: 198 },
+      slate: { x: 114, y: 64, w: 204, h: SLATE_H },
+      kit: { x: 3, y: 113, w: 108, h: 12 },
+      aimBar: { x: 3, y: 127, w: 108, h: 17 },
+      meter: { x: 2, y: 15, w: 9, h: 96 },
+      throwBtn: { x: 3, y: 145, w: 73, h: 12 },
+      miss: { x: 79, y: 145, w: 32, h: 12 },
+      chalkStrip: { x: 114, y: 128, w: 130, h: 18 },
+      readout: { x: 114, y: 147, w: 204, h: 10 },
       commentary: { x: 0, y: 158, w, h: 22 },
-      launch: { x: 52, y: 150 },
+      launch: { x: 61, y: 150 },
     };
   }
   // ---- portrait 180×320 ----
@@ -100,6 +110,7 @@ export function gameLayout(w: number, h: number): GameLayout {
     kit: { x: 4, y: 225, w: 172, h: 12 },
     chalkStrip: { x: 4, y: 239, w: 130, h: 18 },
     aimBar: { x: 4, y: 259, w: 172, h: 17 },
+    meter: { x: 27, y: 14, w: 9, h: 96 },
     throwBtn: { x: 4, y: 278, w: 108, h: 14 },
     miss: { x: 116, y: 278, w: 60, h: 14 },
     readout: { x: 4, y: 294, w: 172, h: 9 },
@@ -114,7 +125,7 @@ export function gameLayout(w: number, h: number): GameLayout {
  */
 export function slateSlots(l: GameLayout, n: number): Rect[] {
   if (n <= 0) return [];
-  const gap = n >= 4 ? 3 : 5;
+  const gap = n >= 4 ? 3 : 4;
   const cw = Math.min(SLATE_W, Math.floor((l.slate.w - 6 - (n - 1) * gap) / n));
   const total = n * cw + (n - 1) * gap;
   const start = l.slate.x + Math.floor((l.slate.w - total) / 2);

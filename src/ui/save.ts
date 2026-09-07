@@ -10,6 +10,14 @@ export interface Settings {
   crowd: boolean;
   checkoutHint: boolean;
   tapToThrow: boolean;
+  /** The magnifier over the sights. On by default: thumbs are wider than a double. */
+  scope: boolean;
+  /**
+   * The accuracy meter. Off means the dart is thrown by an ordinary hand and
+   * the printed odds are exactly what you get — the game before the meter
+   * existed, kept for anyone who cannot time a tap.
+   */
+  meter: boolean;
   screenShake: boolean;
   flashes: boolean;
   /** 0 = auto, 1 = landscape, 2 = portrait */
@@ -48,6 +56,8 @@ export const DEFAULT_SETTINGS: Settings = {
   crowd: true,
   checkoutHint: true,
   tapToThrow: true,
+  scope: true,
+  meter: true,
   screenShake: true,
   flashes: true,
   orientation: 0,

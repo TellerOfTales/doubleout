@@ -12,6 +12,7 @@
  * the roll consumes the gameplay RNG. `wired` also consumes it, afterwards.
  */
 import { anticlockwiseAdjacent, baseValue, clockwiseAdjacent, isDoubleRegion, oppositeBed } from './board';
+import { bandAt, isSweet, meterOdds, meterScale, rolledStop, shakenStop, type MeterBand } from './meter';
 import { nextFloat } from './rng';
 import type { Bed, Chalk, ChalkStage, Region, ResolvedHit, Rng, Target, ThrowResult, TraceStep } from './types';
 import { targetNotation } from './board';
@@ -30,6 +31,14 @@ export interface ResolveContext {
   trueAim?: boolean;
   /** Force where the dart lands (for enumerating outcomes). Overrides the roll. */
   landing?: Target;
+  /**
+   * Where the player stopped the accuracy meter, 0 at the bottom of the scale
+   * and 1 at the top, with 0.5 dead on. Leave it out and the dart is thrown by
+   * an ordinary hand: the stop is rolled from the same single RNG float, which
+   * is what the bot, the planner, a replayed script and the meter switched off
+   * in the settings all do. See src/core/meter.ts.
+   */
+  stop?: number;
   /**
    * One-shot interventions spent on this dart. Unlike the deck they replaced,
    * these never say where to aim — they change what happens to the throw the
@@ -227,6 +236,53 @@ export function rollLanding(target: Target, steadiness: number, rng: Rng, use: s
   return dist[dist.length - 1];
 }
 
+/** What the meter did with one dart. */
+export interface MeterShot {
+  target: Target;
+  band: MeterBand;
+  /** Where the marker actually stopped, after the hand's shake. */
+  stop: number;
+  /** Dead on: the middle of the middle. */
+  sweet: boolean;
+  /** The whole scale, for the bar that draws it. */
+  scale: MeterBand[];
+}
+
+/**
+ * Build the scale for a dart and read a stop off it. Consumes exactly one
+ * float — the same one the old aim roll took, in the same place — so the
+ * gameplay RNG order is untouched by the meter existing.
+ */
+export function throwOnMeter(
+  target: Target,
+  steadiness: number,
+  rng: Rng,
+  stop: number | undefined,
+  use: string[] = [],
+  chalk: Chalk[] = [],
+): MeterShot {
+  const scale = meterScale(spreadFor(target, steadiness, use, chalk), target);
+  const u = nextFloat(rng);
+  const s = stop === undefined ? rolledStop(u) : shakenStop(stop, u);
+  const band = bandAt(scale, s);
+  return { target: { ...band.target }, band, stop: s, sweet: isSweet(s), scale };
+}
+
+/** The scale a dart would be thrown on, without touching the RNG. */
+export function meterFor(target: Target, steadiness: number, use: string[] = [], chalk: Chalk[] = []): MeterBand[] {
+  return meterScale(spreadFor(target, steadiness, use, chalk), target);
+}
+
+/**
+ * Where the dart actually finishes, and how likely each place is, once the
+ * meter has had it. This is the distribution to plan and to draw with;
+ * `spreadFor` is the intent the scale is built from. See src/core/meter.ts.
+ */
+export function realSpread(target: Target, steadiness: number, use: string[] = [], chalk: Chalk[] = []): Landing[] {
+  if (target.region === 'W') return [{ target: { region: 'W' }, p: 1, kind: 'wall' }];
+  return meterOdds(meterFor(target, steadiness, use, chalk)).map((l) => ({ target: l.target, p: l.p, kind: l.kind }));
+}
+
 function landingKind(aimed: Target, landed: Target, steadiness = 0, use: string[] = [], chalk: Chalk[] = []): Landing['kind'] {
   if (landed.region === 'W') return 'wall';
   if (landed.region === aimed.region && landed.bed === aimed.bed) return 'hit';
@@ -275,10 +331,11 @@ export function resolveThrow(target: Target, ctx: ResolveContext): ResolveOutput
   let landed: Target = aimed;
   if (ctx.landing) landed = { ...ctx.landing };
   else if (ctx.rng && !ctx.trueAim) {
-    landed = { ...rollLanding(aimed, steadiness, ctx.rng, use, chalk).target };
-    // AGAIN: throw it a second time. The second dart stands, good or bad.
+    landed = throwOnMeter(aimed, steadiness, ctx.rng, ctx.stop, use, chalk).target;
+    // AGAIN: throw it a second time. The second dart stands, good or bad —
+    // and it is out of the player's hands, so it is thrown by an ordinary one.
     if (use.includes('again')) {
-      landed = { ...rollLanding(aimed, steadiness, ctx.rng, use, chalk).target };
+      landed = throwOnMeter(aimed, steadiness, ctx.rng, undefined, use, chalk).target;
       fired.push('again');
     }
   }
