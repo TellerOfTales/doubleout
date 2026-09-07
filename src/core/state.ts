@@ -7,29 +7,33 @@
  *
  *   1. Three contracts are chalked up. Take any of them, staking Pot.
  *   2. Aim anywhere on the board. Throw.
- *   3. Between darts, PULL a contract for the stake plus what it has
- *      survived, BANK one that has already landed, or PRESS it into
- *      something harder for double the stake.
- *   4. Repeat for the remaining darts. Whatever is still on the slate at the
- *      end of the visit settles on its own — and a BUST takes the lot.
+ *   3. A contract pays the moment it lands, straight into the Pot. Between
+ *      darts you may PULL out of one that has not landed, for half the stake
+ *      back, or PRESS one that has, putting double the stake on something
+ *      harder with whatever darts are left.
+ *   4. A bust, or a dart that finishes off the board, takes everything that
+ *      has not landed yet.
  *
- * That last clause is the whole engine of the thing. Banked money survives a
- * bust; money left riding does not.
+ * That last clause is the whole engine of the thing. Money already won is
+ * safe; money still chasing is not, and the press is how you choose to put it
+ * back at risk.
  */
 import { CHALK_DEFS, chalkDef } from '../content/chalkdefs';
 import { KIT_CAP, KIT_POOL, STARTING_KIT, interventionDef } from '../content/interventions';
 import {
+  ANOTHER_GO_CAP,
+  anotherGoCost,
   DEFAULT_CHALK_SLOTS,
   HEAT_CAP,
   LEGS,
   LEG_COUNT,
-  PULL_PER_DART,
+  PULL_RETURN,
   SERVICE_COST,
   SHOP_REFRESH_COST,
   SLATE_SIZE,
   STARTING_POT,
 } from '../content/legs';
-import { CONTRACTS, contractDef, priceOf, pressStake, pullValue, settleValue } from './slate';
+import { CONTRACTS, contractDef, priceOf, pressStake, pullValue } from './slate';
 import type { VisitProgress } from './slate';
 import { STEADY_PER_HEAT, resolveThrow, throwsPerVisitFor } from './resolver';
 import { createRng, nextInt, pickWeighted, shuffle } from './rng';
@@ -58,6 +62,7 @@ export function createNight(seed: number, oche: OcheId = 'local', opts: { trueAi
     pot: STARTING_POT + (oche === 'wide' ? 4 : 0),
     kit: STARTING_KIT.slice(),
     paid: {},
+    extraVisits: 0,
     chalk: [],
     legs: [],
     status: 'ACTIVE',
@@ -86,6 +91,7 @@ export function createNight(seed: number, oche: OcheId = 'local', opts: { trueAi
       potStaked: 0,
       potWon: 0,
       bestPayout: 0,
+      slatesWiped: 0,
       bigFinishes: 0,
       cleanLegs: 0,
       maxChalkHeld: 0,
@@ -146,7 +152,8 @@ export function beginLeg(n: NightState): EngineEvent[] {
   const def = LEGS[n.legIndex];
   const leg: LegState = {
     index: n.legIndex,
-    visitLimit: def.visitLimit,
+    // Visits bought from the publican are spent here, on this leg, once.
+    visitLimit: def.visitLimit + n.extraVisits,
     score: def.start,
     visits: [],
     bustsThisLeg: 0,
@@ -159,6 +166,7 @@ export function beginLeg(n: NightState): EngineEvent[] {
     heat: 0,
     dirty: false,
   };
+  n.extraVisits = 0;
   n.legs.push(leg);
   n.phase = 'LEG';
   n.shop = null;
@@ -286,7 +294,10 @@ export function takeContract(n: NightState, defId: string): SlateOutcome {
     settled: null,
   };
   leg.slate.push(c);
-  return { ok: true, events: [{ type: 'CONTRACT_TAKEN', contract: c }] };
+  const events: EngineEvent[] = [{ type: 'CONTRACT_TAKEN', contract: c }];
+  // A contract that is already made the moment it is taken pays at once.
+  refreshSlate(n, leg, false, events);
+  return { ok: true, events };
 }
 
 /** Give up on a live contract: the stake back, plus what it has survived. */
@@ -296,46 +307,73 @@ export function pullContract(n: NightState, index: number): SlateOutcome {
   if (!c || c.settled) return { ok: false, reason: 'nothing to pull', events: [] };
   if (c.status === 'DEAD') return { ok: false, reason: 'that one is gone', events: [] };
   const events: EngineEvent[] = [];
-  settle(n, leg, c, 'PULLED', pullValue(c.stake, interestOn(n, leg, c)), events);
-  return { ok: true, events };
-}
-
-/** Take the money on a contract that has already landed. It cannot be lost after this. */
-export function bankContract(n: NightState, index: number): SlateOutcome {
-  const leg = currentLeg(n);
-  const c = leg?.slate[index];
-  if (!c || c.settled) return { ok: false, reason: 'nothing to bank', events: [] };
-  if (c.status !== 'MADE') return { ok: false, reason: 'not made yet', events: [] };
-  const events: EngineEvent[] = [];
-  settle(n, leg, c, 'BANKED', c.stake + c.price, events);
+  // On Tick: the publican lets you off the whole stake, not half of it.
+  settle(n, leg, c, 'PULLED', pullValue(c.stake, hasChalk(n, 'on_tick') ? 1 : PULL_RETURN), events);
   return { ok: true, events };
 }
 
 /**
- * The press. A contract that has landed is torn up and rewritten as its harder
- * tier at double the stake, and the extra stake comes out of the Pot now. Make
- * the harder one before the visit ends or lose the lot.
+ * Can this contract still be pressed? Only one that has landed and been paid,
+ * with darts left in the visit to make the harder one.
+ */
+export function pressable(n: NightState, leg: LegState, c: TakenContract): boolean {
+  if (!c.settled || c.settled.how !== 'PAID' || c.spent) return false;
+  const harder = contractDef(c.defId).pressTo;
+  if (!harder) return false;
+  if (currentVisit(leg).throws.length >= throwsPerVisit(n)) return false;
+  // A press must never be dead on arrival. The harder tier reads the whole
+  // visit, so pressing NO SCRAPS into NO SCRAPS+ after a fifteen buys a
+  // contract that has already failed on a dart thrown before the money was
+  // taken. Nothing in this game may take a stake for something that cannot
+  // happen (docs/decisions/design.md §6).
+  return contractDef(harder).check(visitProgress(n, leg)) !== 'DEAD';
+}
+
+/**
+ * The press. A contract that has landed pays out now, and the money goes
+ * straight back up on something harder at double the stake.
+ *
+ * The first version tore the landed contract up and rewrote it, so pressing
+ * meant giving back a certain payout for an uncertain one. Priced honestly
+ * that is nearly always wrong, and the planner agreed: it pressed eight times
+ * in a hundred and left everything else riding. This is what a press is at a
+ * craps table — the number already made is paid, and the winnings go on a
+ * bigger number — and it turns the verb from a trap into a decision.
+ *
+ * The harder contract reads the whole visit, so the dart that made the first
+ * one still counts toward it. What it costs is the doubled stake and the darts
+ * left to finish the job.
  */
 export function pressContract(n: NightState, index: number): SlateOutcome {
   const leg = currentLeg(n);
   const c = leg?.slate[index];
-  if (!c || c.settled) return { ok: false, reason: 'nothing to press', events: [] };
-  if (c.status !== 'MADE') return { ok: false, reason: 'not made yet', events: [] };
+  if (!c) return { ok: false, reason: 'nothing to press', events: [] };
+  if (!pressable(n, leg, c)) return { ok: false, reason: 'nothing to press', events: [] };
   const def = contractDef(c.defId);
-  if (!def.pressTo) return { ok: false, reason: 'nothing harder to press into', events: [] };
-  const extra = pressStake(c.stake) - c.stake;
-  if (n.pot < extra) return { ok: false, reason: 'not enough pot', events: [] };
-  n.pot -= extra;
-  n.stats.potStaked += extra;
+  const visit = currentVisit(leg);
+  const harder = contractDef(def.pressTo as string);
+  const stake = pressStake(c.stake);
+  if (n.pot < stake) return { ok: false, reason: 'not enough pot', events: [] };
+  const events: EngineEvent[] = [];
+  c.spent = true;
+  n.pot -= stake;
+  n.stats.potStaked += stake;
   n.stats.contractsPressed++;
-  const from = c.defId;
-  c.defId = def.pressTo;
-  c.stake = pressStake(c.stake);
-  c.price = currentPrice(n, def.pressTo);
-  c.pressed++;
-  c.madeAt = null;
-  c.status = contractDef(c.defId).check(visitProgress(n, leg));
-  return { ok: true, events: [{ type: 'CONTRACT_PRESSED', contract: c, from }] };
+  const fresh: TakenContract = {
+    defId: harder.id,
+    stake,
+    price: currentPrice(n, harder.id),
+    takenAt: visit.throws.length,
+    madeAt: null,
+    pressed: c.pressed + 1,
+    status: harder.check(visitProgress(n, leg)),
+    settled: null,
+  };
+  leg.slate.push(fresh);
+  events.push({ type: 'CONTRACT_PRESSED', contract: fresh, from: c.defId });
+  // A press that lands the instant it is taken pays like any other.
+  refreshSlate(n, leg, false, events);
+  return { ok: true, events };
 }
 
 function settle(n: NightState, leg: LegState, c: TakenContract, how: ContractOutcome, pot: number, events: EngineEvent[]): void {
@@ -347,7 +385,7 @@ function settle(n: NightState, leg: LegState, c: TakenContract, how: ContractOut
     n.stats.potWon += profit;
     n.stats.bestPayout = Math.max(n.stats.bestPayout, profit);
   }
-  if (how === 'PAID' || how === 'BANKED') {
+  if (how === 'PAID') {
     n.stats.contractsPaid++;
     n.paid[c.defId] = (n.paid[c.defId] ?? 0) + 1;
   }
@@ -356,55 +394,53 @@ function settle(n: NightState, leg: LegState, c: TakenContract, how: ContractOut
 }
 
 /**
- * Interest earned so far: PULL_PER_DART for every dart the contract has
- * survived. A live contract counts from when it was taken; one that has landed
- * counts from when it landed, because after that the only thing it is
- * surviving is the risk of a bust.
+ * Re-read every contract on the slate, and pay the ones that have landed.
+ *
+ * A contract pays the moment it lands. There is deliberately no option to
+ * leave a landed contract up for more: that option existed, it paid a carry
+ * for each dart it survived, and it dominated banking so completely that the
+ * planner banked nothing at all in a thousand decisions. A verb that is never
+ * right is a trap on the screen, so the money goes in the Pot as soon as it is
+ * won and the real decision is what to do next — take it and stop, or press it
+ * into something harder. See docs/decisions/design.md §7.3.
  */
-export function interestOn(n: NightState, leg: LegState, c: TakenContract): number {
-  const thrown = currentVisit(leg).throws.length;
-  const from = c.status === 'MADE' && c.madeAt !== null ? c.madeAt : c.takenAt;
-  const per = hasChalk(n, 'short_price') ? PULL_PER_DART * 2 : PULL_PER_DART;
-  return Math.max(0, thrown - from) * per;
-}
-
-/** Re-read every contract on the slate against the visit so far. */
-function refreshSlate(n: NightState, leg: LegState, checkedOut: boolean): void {
+function refreshSlate(n: NightState, leg: LegState, checkedOut: boolean, events: EngineEvent[] = []): void {
   const progress = visitProgress(n, leg, checkedOut);
   const thrown = currentVisit(leg).throws.length;
   for (const c of leg.slate) {
     if (c.settled) continue;
     c.status = contractDef(c.defId).check(progress);
-    // Remember when it first landed: everything it earns after that is carry.
-    if (c.status === 'MADE' && c.madeAt === null) c.madeAt = thrown;
-    if (c.status !== 'MADE') c.madeAt = null;
+    if (c.status !== 'MADE') continue;
+    c.madeAt = thrown;
+    settle(n, leg, c, 'PAID', c.stake + c.price, events);
   }
 }
 
 /**
- * A dart that finishes in the wall rubs the dearest contract off the slate.
+ * A dart that finishes in the wall wipes the slate, exactly as a bust does.
  *
- * Without this, banking had no job. A bust is the only thing that can take a
- * landed contract, and with free aim a player who wants to avoid a bust simply
- * aims at a safe single, so the planner correctly banked almost nothing
- * (measured at 0.2% of decisions). The wall gives the risky dart a price that
- * is paid at the moment it is thrown rather than at the end of the visit: go
- * for the treble with three contracts riding and roughly one time in twenty
- * you lose the best of them. Take the money first, or take the chance.
+ * This is the seven-out. Without it, riding a contract to the end of the visit
+ * was very nearly free: a bust is the only other thing that can take one, and
+ * with free aim a player who wants to avoid a bust simply aims at a safe
+ * single. Measured, a bot that never banked anything won three nights in four,
+ * which means the greed had no price and the press was decoration.
+ *
+ * Now the price is paid by the risky dart itself. A treble finishes off the
+ * board about one time in twenty-five, so three darts at the trebles carry
+ * something like a one-in-eight chance of losing everything riding, while
+ * three safe singles carry almost none. That is the whole trade: go for the
+ * hundred and forty with two contracts up, or take the money first.
  */
-function wallRubsOne(n: NightState, leg: LegState, events: EngineEvent[]): void {
-  let worst: TakenContract | null = null;
-  let most = -1;
+function wallWipesSlate(n: NightState, leg: LegState, events: EngineEvent[]): void {
+  let took = 0;
   for (const c of leg.slate) {
     if (c.settled) continue;
-    if (c.status === 'DEAD') continue;
-    const worth = c.stake + (c.status === 'MADE' ? c.price + interestOn(n, leg, c) : 0);
-    if (worth > most) {
-      most = worth;
-      worst = c;
-    }
+    // Everything unsettled goes, the already-dead included: the slate is wiped,
+    // not audited.
+    if (c.status !== 'DEAD') took++;
+    settle(n, leg, c, 'LOST', 0, events);
   }
-  if (worst) settle(n, leg, worst, 'LOST', 0, events);
+  if (took) n.stats.slatesWiped++;
 }
 
 /**
@@ -413,11 +449,11 @@ function wallRubsOne(n: NightState, leg: LegState, events: EngineEvent[]): void 
  * than a foregone conclusion.
  */
 function settleSlate(n: NightState, leg: LegState, busted: boolean, events: EngineEvent[]): void {
+  if (busted && leg.slate.some((c) => !c.settled && c.status !== 'DEAD')) n.stats.slatesWiped++;
   for (const c of leg.slate) {
     if (c.settled) continue;
-    // On Tick: a bust no longer takes a contract you had already made.
-    const made = c.status === 'MADE' && (!busted || hasChalk(n, 'on_tick'));
-    settle(n, leg, c, made ? 'PAID' : 'LOST', made ? settleValue(c.stake, c.price, interestOn(n, leg, c)) : 0, events);
+    // Anything that landed has already paid; whatever is left never will.
+    settle(n, leg, c, 'LOST', 0, events);
   }
 }
 
@@ -503,9 +539,9 @@ export function commitThrow(n: NightState, target: Target, opts: ThrowOptions = 
   n.stats.chalkFires += result.firedChalk.length;
   leg.score = result.scoreCommitted;
   events.unshift({ type: 'THROW', result });
-  refreshSlate(n, leg, result.outcome === 'CHECKOUT');
+  refreshSlate(n, leg, result.outcome === 'CHECKOUT', events);
   // A dart that ended up in the wall, whether it was aimed there or not.
-  if (result.aim === 'wall' && !missed) wallRubsOne(n, leg, events);
+  if (result.aim === 'wall' && !missed) wallWipesSlate(n, leg, events);
 
   const perVisit = throwsPerVisit(n);
 
@@ -536,7 +572,8 @@ export function commitThrow(n: NightState, target: Target, opts: ThrowOptions = 
     }
     events.push({ type: 'CHECKOUT', legIndex: leg.index, reward });
     if (checkoutFrom >= 100) achieve(n, 'sharp', events);
-    if (leg.visits.length <= 6 && startedLong(leg)) achieve(n, 'thin', events);
+    // Four visits for a 501. The limits came down, so six was no longer an achievement.
+    if (leg.visits.length <= 4 && startedLong(leg)) achieve(n, 'thin', events);
 
     if (leg.index === LEG_COUNT - 1) {
       n.status = 'WON';
@@ -671,7 +708,17 @@ function rollChalkOffer(n: NightState): string | null {
   return available[nextInt(n.rng, available.length)].id;
 }
 
-/** Shop generation consumes the gameplay RNG in a fixed order: kit, kit, chalk, service. */
+/**
+ * Shop generation consumes the gameplay RNG in a fixed order: kit, kit, chalk,
+ * service. ANOTHER GO is not rolled — it is always on the shelf.
+ *
+ * That is deliberate. Chalk fills five slots and the kit six, and after that
+ * the Pot had nowhere to go: measured over two hundred nights, a bot that
+ * ignored the slate entirely won MORE often than one that worked it, because
+ * the money it earned could not be spent on anything that wins a leg. A
+ * standing offer of one more visit is the sink, and it is the right one — a
+ * leg is lost to the clock far more often than to the arithmetic.
+ */
 export function generateShop(n: NightState, afterLeg: number): ShopState {
   const slots: ShopSlot[] = [];
   const k1 = rollKitOffer(n);
@@ -682,6 +729,7 @@ export function generateShop(n: NightState, afterLeg: number): ShopState {
   if (ch) slots.push({ kind: 'CHALK', chalkId: ch, cost: chalkDef(ch).cost, sold: false });
   const s = rollService(n);
   slots.push({ kind: 'SERVICE', service: s, cost: SERVICE_COST[s], sold: false });
+  slots.push({ kind: 'SERVICE', service: 'ANOTHER_GO', cost: anotherGoCost(n.extraVisits), sold: false });
   return { slots, refreshed: false, afterLeg };
 }
 
@@ -735,6 +783,15 @@ export function shopBuy(n: NightState, slotIndex: number, opts: BuyOptions = {})
         n.kit.push('steady');
         n.stats.kitBought++;
         repeatable = n.kit.length < KIT_CAP;
+      } else if (slot.service === 'ANOTHER_GO') {
+        // A word with the publican. The Pot's other job: chalk is the build,
+        // this is the clock, and a leg is lost to the clock far more often
+        // than it is lost to the arithmetic.
+        if (n.extraVisits >= ANOTHER_GO_CAP) return { ok: false, reason: 'he has heard enough', events: [] };
+        n.extraVisits++;
+        repeatable = n.extraVisits < ANOTHER_GO_CAP;
+        // He asks more every time. The slot stays on the shelf at its new price.
+        if (repeatable) slot.cost = anotherGoCost(n.extraVisits);
       } else if (slot.service === 'CREDIT') {
         // The publican's published policy: a flat advance, taken once.
         n.pot += SERVICE_COST.CREDIT * 2;

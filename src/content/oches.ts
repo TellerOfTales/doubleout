@@ -44,7 +44,7 @@ export const OCHES: OcheDef[] = [
   {
     id: 'thin',
     name: 'The Thin',
-    unlock: 'Win a leg in 6 visits or fewer',
+    unlock: 'Win a 501 leg in 4 visits or fewer',
     change: 'A library of 12 cards instead of 24.',
     flavour: 'Every card counts. Every card comes round again.',
   },

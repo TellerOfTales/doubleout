@@ -19,7 +19,7 @@ export const CHALK_DEFS: ChalkDef[] = [
   { id: 'wired', name: 'Wired', stage: 'BOARD', cost: 4, blurb: '1 in 4 darts drops into the next bed clockwise. Same ring.' },
   { id: 'split_tips', name: 'Split Tips', stage: 'BOARD', cost: 8, blurb: 'Every dart also hits the bed anticlockwise as a single.' },
   { id: 'magnetised', name: 'Magnetised', stage: 'BOARD', cost: 6, blurb: 'Any dart worth under 10 is pulled into single 20.' },
-  { id: 'narrow_beds', name: 'Narrow Beds', stage: 'BOARD', cost: 7, blurb: 'Singles become trebles. Trebles become singles.' },
+  { id: 'wide_trebles', name: 'Wide Trebles', stage: 'BOARD', cost: 7, blurb: 'A wider treble ring: +20 on every treble you call.' },
   { id: 'wide_doubles', name: 'Wide Doubles', stage: 'BOARD', cost: 9, blurb: 'Anything in the 16, 18 or 20 bed counts as a double.' },
   { id: 'mirrored', name: 'Mirrored', stage: 'BOARD', cost: 5, blurb: 'Darts land in the bed directly opposite.' },
   // ---- RULE ----
@@ -31,7 +31,7 @@ export const CHALK_DEFS: ChalkDef[] = [
   // ---- RULE (the slate) ----
   { id: 'short_price', name: 'Short Price', stage: 'RULE', cost: 5, blurb: 'Pulling a contract pays 3 a dart instead of 1.' },
   { id: 'long_prices', name: 'Long Prices', stage: 'RULE', cost: 9, blurb: 'Every contract on the slate is printed at +2.' },
-  { id: 'on_tick', name: 'On Tick', stage: 'RULE', cost: 7, blurb: 'A bust no longer takes contracts you already made.' },
+  { id: 'on_tick', name: 'On Tick', stage: 'RULE', cost: 7, blurb: 'Pulling out of a contract returns the whole stake.' },
   // ---- DEAL ----
   { id: 'wide_grip', name: 'Wide Grip', stage: 'DEAL', cost: 8, blurb: 'One extra contract chalked up every visit.' },
   { id: 'tunnel_vision', name: 'Tunnel Vision', stage: 'DEAL', cost: 6, blurb: 'One contract fewer, but every throw scores +20%.' },

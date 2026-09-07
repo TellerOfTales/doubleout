@@ -3,7 +3,7 @@
  * Chromium, drives the game with real pointer events (flicks included) and
  * writes screenshots to assets/screens/. Usage:
  *   node --experimental-strip-types tools/screenshot.ts [scenario ...]
- * Scenarios: title, game, aim, slate, bank, chalk, checkout, bust, oneeighty,
+ * Scenarios: title, game, aim, slate, paid, chalk, checkout, bust, oneeighty,
  * shop, results, settings, tutorial, portrait, all (default).
  */
 import { mkdirSync, existsSync, readdirSync } from 'node:fs';
@@ -135,10 +135,17 @@ async function main(): Promise<void> {
   const aimAt = (d: Driver, notation: string) =>
     d.evalApp(`(function(){const s=app.scenes.current; s.aim=window.__do.board.parseTarget('${notation}'); s.refreshPreview(); return window.__do.board.targetNotation(s.aim);})()`);
 
-  /** Wait until the screen is interactive again, or fail loudly. */
+  /**
+   * Wait until the screen is interactive again, or fail loudly. A leg that
+   * ends takes the game screen with it, so leaving it counts as settled.
+   */
   const settled = async (d: Driver, why: string) => {
     for (let i = 0; i < 400; i++) {
-      const st = (await d.evalApp('(function(){const s=app.scenes.current; return {busy: !!s.busy, locked: !!s.locked};})()')) as { busy: boolean; locked: boolean };
+      const st = (await d.evalApp(
+        '(function(){const s=app.scenes.current; return {busy: !!s.busy, locked: !!s.locked, game: typeof s.aim !== "undefined", overlay: s.overlay};})()',
+      )) as { busy: boolean; locked: boolean; game: boolean; overlay: string };
+      if (!st.game) return;
+      if (st.overlay && st.overlay !== 'none') return;
       if (!st.busy && !st.locked) return;
       await d.wait(25);
     }
@@ -246,47 +253,54 @@ async function main(): Promise<void> {
     await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('T20')");
     await throwAt(d, 'T20');
     await d.shot('03_made');
-    const verbs = (await d.evalApp("(function(){const c=app.scenes.current.slate.cards[0]; return c ? c.verbs.map(v=>v.id).join(',') : 'none';})()")) as string;
-    if (!verbs.includes('BANK') || !verbs.includes('PRESS')) throw new Error(`a made contract should offer BANK and PRESS, offered '${verbs}'`);
+    // It pays the instant it lands, so the money is already in the Pot and the
+    // only verb left on it is the press.
+    const paid = (await d.evalApp("app.night.legs[0].ledger.some(c=>c.defId==='treble' && c.settled && c.settled.how==='PAID')")) as boolean;
+    if (!paid) throw new Error('a contract that landed did not pay at once');
+    const verbs = (await d.evalApp(
+      "(function(){const c=app.scenes.current.slate.cards.find(x=>x.defId==='treble'); return c ? c.verbs.map(v=>v.id).join(',') : 'none';})()",
+    )) as string;
+    if (!verbs.includes('PRESS')) throw new Error(`a contract that has paid should offer PRESS, offered '${verbs}'`);
     // Press it.
     const press = (await d.evalApp(
-      "(function(){const c=app.scenes.current.slate.cards[0]; const v=c.verbs.find(x=>x.id==='PRESS'); return {x: v.rect.x+Math.floor(v.rect.w/2), y: v.rect.y+5};})()",
+      "(function(){const c=app.scenes.current.slate.cards.find(x=>x.defId==='treble'); const v=c.verbs.find(x=>x.id==='PRESS'); return {x: v.rect.x+Math.floor(v.rect.w/2), y: v.rect.y+5};})()",
     )) as { x: number; y: number };
     await d.click(press.x, press.y);
     await d.wait(400);
-    const pressed = (await d.evalApp('app.night.legs[0].slate[0].defId')) as string;
+    const pressed = (await d.evalApp('app.night.legs[0].slate[app.night.legs[0].slate.length-1].defId')) as string;
     if (pressed !== 'two_trebles') throw new Error(`pressing A TREBLE should give TWO TREBLES, gave ${pressed}`);
     await d.shot('04_pressed');
-    // Now bust the visit and prove the slate goes with it.
+    // Now bust the visit and prove what is still being chased goes with it.
+    // The pressed contract is the one at risk: the first one has been paid.
     await d.evalApp("(function(){const leg=app.night.legs[0]; leg.score=10; const g=app.scenes.current; g.score.snap(10); g.refresh();})()");
     await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('T20')");
     await throwAt(d, 'T20');
     await d.shot('05_bust_took_it');
     const lost = (await d.evalApp("app.night.legs[0].ledger.some(c=>c.settled && c.settled.how==='LOST')")) as boolean;
-    if (!lost) throw new Error('a bust did not take the contract still riding on the slate');
+    const stillLive = (await d.evalApp('app.night.legs[0].slate.filter(c=>!c.settled).length')) as number;
+    if (!lost && stillLive > 0) throw new Error('a bust did not take the contract still being chased');
   });
 
-  // Banking survives a bust. The other half of the same rule.
-  await run('bank', land, async (d) => {
+  // Money already won survives the slate being wiped. The other half of the rule.
+  await run('paid', land, async (d) => {
     await d.evalApp("app.startNight(4242, 'local')");
     await settled(d, 'the leg never became interactive');
     await d.evalApp("(function(){const n=app.night; n.legs[0].offer=['treble','ton','clean_hands']; app.scenes.current.refresh(); return window.__do.state.takeContract(n,'treble').ok;})()");
+    await d.evalApp("(function(){const n=app.night; n.legs[0].offer=['ton','clean_hands']; return window.__do.state.takeContract(n,'ton').ok;})()");
     await d.evalApp('app.scenes.current.refresh()');
+    const potBefore = (await d.evalApp('app.night.pot')) as number;
     await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('T20')");
     await throwAt(d, 'T20');
-    const potBefore = (await d.evalApp('app.night.pot')) as number;
-    await d.evalApp('window.__do.state.bankContract(app.night, 0)');
-    await d.evalApp('app.scenes.current.refresh()');
-    await d.wait(200);
     const potAfter = (await d.evalApp('app.night.pot')) as number;
-    if (potAfter <= potBefore) throw new Error(`banking should pay: ${potBefore} → ${potAfter}`);
-    await d.shot('01_banked');
+    if (potAfter <= potBefore) throw new Error(`a contract that landed should pay at once: ${potBefore} → ${potAfter}`);
+    await d.shot('01_paid');
+    // Now bust, which takes everything still chasing but cannot touch the payout.
     await d.evalApp("(function(){const leg=app.night.legs[0]; leg.score=10; const g=app.scenes.current; g.score.snap(10); g.refresh();})()");
     await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('T20')");
     await throwAt(d, 'T20');
     const kept = (await d.evalApp('app.night.pot')) as number;
-    if (kept < potAfter) throw new Error(`a bust took banked money: ${potAfter} → ${kept}`);
-    await d.shot('02_bust_after_banking');
+    if (kept < potAfter) throw new Error(`a bust took money that had already been paid: ${potAfter} → ${kept}`);
+    await d.shot('02_bust_after_paying');
   });
 
   await run('chalk', land, async (d) => {
@@ -387,20 +401,32 @@ async function main(): Promise<void> {
     await d.wait(1200);
     await d.shot('01_welcome');
     let shots = 0;
-    for (let step = 0; step < 90; step++) {
-      const st = (await d.evalApp(
-        "(function(){const s=app.scenes.current; const t=s.hooks; return {busy: !!s.busy, locked: !!s.locked, hasPrompt: !!(t && t.draw), stage: (window.__tutStage||''), throwing: !!s.dart};})()",
-      )) as { busy: boolean; locked: boolean; throwing: boolean };
-      if (st.busy || st.throwing) {
-        await d.wait(150);
-        continue;
+    for (let step = 0; step < 140; step++) {
+      // Wait out whatever is animating without spending a step on it: a bust
+      // takes seconds to play, and the budget is for inputs, not for frames.
+      let waited = 0;
+      for (;;) {
+        const st = (await d.evalApp(
+          '(function(){const s=app.scenes.current; return {busy: !!s.busy, throwing: !!s.dart, game: typeof s.aim !== "undefined"};})()',
+        )) as { busy: boolean; throwing: boolean; game: boolean };
+        if (!st.game || (!st.busy && !st.throwing)) break;
+        if (waited > 12000) throw new Error('the tutorial stopped animating and never came back');
+        await d.wait(120);
+        waited += 120;
       }
       const done = (await d.evalApp("!!(app.save && app.save.data.stats.tutorialDone) && app.night === null")) as boolean;
       if (done) break;
-      // Enter advances a button prompt; when the prompt is waiting on an action
-      // the tutorial has already called the aim, so Enter throws it.
-      await d.key('Enter');
-      await d.wait(400);
+      // Enter advances a button prompt; when the prompt is waiting on an
+      // action the tutorial has already called the aim, so Enter throws it.
+      // Every few steps nudge the sights as well, which is the only thing the
+      // two aim lessons are waiting for.
+      // Cycle the whole keyboard vocabulary: Enter advances or throws, the
+      // arrows move the sights (which is all the two aim lessons want), and
+      // the number keys work the slate. A tutorial that cannot be finished on
+      // a keyboard alone is not finished.
+      const keys = ['Enter', 'Enter', '1', 'ArrowRight', 'Enter', '2', 'ArrowUp', 'Enter', '3'];
+      await d.key(keys[step % keys.length]);
+      await d.wait(300);
       if (step % 6 === 0 && shots < 10) {
         shots++;
         await d.shot(`${String(shots).padStart(2, '0')}_step`);
@@ -408,8 +434,10 @@ async function main(): Promise<void> {
     }
     const finished = (await d.evalApp('!!(app.save && app.save.data.stats.tutorialDone)')) as boolean;
     if (!finished) {
-      const where = (await d.evalApp("(function(){const s=app.scenes.current; return (s && s.constructor && s.constructor.name) + ' locked=' + !!s.locked;})()")) as string;
-      throw new Error(`the tutorial did not reach the end: stuck on ${where}`);
+      const where = (await d.evalApp(
+        "(function(){const s=app.scenes.current; const h=s.hooks||{}; const leg=app.night&&app.night.legs[app.night.legs.length-1]; const v=leg&&leg.visits[leg.visits.length-1]; return (h.stage||'?') + ' locked=' + !!s.locked + ' busy=' + !!s.busy + ' allowed=' + JSON.stringify(h.allowedTargets) + ' verbs=' + JSON.stringify(h.allowedVerbs) + ' pot=' + (app.night&&app.night.pot) + ' thrown=' + (v&&v.throws.length) + ' offer=' + JSON.stringify(leg&&leg.offer) + ' cards=' + JSON.stringify((s.slate&&s.slate.cards||[]).map(function(c){return c.defId+':'+c.mode+':'+c.verbs.map(function(x){return x.id+(x.disabled?'!':'');}).join('/');}));})()",
+      )) as string;
+      throw new Error(`the tutorial did not reach the end: stuck at ${where}`);
     }
     await d.shot('99_finished');
   });

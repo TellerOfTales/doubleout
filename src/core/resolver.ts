@@ -79,7 +79,7 @@ export interface Landing {
  * The gap between these numbers *is* the game's risk dial, so the safe end has
  * to be genuinely safe. A single at the number you called is as near certain
  * as makes no difference — that is the thing you give up when you go for the
- * treble. When everything wobbles, nothing is a gamble, which is what the
+ * treble. When everything wobbles, nothing is a risk, which is what the
  * third playtest found: "maybe I hit zero maybe not."
  * See docs/decisions/design.md §2.
  */
@@ -90,7 +90,7 @@ export const AIM_BASE: Record<Exclude<Region, 'W'>, number> = { S: 97, D: 50, T:
  * nothing on a single you were going to hit anyway — and a fully steadied
  * treble still lands under sixty percent of the time. If it were a flat
  * addition, enough crowd and chalk would make a treble as safe as a single and
- * there would be nothing left to gamble with. See docs/decisions/design.md §5.2.
+ * there would be nothing left to risk. See docs/decisions/design.md §5.2.
  */
 export const STEADY_MAX = 26;
 /** No hand is steadier than this, on any target. */
@@ -177,14 +177,35 @@ export function withoutTheWall(dist: Landing[]): Landing[] {
 }
 
 /** The landing spread for a dart, after the interventions spent on it. */
-export function spreadFor(target: Target, steadiness: number, use: string[] = []): Landing[] {
-  const lift = steadiness + (use.includes('steady') ? STEADY_INTERVENTION : 0);
-  const dist = landingDistribution(target, lift);
+export function spreadFor(target: Target, steadiness: number, use: string[] = [], chalk: Chalk[] = []): Landing[] {
+  const dist = landingDistribution(target, aimSteadiness(chalk, target, steadiness, use));
   return use.includes('called') ? withoutTheWall(dist) : dist;
 }
 
 /** Percentage points STEADY is worth on the dart it is spent on. */
 export const STEADY_INTERVENTION = 25;
+
+/**
+ * Percentage points Wide Trebles is worth, on a treble and nothing else.
+ *
+ * It used to be Narrow Beds, which swapped singles and trebles at the BOARD
+ * stage. Under dealt cards that was a fair trade. Under free aim it was a
+ * catastrophe: you simply called singles, hit them at ninety-seven percent,
+ * and collected sixty a dart. Measured, it took the Decider on its own from a
+ * seven percent field to fifty-two. A chalk that widens the treble ring does
+ * what the old one was for — makes the paying shot land more often — without
+ * handing anyone a treble at a single's price, and STEADY_MAX still caps how
+ * far it can go.
+ */
+export const WIDE_TREBLE = 20;
+
+/** Steadiness for this dart, once the build and the interventions have had their say. */
+export function aimSteadiness(chalk: Chalk[], target: Target, steadiness: number, use: string[] = []): number {
+  let s = Math.max(0, steadiness);
+  if (target.region === 'T' && has(chalk, 'wide_trebles')) s += WIDE_TREBLE;
+  if (use.includes('steady')) s += STEADY_INTERVENTION;
+  return s;
+}
 
 /** Hit chance, as a whole percentage, for the readout on the board. */
 export function hitChance(target: Target, steadiness = 0): number {
@@ -196,8 +217,8 @@ export function hitChance(target: Target, steadiness = 0): number {
 }
 
 /** Roll the landing from the gameplay RNG. Consumes exactly one float. */
-export function rollLanding(target: Target, steadiness: number, rng: Rng, use: string[] = []): Landing {
-  const dist = spreadFor(target, steadiness, use);
+export function rollLanding(target: Target, steadiness: number, rng: Rng, use: string[] = [], chalk: Chalk[] = []): Landing {
+  const dist = spreadFor(target, steadiness, use, chalk);
   let u = nextFloat(rng);
   for (const l of dist) {
     if (u < l.p) return l;
@@ -206,10 +227,10 @@ export function rollLanding(target: Target, steadiness: number, rng: Rng, use: s
   return dist[dist.length - 1];
 }
 
-function landingKind(aimed: Target, landed: Target, steadiness = 0, use: string[] = []): Landing['kind'] {
+function landingKind(aimed: Target, landed: Target, steadiness = 0, use: string[] = [], chalk: Chalk[] = []): Landing['kind'] {
   if (landed.region === 'W') return 'wall';
   if (landed.region === aimed.region && landed.bed === aimed.bed) return 'hit';
-  const dist = spreadFor(aimed, steadiness, use);
+  const dist = spreadFor(aimed, steadiness, use, chalk);
   const found = dist.find((l) => l.target.region === landed.region && l.target.bed === landed.bed);
   return found ? found.kind : 'drift';
 }
@@ -254,14 +275,14 @@ export function resolveThrow(target: Target, ctx: ResolveContext): ResolveOutput
   let landed: Target = aimed;
   if (ctx.landing) landed = { ...ctx.landing };
   else if (ctx.rng && !ctx.trueAim) {
-    landed = { ...rollLanding(aimed, steadiness, ctx.rng, use).target };
+    landed = { ...rollLanding(aimed, steadiness, ctx.rng, use, chalk).target };
     // AGAIN: throw it a second time. The second dart stands, good or bad.
     if (use.includes('again')) {
-      landed = { ...rollLanding(aimed, steadiness, ctx.rng, use).target };
+      landed = { ...rollLanding(aimed, steadiness, ctx.rng, use, chalk).target };
       fired.push('again');
     }
   }
-  const aim = landingKind(aimed, landed, steadiness, use);
+  const aim = landingKind(aimed, landed, steadiness, use, chalk);
   if (landed.region === 'W') {
     // In the wall: the dart is spent, nothing on the board is hit, no chalk fires.
     return {
@@ -332,25 +353,6 @@ export function resolveThrow(target: Target, ctx: ResolveContext): ResolveOutput
         if (did) {
           fired.push('magnetised');
           note('magnetised', 'BOARD', targets, targets.map(baseValue), `→ ${targets.map(targetNotation).join('+')}`);
-        }
-        break;
-      }
-      case 'narrow_beds': {
-        let did = false;
-        targets = targets.map((t) => {
-          if (t.region === 'S') {
-            did = true;
-            return { region: 'T', bed: t.bed };
-          }
-          if (t.region === 'T') {
-            did = true;
-            return { region: 'S', bed: t.bed };
-          }
-          return t;
-        });
-        if (did) {
-          fired.push('narrow_beds');
-          note('narrow_beds', 'BOARD', targets, targets.map(baseValue), `→ ${targets.map(targetNotation).join('+')}`);
         }
         break;
       }

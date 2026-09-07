@@ -14,7 +14,7 @@ import type { TakenContract } from '../core/types';
 import type { Rect } from './layout';
 import { Pulse } from './tween';
 
-export type SlateVerbId = 'TAKE' | 'PULL' | 'BANK' | 'PRESS';
+export type SlateVerbId = 'TAKE' | 'PULL' | 'PRESS';
 
 export interface SlateVerb {
   id: SlateVerbId;
@@ -155,7 +155,7 @@ export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, ti
   if (dead) for (let i = 0; i < w - 4; i += 2) r.pixel(x + 2 + i, y + Math.floor(h / 2), P.CLARET_LIT);
 
   for (const v of c.verbs) {
-    const key = v.id === 'PRESS' ? P.EMBER : v.id === 'BANK' ? P.BAIZE_LIT : v.id === 'TAKE' ? P.BRASS_LIT : P.MIST;
+    const key = v.id === 'PRESS' ? P.EMBER : v.id === 'TAKE' ? P.BRASS_LIT : P.MIST;
     r.rect(v.rect.x, v.rect.y, v.rect.w, v.rect.h, v.disabled ? P.DEEP : P.SHADE);
     r.rectOutline(v.rect.x, v.rect.y, v.rect.w, v.rect.h, v.disabled ? P.SHADE : key);
     r.text(v.label, v.rect.x + Math.floor(v.rect.w / 2), v.rect.y + 2, { font: 5, color: v.disabled ? P.STONE : key, align: 'center' });
@@ -163,8 +163,19 @@ export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, ti
   void STATUS_COLOUR;
 }
 
-/** An empty slot, so the strip keeps its shape when nothing is riding. */
+/**
+ * An empty slot, so the strip keeps its shape when nothing is riding. A solid
+ * ground and a dashed edge: a dithered one read as the pub wall showing
+ * through and made the row look like a fence.
+ */
 export function drawEmptySlot(r: Renderer, rect: Rect): void {
-  r.dither(rect.x, rect.y, rect.w, rect.h, P.INK, 5);
-  r.rectOutline(rect.x, rect.y, rect.w, rect.h, P.SHADE);
+  r.rect(rect.x, rect.y, rect.w, rect.h, P.INK);
+  for (let x = rect.x; x < rect.x + rect.w; x += 3) {
+    r.pixel(x, rect.y, P.SHADE);
+    r.pixel(x, rect.y + rect.h - 1, P.SHADE);
+  }
+  for (let y = rect.y; y < rect.y + rect.h; y += 3) {
+    r.pixel(rect.x, y, P.SHADE);
+    r.pixel(rect.x + rect.w - 1, y, P.SHADE);
+  }
 }

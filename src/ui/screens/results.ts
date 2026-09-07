@@ -26,7 +26,6 @@ import { ButtonSet, drawPanel, drawRow, drawRule } from '../widgets';
 interface SlateLedger {
   settled: number;
   paid: number;
-  banked: number;
   pulled: number;
   lost: number;
   staked: number;
@@ -41,7 +40,7 @@ interface SlateLedger {
  * night that lost twice as much on the ones that did not.
  */
 function readLedger(n: NightState): SlateLedger {
-  const l: SlateLedger = { settled: 0, paid: 0, banked: 0, pulled: 0, lost: 0, staked: 0, returned: 0, net: 0 };
+  const l: SlateLedger = { settled: 0, paid: 0, pulled: 0, lost: 0, staked: 0, returned: 0, net: 0 };
   for (const leg of n.legs) {
     for (const c of leg.ledger) {
       if (!c.settled) continue;
@@ -49,7 +48,6 @@ function readLedger(n: NightState): SlateLedger {
       l.staked += c.stake;
       l.returned += c.settled.pot;
       if (c.settled.how === 'PAID') l.paid++;
-      else if (c.settled.how === 'BANKED') l.banked++;
       else if (c.settled.how === 'PULLED') l.pulled++;
       else l.lost++;
     }
@@ -67,11 +65,12 @@ function observation(n: NightState, l: SlateLedger, won: boolean): string {
   const s = n.stats;
   if (s.contractsTaken === 0) return 'You took no contracts all night. The Pot only grows on the slate.';
   if (won && n.pot >= 8) return `Won with ${n.pot} left in the Pot. Nothing pays after the Decider: spend it sooner.`;
-  if (s.busts >= 4 && !hasChalk(n, 'on_tick')) return `${s.busts} busts. A bust takes every contract still riding: bank the made ones first.`;
-  if (l.lost >= l.banked + l.pulled + 2) return `Lost ${l.lost} riding, banked ${l.banked}. A contract that lands only counts once you bank it.`;
-  if (s.contractsPressed > l.banked + 1) return `Pressed ${s.contractsPressed} times, banked ${l.banked}. A press doubles the stake and risks the lot.`;
-  if (l.net < 0 && l.settled >= 3) return `The slate cost ${-l.net} more than it paid. Pull a live contract for the stake back.`;
-  if (l.pulled === 0 && l.settled >= 4) return 'You never pulled a contract. Pulling returns the stake and what it survived.';
+  if (s.slatesWiped >= 3) return `The slate went ${s.slatesWiped} times. A bust or a dart off the board takes everything that has not landed.`;
+  if (s.busts >= 4) return `${s.busts} busts. A bust takes every contract still chasing: pull out before the risky dart.`;
+  if (l.lost >= l.paid + 2) return `Lost ${l.lost} contracts against ${l.paid} paid. Take fewer, or take ones this visit can actually reach.`;
+  if (s.contractsPressed > l.paid + 1) return `Pressed ${s.contractsPressed} times off ${l.paid} paid. A press doubles the stake and needs the darts to back it.`;
+  if (l.net < 0 && l.settled >= 3) return `The slate cost ${-l.net} more than it paid. Half the stake comes back if you pull out early.`;
+  if (l.pulled === 0 && l.settled >= 4) return 'You never pulled out of a contract. Half a stake back beats none of it.';
   if (s.kitBought === 0) return 'Nothing bought for the kit. An intervention edits the dart you were throwing.';
   return 'A price shortens every time that contract pays. Spread the slate around.';
 }
@@ -241,6 +240,9 @@ export class ResultsScreen implements Scene {
   }
 
   draw(r: Renderer): void {
+    // A screen is never drawn without a night behind it, but if the scene
+    // swap ever lands a frame late, draw nothing rather than crash.
+    if (!this.app.night) return;
     r.clear(P.DEEP);
     if (this.portrait) {
       r.sprite('wall', -70, 0);

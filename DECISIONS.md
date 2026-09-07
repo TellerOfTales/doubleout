@@ -354,18 +354,29 @@ these are the decisions it produced.
     impossible from the current position is never offered, because a dead contract
     is the dead card the deck used to deal.
 
-72. **The press, the bank and the pull.** After every dart: PULL a live contract for
-    the stake back plus one Pot per dart it survived; BANK one that has landed for
-    the printed price, safely; or PRESS it — tear it up and rewrite it as its harder
-    tier at double the stake, with the extra stake taken now. Three decisions a
-    visit, each of them the craps table's only real question. The interest on a pull
-    is what makes stopping positive-value; without it the safe move loses money and
-    a push-your-luck loop with no worthwhile stop has no push in it.
+72. **A contract pays the moment it lands, and the press is the only thing left to
+    do with the money.** The first design had three verbs on a landed contract —
+    bank it, press it, or leave it riding for a per-dart carry — and measurement
+    killed one of them outright: leaving it riding beat banking it in every
+    position a planner could reach, so the planner banked 0.2% of the time. A verb
+    that is never right is a trap drawn on the screen. So a contract now pays
+    straight into the Pot the instant it is made, where nothing can touch it, and
+    the decision is what to do next. PRESS puts double the stake back up on the
+    harder tier with whatever darts are left. PULL gets you out of one that has not
+    landed for half the stake — half, not all, because taking a contract has to
+    cost something you cannot get back, or the right play is to take everything
+    and pull out of the losers. Measured after the change, the press went from 8%
+    of decisions to a third of them.
 
-73. **A bust takes the slate with it.** The single rule that makes the rest work.
-    Banked money survives a bust, riding money does not, so the greed is priced
-    against something real rather than against a number going down. The On Tick
-    chalk buys an exemption for contracts already made, at 7 Pot.
+73. **A bust takes the slate, and so does a dart off the board.** The single rule
+    that makes the rest work. A bust was not enough on its own: with free aim a
+    player avoids busts by aiming at a safe single, so riding a contract was very
+    nearly free and a bot that pressed nothing won three nights in four. The wall
+    is the seven-out. A treble finishes off the board about one time in twenty-five,
+    so three darts at the trebles carry roughly a one-in-eight chance of losing
+    everything still being chased, and three safe singles carry almost none. The
+    price of the risky dart is now paid by the risky dart. On Tick, which had
+    nothing left to exempt, became "pulling out returns the whole stake".
 
 74. **The house shortens your price.** Every time a contract pays, its printed price
     drops by one for the rest of the night, floored at 1. It is the simplest honest
@@ -400,7 +411,38 @@ these are the decisions it produced.
     held, and the game shows the route, because teaching the table is a feature for
     the player this is aimed at rather than a hint that spoils anything.
 
-78. **The tutorial can no longer dead-end.** The previous one trapped the player at
+78. **The publican sells time, and the price goes up.** Chalk fills five slots and
+    the kit six, and after that the Pot had nowhere to go: over two hundred nights,
+    a bot that ignored the slate entirely won MORE often than one that worked it,
+    because the money it earned could not buy anything that wins a leg. ANOTHER GO
+    is a standing offer on every shop shelf — one more visit in the next leg, twice
+    at most, at a price that rises each time you ask. A leg is lost to the clock
+    far more often than to the arithmetic, and that is what the Pot is for. With
+    the sink in place, working the slate is level with ignoring it on win rate
+    and eleven points ahead of any fixed press policy — which is the intended
+    shape: optional, never a tax, never a cheat code, and never playable by rule.
+
+79. **Wide Trebles replaces Narrow Beds.** Narrow Beds swapped singles and trebles
+    at the BOARD stage, which was a fair trade when the deck told you where to
+    throw. Under free aim it was a catastrophe: call singles, hit them at
+    ninety-seven percent, collect sixty a dart. Measured, it took the Decider on its
+    own from a seven percent field to fifty-two. The replacement widens the treble
+    ring instead — twenty points on a called treble and nothing else — which does
+    what the old chalk was for without handing anyone a treble at a single's price.
+    STEADY_MAX still caps it, so a fully steadied treble stays under sixty percent
+    and the risk dial survives any build.
+
+80. **The visit limits are tuned to the ordering, not to a win rate.** They came
+    down to `[6,6,5,4,4,3,3,3]`, which reads brutal and is not: every leg can be
+    extended by buying visits. What they are set by is the one property the design
+    rests on — that judging each press beats both pressing everything and pressing
+    nothing, by a margin no sampling noise explains. Loosen them by a visit and the
+    fixed policies catch up, because with time to spare every contract is affordable
+    and the judgement stops mattering. The resulting 28% night win rate for an
+    expectimax planner lands inside the TDD's 18-28% band, which was not what it was
+    aimed at and is a welcome coincidence.
+
+81. **The tutorial can no longer dead-end.** The previous one trapped the player at
     "40 left" because a mid-visit stage change cleared the prompt and nothing put
     another one up. Prompts are now a pure function of the stage (`promptFor`) and
     `update` re-issues the current one whenever the screen sits idle without one, so

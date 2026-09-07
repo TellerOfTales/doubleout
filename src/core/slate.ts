@@ -50,7 +50,7 @@ export type ContractStatus = 'LIVE' | 'MADE' | 'DEAD';
 
 export interface ContractDef {
   id: string;
-  /** Chalked on the board. Keep to 13 characters so it fits the slate strip. */
+  /** Chalked on the board. Nine characters at most: the slate strip is narrow. */
   name: string;
   /** One line under the name. Keep to 30 characters: the slate strip is narrow. */
   blurb: string;
@@ -82,14 +82,21 @@ function gate(done: boolean, possible: boolean): ContractStatus {
 }
 
 /**
- * A contract that can only be judged when the visit is over. `done` is only
- * consulted once the darts have run out, so conditions written against it can
- * say "every dart" and mean it however many darts the visit had — Fourth Dart
- * makes four, and the contract still reads the same way.
+ * A contract judged by an invariant that has to hold for every dart, plus an
+ * optional extra reading taken once the darts have run out.
+ *
+ * The invariant is checked at every step, so the moment it breaks the contract
+ * is DEAD and stays dead — an earlier version consulted it only while darts
+ * remained and then asked a different question at the end, which let NO SCRAPS
+ * die on the first dart and come back to life on the third. Writing conditions
+ * as "this must be true of every dart so far" makes that impossible, and it
+ * means a contract can say "every dart" and mean it however many darts the
+ * visit had: Fourth Dart makes four and nothing here changes.
  */
-function atEnd(v: VisitProgress, done: boolean, stillPossible: boolean): ContractStatus {
-  if (v.left > 0) return stillPossible ? 'LIVE' : 'DEAD';
-  return done ? 'MADE' : 'DEAD';
+function atEnd(v: VisitProgress, invariant: boolean, final = true, minDarts = 1): ContractStatus {
+  if (!invariant) return 'DEAD';
+  if (v.left > 0) return 'LIVE';
+  return final && thrown(v) >= minDarts ? 'MADE' : 'DEAD';
 }
 
 // ---------------------------------------------------------------- the pool
@@ -101,7 +108,7 @@ export const CONTRACTS: ContractDef[] = [
     name: 'A TON',
     blurb: 'A hundred or more.',
     stake: 2,
-    price: 3,
+    price: 4,
     pressTo: 'fish',
     weight: 7,
     pull: 'SCORE',
@@ -112,7 +119,7 @@ export const CONTRACTS: ContractDef[] = [
     name: 'THE FISH',
     blurb: 'A hundred and forty.',
     stake: 4,
-    price: 8,
+    price: 10,
     pressTo: 'maximum',
     weight: 4,
     pull: 'SCORE',
@@ -123,7 +130,7 @@ export const CONTRACTS: ContractDef[] = [
     name: 'MAXIMUM',
     blurb: 'One hundred and eighty.',
     stake: 8,
-    price: 40,
+    price: 44,
     weight: 0,
     pull: 'SCORE',
     check: (v) => gate(sum(v.values) >= 180, ceiling(v) >= 180),
@@ -135,7 +142,7 @@ export const CONTRACTS: ContractDef[] = [
     name: 'A TREBLE',
     blurb: 'Any treble.',
     stake: 2,
-    price: 2,
+    price: 3,
     pressTo: 'two_trebles',
     weight: 7,
     pull: 'PRECISION',
@@ -143,10 +150,10 @@ export const CONTRACTS: ContractDef[] = [
   },
   {
     id: 'two_trebles',
-    name: 'TWO TREBLES',
+    name: '2 TREBLES',
     blurb: 'Two trebles.',
     stake: 4,
-    price: 6,
+    price: 7,
     pressTo: 'three_trebles',
     weight: 3,
     pull: 'PRECISION',
@@ -157,7 +164,7 @@ export const CONTRACTS: ContractDef[] = [
     name: 'ALL THREE',
     blurb: 'Three trebles.',
     stake: 8,
-    price: 28,
+    price: 32,
     weight: 0,
     pull: 'PRECISION',
     check: (v) => gate(regionCount(v, 'T') >= 3, regionCount(v, 'T') + v.left >= 3),
@@ -167,7 +174,7 @@ export const CONTRACTS: ContractDef[] = [
     name: 'THE BULL',
     blurb: 'The inner bull.',
     stake: 3,
-    price: 12,
+    price: 13,
     weight: 7,
     pull: 'PRECISION',
     check: (v) => gate(regionCount(v, 'IB') >= 1, regionCount(v, 'IB') + v.left >= 1),
@@ -177,14 +184,14 @@ export const CONTRACTS: ContractDef[] = [
     name: 'IN A BED',
     blurb: 'Three darts, one number.',
     stake: 3,
-    price: 14,
+    price: 15,
     weight: 7,
     pull: 'PRECISION',
     check: (v) => {
       const beds = v.hits.map(bedOf);
       const first = beds.find((b) => b !== undefined);
       const consistent = beds.every((b) => b !== undefined && b === first);
-      return atEnd(v, consistent && thrown(v) > 0, consistent);
+      return atEnd(v, consistent);
     },
   },
   {
@@ -192,7 +199,7 @@ export const CONTRACTS: ContractDef[] = [
     name: 'SHANGHAI',
     blurb: 'S, D and T of one number.',
     stake: 4,
-    price: 36,
+    price: 38,
     weight: 3,
     pull: 'PRECISION',
     check: (v) => {
@@ -211,21 +218,21 @@ export const CONTRACTS: ContractDef[] = [
     name: 'NO SCRAPS',
     blurb: 'Every dart fifteen up.',
     stake: 2,
-    price: 8,
+    price: 9,
     pressTo: 'nothing_cheaper',
     weight: 11,
     pull: 'RESTRAINT',
-    check: (v) => atEnd(v, thrown(v) > 0, v.values.every((x) => x >= 15)),
+    check: (v) => atEnd(v, v.values.every((x) => x >= 15)),
   },
   {
     id: 'nothing_cheaper',
-    name: 'NO SCRAPS+',
+    name: 'TWENTY UP',
     blurb: 'Every dart twenty up.',
     stake: 4,
-    price: 14,
+    price: 15,
     weight: 0,
     pull: 'RESTRAINT',
-    check: (v) => atEnd(v, thrown(v) > 0, v.values.every((x) => x >= 20)),
+    check: (v) => atEnd(v, v.values.every((x) => x >= 20)),
   },
   {
     id: 'quiet_one',
@@ -237,46 +244,46 @@ export const CONTRACTS: ContractDef[] = [
     pull: 'RESTRAINT',
     check: (v) => {
       const t = sum(v.values);
-      return atEnd(v, t > 0 && t < 25, t < 25);
+      return atEnd(v, t < 25, t > 0);
     },
   },
   {
     id: 'clean_hands',
-    name: 'CLEAN HANDS',
+    name: 'CLEAN',
     blurb: 'Three on the board, no bust.',
     stake: 2,
-    price: 5,
+    price: 6,
     weight: 9,
     pull: 'RESTRAINT',
-    check: (v) => atEnd(v, thrown(v) > 0 && !v.busted, !v.busted && v.hits.every((h) => h !== null)),
+    check: (v) => atEnd(v, !v.busted && v.hits.every((h) => h !== null)),
   },
 
   {
     id: 'plain_numbers',
-    name: 'PLAIN ONES',
+    name: 'SINGLES',
     blurb: 'Every dart in a single.',
     stake: 2,
-    price: 7,
+    price: 8,
     weight: 10,
     pull: 'RESTRAINT',
-    check: (v) => atEnd(v, thrown(v) > 0, v.hits.every((h) => h?.region === 'S')),
+    check: (v) => atEnd(v, v.hits.every((h) => h?.region === 'S')),
   },
   {
     id: 'cheap_seats',
-    name: 'CHEAP SEATS',
+    name: 'CHEAP END',
     blurb: 'Every dart on a ten or under.',
     stake: 2,
-    price: 12,
+    price: 13,
     weight: 8,
     pull: 'RESTRAINT',
-    check: (v) => atEnd(v, thrown(v) > 0, v.hits.every((h) => h !== null && h.region !== 'W' && (h.bed ?? 99) <= 10)),
+    check: (v) => atEnd(v, v.hits.every((h) => h !== null && h.region !== 'W' && (h.bed ?? 99) <= 10)),
   },
   {
     id: 'two_doubles',
-    name: 'TWO DOUBLES',
+    name: '2 DOUBLES',
     blurb: 'Two doubles in one visit.',
     stake: 3,
-    price: 14,
+    price: 15,
     weight: 7,
     pull: 'PRECISION',
     check: (v) => gate(regionCount(v, 'D') >= 2, regionCount(v, 'D') + v.left >= 2),
@@ -288,7 +295,7 @@ export const CONTRACTS: ContractDef[] = [
     name: 'GAME SHOT',
     blurb: 'Win the leg this visit.',
     stake: 3,
-    price: 8,
+    price: 10,
     weight: 7,
     pull: 'FINISH',
     // Unreachable from a scoring position, and a contract that cannot be
@@ -298,10 +305,10 @@ export const CONTRACTS: ContractDef[] = [
   },
   {
     id: 'left_pretty',
-    name: 'LEFT PRETTY',
+    name: 'LEFT NICE',
     blurb: 'End on an even under 41.',
     stake: 2,
-    price: 6,
+    price: 7,
     weight: 9,
     pull: 'FINISH',
     check: (v) => {
@@ -309,37 +316,39 @@ export const CONTRACTS: ContractDef[] = [
       if (v.checkedOut) return 'DEAD';
       // Same rule: from 301 no three darts can leave you under forty-one.
       const reachable = v.now - v.left * MAX_DART <= 40;
-      return atEnd(v, good(v.now) && !v.busted, !v.busted && v.now >= 2 && reachable);
+      return atEnd(v, !v.busted && v.now >= 2 && reachable, good(v.now));
     },
   },
 
   // --- SHAPE: pure aiming puzzles. These are the ones that make a visit odd.
   {
     id: 'ladder_up',
-    name: 'THE LADDER',
+    name: 'LADDER UP',
     blurb: 'Each dart beats the last.',
     stake: 3,
-    price: 11,
+    price: 12,
     weight: 9,
     pull: 'SHAPE',
     check: (v) => {
       const rising = v.values.every((x, i) => i === 0 || x > v.values[i - 1]);
-      const room = thrown(v) === 0 || v.values[thrown(v) - 1] < MAX_DART;
-      return atEnd(v, rising && thrown(v) > 1, rising && (v.left === 0 || room));
+      // Nothing beats sixty, so a sixty with darts still to come is a dead end.
+      const room = v.left === 0 || thrown(v) === 0 || v.values[thrown(v) - 1] < MAX_DART;
+      return atEnd(v, rising && room, true, 2);
     },
   },
   {
     id: 'ladder_down',
-    name: 'DOWNSTAIRS',
+    name: 'DOWNHILL',
     blurb: 'Each dart under the last.',
     stake: 3,
-    price: 11,
+    price: 12,
     weight: 9,
     pull: 'SHAPE',
     check: (v) => {
       const falling = v.values.every((x, i) => i === 0 || x < v.values[i - 1]);
-      const room = thrown(v) === 0 || v.values[thrown(v) - 1] > 0;
-      return atEnd(v, falling && thrown(v) > 1, falling && (v.left === 0 || room));
+      // And nothing is under nothing.
+      const room = v.left === 0 || thrown(v) === 0 || v.values[thrown(v) - 1] > 0;
+      return atEnd(v, falling && room, true, 2);
     },
   },
   {
@@ -347,14 +356,14 @@ export const CONTRACTS: ContractDef[] = [
     name: 'ODD JOB',
     blurb: 'Every dart an odd number.',
     stake: 2,
-    price: 10,
+    price: 11,
     weight: 9,
     pull: 'SHAPE',
-    check: (v) => atEnd(v, thrown(v) > 0, v.values.every((x) => x % 2 === 1)),
+    check: (v) => atEnd(v, v.values.every((x) => x % 2 === 1)),
   },
   {
     id: 'three_ways',
-    name: 'THREE WAYS',
+    name: 'ALL RINGS',
     blurb: 'A single, double and treble.',
     stake: 3,
     price: 12,
@@ -405,19 +414,19 @@ export function priceOf(def: ContractDef, timesPaid: number): number {
   return Math.max(PRICE_FLOOR, def.price - Math.max(0, timesPaid));
 }
 
-/** Pot returned by a PULL: the stake back, plus the interest it has earned. */
-export function pullValue(stake: number, interest: number): number {
-  return stake + Math.max(0, interest);
+/** Pot returned by a PULL: half the stake, rounded down. The rest is the price of having taken it. */
+export function pullValue(stake: number, share: number): number {
+  return Math.floor(stake * share);
 }
 
 /**
  * Pot returned by a contract that landed and was left to settle on its own:
- * the stake, the price, and interest for every dart it survived after it
- * landed. Banking pays the same without the interest, which is the whole
+ * the stake, the price, and the carry it earned for every dart it survived
+ * after landing. Banking pays the same without the carry, which is the whole
  * choice — certainty costs you the carry.
  */
-export function settleValue(stake: number, price: number, interest: number): number {
-  return stake + price + Math.max(0, interest);
+export function settleValue(stake: number, price: number, carry: number): number {
+  return stake + price + Math.max(0, carry);
 }
 
 /** A pressed contract costs double and pays the harder tier's price. */

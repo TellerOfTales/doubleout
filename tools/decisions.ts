@@ -23,7 +23,6 @@
 import { botShop, naiveAction, planPress, planSlate, planVisit, rankedActions } from '../src/core/bot';
 import { sameTarget } from '../src/core/board';
 import {
-  bankContract,
   beginLeg,
   commitMiss,
   commitThrow,
@@ -32,6 +31,7 @@ import {
   currentVisit,
   pressContract,
   pullContract,
+  pressable as pressableNow,
   shopLeave,
   takeContract,
 } from '../src/core/state';
@@ -61,18 +61,17 @@ function step(n: NightState, record: (leg: ReturnType<typeof currentLeg>) => voi
   for (let guard = 0; guard < 8; guard++) {
     const act = planPress(n, after);
     if (!act) {
-      if (after.slate.some((c) => !c.settled)) onPress('LEAVE');
+      if (after.slate.some((c) => !c.settled || pressableNow(n, after, c))) onPress('LEAVE');
       break;
     }
     onPress(act.act);
-    if (act.act === 'BANK') bankContract(n, act.index);
-    else if (act.act === 'PRESS') pressContract(n, act.index);
+    if (act.act === 'PRESS') pressContract(n, act.index);
     else pullContract(n, act.index);
   }
 }
 
 /** Set by each pass so `step` can report the press decisions it makes. */
-let onPress: (act: 'BANK' | 'PRESS' | 'PULL' | 'LEAVE') => void = () => {};
+let onPress: (act: 'PRESS' | 'PULL' | 'LEAVE') => void = () => {};
 
 // ---------------------------------------------------------------- 1. is it a choice?
 
@@ -85,7 +84,7 @@ let contractsTaken = 0;
 let slateSteered = 0;
 let slateDarts = 0;
 /** What the planner does when a contract is sitting there made, or live. */
-const pressActs = { BANK: 0, PRESS: 0, PULL: 0, LEAVE: 0 };
+const pressActs = { PRESS: 0, PULL: 0, LEAVE: 0 };
 
 onPress = (act) => {
   pressActs[act]++;
@@ -174,7 +173,7 @@ for (let seed = 1; seed <= Math.min(NIGHTS, 80); seed++) {
 
 // ---------------------------------------------------------------- report
 
-const pressTotal = pressActs.BANK + pressActs.PRESS + pressActs.PULL + pressActs.LEAVE;
+const pressTotal = pressActs.PRESS + pressActs.PULL + pressActs.LEAVE;
 const pc = (x: number, of: number) => `${((100 * x) / Math.max(1, of)).toFixed(1)}%`.padStart(6);
 gaps.sort((a, b) => a - b);
 const median = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
@@ -189,7 +188,6 @@ const rows: [string, string, string][] = [
   ['-> slate changed the aim', pc(slateSteered, slateDarts), 'want > 35%'],
   ['', '', ''],
   ['press decisions made', String(pressTotal).padStart(6), ''],
-  ['  banked', pc(pressActs.BANK, pressTotal), ''],
   ['  pressed', pc(pressActs.PRESS, pressTotal), ''],
   ['  pulled', pc(pressActs.PULL, pressTotal), ''],
   ['  left riding', pc(pressActs.LEAVE, pressTotal), 'no verb over 70%'],

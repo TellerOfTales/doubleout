@@ -16,7 +16,6 @@ import { createRng, nextFloat } from '../src/core/rng.ts';
 import { contractDef } from '../src/core/slate.ts';
 import {
   addChalk,
-  bankContract,
   beginLeg,
   throwsPerVisit,
   commitMiss,
@@ -25,6 +24,7 @@ import {
   currentLeg,
   currentVisit,
   pressContract,
+  pressable,
   pullContract,
   shopBuy,
   shopLeave,
@@ -237,8 +237,12 @@ export function slateIndex(n: NightState, defId: string): number {
   return i;
 }
 
-export function bank(n: NightState, defId: string) {
-  return bankContract(n, slateIndex(n, defId));
+/** Index of a contract that has paid and can still be pressed, by def id. */
+export function paidIndex(n: NightState, defId: string): number {
+  const leg = currentLeg(n);
+  const i = leg.slate.findIndex((c) => c.defId === defId && c.settled?.how === 'PAID');
+  if (i < 0) throw new Error(`${defId} has not paid`);
+  return i;
 }
 
 export function pull(n: NightState, defId: string) {
@@ -246,7 +250,7 @@ export function pull(n: NightState, defId: string) {
 }
 
 export function press(n: NightState, defId: string) {
-  return pressContract(n, slateIndex(n, defId));
+  return pressContract(n, paidIndex(n, defId));
 }
 
 /** Status of a contract on the slate right now. */
@@ -293,7 +297,6 @@ export type ScriptStep =
   | { kind: 'RUBOUT' }
   | { kind: 'THROW'; target: Target; use?: string }
   | { kind: 'MISS' }
-  | { kind: 'BANK'; index: number }
   | { kind: 'PRESS'; index: number }
   | { kind: 'PULL'; index: number }
   | { kind: 'BUY'; index: number; replaceChalkId?: string }
@@ -312,9 +315,6 @@ export function applyStep(n: NightState, s: ScriptStep): void {
       break;
     case 'MISS':
       commitMiss(n);
-      break;
-    case 'BANK':
-      bankContract(n, s.index);
       break;
     case 'PRESS':
       pressContract(n, s.index);
@@ -395,36 +395,53 @@ function choose(n: NightState, leg: LegState, ti: 0 | 1 | 2 | 3): Target | null 
 
 /**
  * The scripted slate policy, before the first dart of a visit: rub the offer
- * out if nothing on it is affordable and the kit can pay for it, then take the
- * cheapest contract that leaves at least two Pot in hand.
+ * out if nothing on it is affordable and the kit can pay for it, then take up
+ * to two contracts, cheapest first.
+ *
+ * It prefers a contract that pulls the same way this bot already throws —
+ * SCORE and PRECISION, which the treble twenty satisfies — because the point
+ * of this bot is to exercise the replay machinery, and a policy that only ever
+ * took contracts it could not make never reached the BANK or PRESS steps at
+ * all. It is not meant to be good play; `src/core/bot.ts` is where that lives.
  */
 export function botTakeContracts(n: NightState, leg: LegState, log?: ScriptStep[]): void {
   if (currentVisit(leg).throws.length > 0) return;
   const affordable = () => leg.offer.filter((id) => contractDef(id).stake + 2 <= n.pot);
   if (affordable().length === 0 && n.kit.includes('rubout')) step(n, { kind: 'RUBOUT' }, log);
-  const ids = affordable().sort((a, b) => contractDef(a).stake - contractDef(b).stake || a.localeCompare(b));
-  if (ids.length) step(n, { kind: 'TAKE', defId: ids[0] }, log);
+  const rank = (id: string) => {
+    const pull = contractDef(id).pull;
+    return pull === 'PRECISION' ? 0 : pull === 'SCORE' ? 1 : 2;
+  };
+  const order = (a: string, b: string) => rank(a) - rank(b) || contractDef(a).stake - contractDef(b).stake || a.localeCompare(b);
+  for (let taken = 0; taken < 2; taken++) {
+    const ids = affordable().sort(order);
+    if (!ids.length) break;
+    step(n, { kind: 'TAKE', defId: ids[0] }, log);
+  }
 }
 
 /**
- * The scripted settle policy, after every dart: bank anything already made.
- * The greedier bot presses a made contract once first, which is the only way
- * the press ever reaches the determinism run.
+ * The scripted settle policy, after every dart. A contract that lands has
+ * already paid itself, so there is nothing to bank; the greedier bot presses
+ * the first one it can, which is the only way a press reaches the determinism
+ * run at all.
  */
 export function botSettleSlate(n: NightState, leg: LegState, deep = false, log?: ScriptStep[]): void {
+  if (!deep) return;
   for (let i = 0; i < leg.slate.length; i++) {
     const c = leg.slate[i];
-    if (c.settled || c.status !== 'MADE') continue;
-    const dartsLeft = throwsPerVisit(n) - currentVisit(leg).throws.length;
-    const harder = contractDef(c.defId).pressTo;
-    if (deep && harder && c.pressed === 0 && dartsLeft > 0 && n.pot >= c.stake) step(n, { kind: 'PRESS', index: i }, log);
-    else step(n, { kind: 'BANK', index: i }, log);
+    if (c.pressed > 0 || !pressable(n, leg, c)) continue;
+    if (n.pot < c.stake * 2) continue;
+    step(n, { kind: 'PRESS', index: i }, log);
+    return;
   }
 }
 
 /** The scripted kit policy: steady the hand on a finishing dart, when one is held. */
 export function botUse(n: NightState, t: Target): string | undefined {
-  if (t.region !== 'D' && t.region !== 'IB') return undefined;
+  // Steady the hand on anything thin: a double, a bull or a treble. The deep
+  // run exists to exercise the kit, so it spends it rather than hoarding it.
+  if (t.region !== 'D' && t.region !== 'IB' && t.region !== 'T') return undefined;
   if (n.kit.includes('steady')) return 'steady';
   if (n.kit.includes('called')) return 'called';
   return undefined;
@@ -481,7 +498,7 @@ export interface DriveOpts {
 
 /**
  * Drive a night (or a deserialised snapshot of one) to its end with the
- * scripted bot: take a contract, throw, bank what landed, repeat.
+ * scripted bot: take contracts, throw, press what it can, repeat.
  */
 export function continueScripted(n: NightState, opts: DriveOpts = {}): NightState {
   const { stopWhen, deep = false, log } = opts;

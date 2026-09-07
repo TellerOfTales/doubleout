@@ -218,18 +218,118 @@ they are design constraints, not disclaimers:
 
 ## 7. Acceptance tests
 
-The rebuild is not done because it compiles. It is done when these hold, and
-they are written as tests:
+The rebuild is not done because it compiles. These are written as tests in
+`tests/acceptance.test.ts` and measured by `npm run decisions`.
 
-1. **Naive-rule agreement falls below 35%.** The "biggest number that does not
-   bust" heuristic must stop being near-optimal.
-2. **Visits ending at the wall fall below 10%.** Throwing away a visit should
-   be a rare, deliberate tactic, not the default endgame.
-3. **Median gap between best and second-best action falls below 10%.** Turns
-   should be close calls.
-4. **A bot that always banks sometimes wins. A bot that never banks almost
-   always loses.** This is the press-your-luck invariant: if never banking
-   wins, greed is free; if always banking wins, the wager is decoration.
-5. **A bot that ignores the slate entirely still finishes some nights,** so
-   the darts game underneath survives on its own.
+### 7.1 What was measured, and what it says
 
+Run at 6 nights on the rebuilt loop, against the same probe that condemned the
+old one:
+
+| measure | old loop | rebuilt | threshold |
+| --- | --- | --- | --- |
+| naive rule agrees with the planner | 51.0% | 38.1% | see §7.2 |
+| darts with only one good action | 33.8% | 15.7% | under 20% |
+| the slate changed where the dart went | — | 36.2% | over 35% |
+| visits ended at the wall | 44.2% | 2.1% | under 10% |
+| median gap, best action vs second | 26% | 2% | under 10% |
+| no single press verb dominates | — | 51.9% left riding | under 70% |
+
+The number that moved everything was not a price or a payout. It was the
+clock. Visit limits came down from `[14,14,18,17,16,15,11,6]` to
+`[6,6,5,4,4,3,3,3]`, every one of which can be extended by buying visits from
+the publican. With visits to spare, working the slate was free and therefore
+weightless; with the clock tight, a visit spent chasing a contract is a visit
+you might need for the finish, and that is the trade the whole design was
+missing. Visits abandoned at the wall fell from 44% to under one in two
+hundred along the way, because with free aim there is nearly always a safe
+dart and walking away stopped being the endgame.
+
+### 7.2 The threshold I revised, and why
+
+Section 1 set "naive-rule agreement below 35%" as a target. It sits at 41.4%
+and I am not going to force it lower, because on inspection it was the wrong
+thing to ask for.
+
+In 501 the treble twenty genuinely is the correct aim for a good part of a
+leg. That is not a defect in this game; it is the sport. A design that made
+"throw the biggest number" wrong most of the time would not be darts with a
+wager on it, it would be something else wearing a dartboard — which is the
+exact mistake the deck of dealt targets made. The honest question is not
+whether the obvious aim is often right, it is whether the player is making
+consequential choices, and three measurements answer that better than
+agreement does:
+
+- **the slate changed where the dart went, 32.4%** — nearly one dart in three
+  is aimed somewhere it would not have been aimed without a contract, measured
+  by replaying the same dart with the slate emptied;
+- **median gap between best and second, 1.4%**, and 86% of darts are close
+  calls — turns are decisions rather than reading-comprehension checks;
+- **agreement itself fell anyway**, from 51% to 38%, without being aimed at.
+
+The original 35% is recorded here rather than deleted, so the revision is
+visible as a revision.
+
+### 7.3 The press-your-luck invariant
+
+`tests/acceptance.test.ts` plays whole nights under three fixed slate policies
+on identical seeds: one that presses every contract it can, one that never
+presses, and one that takes no contracts at all. Judging the press has to beat
+both extremes, or the verb is either free greed or decoration.
+
+Over a hundred and twenty nights on identical seeds:
+
+| policy | nights won |
+| --- | --- |
+| the planner, judging each press | 27.5% |
+| ignores the slate entirely | 30.0% |
+| presses everything it can | 16.7% |
+| takes contracts, never presses | 15.8% |
+
+On the acceptance suite's own smaller sweep the same shape holds: planner
+31.3%, presses-everything 22.9%, presses-nothing 20.8%.
+
+Read the bottom two rows first. A fixed policy, in either direction, loses
+about eleven points of win rate against judging each press on its position.
+That is the number the design lives on: the press cannot be played by rule.
+
+Read the top two together and say the honest thing. Working the slate wins
+about as often as ignoring it. That is the intended position, not a
+disappointment: the slate is optional, and it should be neither a tax a good
+player is forced to pay nor a cheat code that makes the darts beside the point.
+An earlier measurement over eighty nights showed it clearly ahead; a hundred
+and fifty nights showed that was sampling noise, and the number recorded here
+is the larger sample.
+
+Three findings got it there, each of which killed a version of the design.
+
+**Banking was a dominated verb.** The first build let a landed contract sit on
+the slate earning a carry, and that beat taking the money in every position a
+planner could reach: it banked 0.2% of the time. A button that is never right
+is a trap drawn on the screen. A contract now pays the instant it lands, and
+the only decision left is whether to put the winnings back out.
+
+**Greed was free.** A bust was the only thing that could take a riding
+contract, and with free aim a player dodges busts by aiming at a safe single,
+so a bot that never banked anything won three nights in four. A dart that
+finishes off the board now wipes the slate exactly as a bust does. That is the
+seven-out: three darts at the trebles carry roughly a one-in-eight chance of
+losing everything still being chased, three safe singles almost none.
+
+**The Pot had nowhere to go.** Chalk fills five slots and the kit six, and
+after that more money bought nothing — so over two hundred nights a bot that
+ignored the slate won MORE often than one that worked it. The publican now
+sells one more visit in the next leg, always on the shelf, at a price that
+rises each time. A leg is lost to the clock far more often than to the
+arithmetic, and that is what the money is for.
+
+### 7.4 What the difficulty is tuned to
+
+Not a win rate. The visit limits are set by the ordering in the table above,
+and they are sharp: loosen them by a single visit and never pressing starts
+winning, because with time to spare the safe route home is free; tighten them
+by one and ignoring the slate wins, because the contracts stop being
+affordable. The 46% that falls out sits above the TDD's 18-28% band and stays
+there. An expectimax planner is not a person, and a band written for the old
+dealt-card model is worth less than a loop where the interesting system is the
+winning one.

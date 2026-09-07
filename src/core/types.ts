@@ -41,7 +41,12 @@ export interface InterventionDef {
 
 // ---------- The slate ----------
 
-export type ContractOutcome = 'PAID' | 'LOST' | 'PULLED' | 'BANKED';
+/**
+ * PAID: it landed, and the money went into the Pot the moment it did.
+ * LOST: the visit ended, or a bust or a dart off the board took it.
+ * PULLED: the player got out of it early for half the stake.
+ */
+export type ContractOutcome = 'PAID' | 'LOST' | 'PULLED';
 
 /** A contract the player has staked Pot on this visit. */
 export interface TakenContract {
@@ -54,8 +59,13 @@ export interface TakenContract {
   takenAt: number;
   /** How many darts had been thrown when it first landed, or null if it has not. */
   madeAt: number | null;
-  /** Times it has been pressed into a harder tier. */
+  /** How many presses deep this contract is. A fresh one is 0. */
   pressed: number;
+  /**
+   * True once its winnings have been pressed into something harder. The money
+   * has already gone back out, so it cannot be pressed a second time.
+   */
+  spent?: boolean;
   status: 'LIVE' | 'MADE' | 'DEAD';
   /** Once it is off the slate: what it paid back in total, and why. */
   settled: { pot: number; how: ContractOutcome } | null;
@@ -198,7 +208,7 @@ export interface PotBreakdown {
   visitsUsed: number;
 }
 
-export type ServiceKind = 'STEADY' | 'CREDIT' | 'RUB_OUT';
+export type ServiceKind = 'STEADY' | 'CREDIT' | 'RUB_OUT' | 'ANOTHER_GO';
 
 export type ShopSlot =
   | { kind: 'KIT'; defId: string; cost: number; sold: boolean }
@@ -235,6 +245,12 @@ export interface NightStats {
   potWon: number;
   /** Best single contract payout of the night. */
   bestPayout: number;
+  /**
+   * Visits where a bust or a dart off the board took everything still riding.
+   * With free aim a bust is rare, so this is the number that actually says how
+   * often the room went quiet.
+   */
+  slatesWiped: number;
   bigFinishes: number;
   cleanLegs: number;
   maxChalkHeld: number;
@@ -261,6 +277,12 @@ export interface NightState {
   kit: string[];
   /** Times each contract has paid tonight. The house shortens your price. */
   paid: Record<string, number>;
+  /**
+   * Visits bought from the publican, added to the next leg's limit and spent
+   * when it starts. This is the Pot's second home: chalk is the build, and
+   * this is the clock, which is the thing a leg is actually lost to.
+   */
+  extraVisits: number;
   chalk: Chalk[]; // max 5 (6 on The Wide)
   legs: LegState[];
   status: 'ACTIVE' | 'WON' | 'LOST';

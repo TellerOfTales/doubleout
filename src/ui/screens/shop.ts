@@ -13,7 +13,7 @@ import { P } from '../../art/palette';
 import { measureText } from '../../art/sprites';
 import { CHALK_DEFS, chalkDef } from '../../content/chalkdefs';
 import { KIT_CAP, interventionDef } from '../../content/interventions';
-import { SERVICE_COST, SHOP_REFRESH_COST } from '../../content/legs';
+import { ANOTHER_GO_CAP, SERVICE_COST, SHOP_REFRESH_COST } from '../../content/legs';
 import { buildBarkContext } from '../../core/commentary';
 import { CONTRACT_BY_ID, PRICE_FLOOR } from '../../core/slate';
 import { currentPrice, hasChalk, legName, shopBuy, shopLeave, shopRefresh } from '../../core/state';
@@ -40,14 +40,15 @@ export interface ShopHooks {
 }
 
 /**
- * The publican's three services. Names are his, not the game's: he is selling
- * a steady hand, an advance and a clean record, and the price of each is
- * printed on the slot beside it.
+ * The publican's services. Names are his, not the game's: he is selling a
+ * steady hand, an advance, a clean record and one more go at the board, and
+ * the price of each is printed on the slot beside it.
  */
 const SERVICE_TEXT: Record<ServiceKind, { name: string; icon: number }> = {
   STEADY: { name: 'STEADY HAND', icon: 28 },
   CREDIT: { name: "PUBLICAN'S ADVANCE", icon: 5 },
   RUB_OUT: { name: 'FULL PRICE', icon: 7 },
+  ANOTHER_GO: { name: 'ANOTHER GO', icon: 14 },
 };
 
 /**
@@ -58,6 +59,9 @@ const SERVICE_TEXT: Record<ServiceKind, { name: string; icon: number }> = {
 function plain(s: string): string {
   return s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-');
 }
+
+/** Slots on the shelf. Four are rolled; the fifth is always ANOTHER GO. */
+const SHOP_SLOTS = 5;
 
 interface ShopLayout {
   slots: Rect[];
@@ -82,8 +86,10 @@ interface ShopLayout {
  */
 function shopLayout(w: number, h: number): ShopLayout {
   if (w >= h) {
+    // Five across: two kit, a chalk, a rolled service, and the publican's
+    // standing offer of one more visit.
     const slots: Rect[] = [];
-    for (let i = 0; i < 4; i++) slots.push({ x: 5 + i * 78, y: 14, w: 74, h: 48 });
+    for (let i = 0; i < SHOP_SLOTS; i++) slots.push({ x: 3 + i * 63, y: 14, w: 60, h: 48 });
     return {
       slots,
       kit: { x: 4, y: 64, w: 150, h: 44 },
@@ -100,13 +106,14 @@ function shopLayout(w: number, h: number): ShopLayout {
   }
   // Portrait stacks the same five things and spends its extra height on the
   // detail line, which has a third of the width to say the same sentence in.
+  // Portrait stacks them two to a row, so the fifth sits on its own.
   const slots: Rect[] = [];
-  for (let i = 0; i < 4; i++) slots.push({ x: 4 + (i % 2) * 88, y: 14 + Math.floor(i / 2) * 50, w: 84, h: 46 });
+  for (let i = 0; i < SHOP_SLOTS; i++) slots.push({ x: 4 + (i % 2) * 88, y: 14 + Math.floor(i / 2) * 34, w: 84, h: 32 });
   return {
     slots,
-    kit: { x: 4, y: 114, w: 172, h: 42 },
-    prices: { x: 4, y: 180, w: 172, h: 58 },
-    chalk: { x: 4, y: 160, w: 16, h: 16 },
+    kit: { x: 4, y: 122, w: 172, h: 40 },
+    prices: { x: 4, y: 188, w: 172, h: 52 },
+    chalk: { x: 4, y: 166, w: 16, h: 16 },
     chalkStep: 18,
     detail: { x: 3, y: 240, w: w - 6, h: 32 },
     detailLines: 4,
@@ -483,6 +490,9 @@ export class ShopScreen implements Scene {
   }
 
   draw(r: Renderer): void {
+    // A screen is never drawn without a night behind it, but if the scene
+    // swap ever lands a frame late, draw nothing rather than crash.
+    if (!this.app.night) return;
     r.clear(P.DEEP);
     if (this.portrait) {
       r.sprite('wall', -70, 0);
@@ -676,6 +686,8 @@ export class ShopScreen implements Scene {
   private serviceRule(service: ServiceKind, cost: number): string {
     if (service === 'STEADY') return `${SERVICE_TEXT.STEADY.name}: adds a STEADY to the kit. Buy again while the kit has room.`;
     if (service === 'CREDIT') return `${SERVICE_TEXT.CREDIT.name}: pay ${cost}, the publican puts ${SERVICE_COST.CREDIT * 2} in the Pot. Once.`;
+    if (service === 'ANOTHER_GO')
+      return `${SERVICE_TEXT.ANOTHER_GO.name}: one more visit in the next leg, ${ANOTHER_GO_CAP} at most, and he asks more each time. A leg is lost to the clock more often than to the arithmetic.`;
     const target = this.rubOutTarget();
     return target
       ? `${SERVICE_TEXT.RUB_OUT.name}: rubs ${target} off the record, so it is printed at its full price again.`

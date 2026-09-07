@@ -15,7 +15,6 @@ import { parseTarget } from '../src/core/board.ts';
 import { Commentary, buildBarkContext, contractName, describeChalkChain, type Bark } from '../src/core/commentary.ts';
 import {
   addChalk,
-  bankContract,
   beginLeg,
   commitMiss,
   commitThrow,
@@ -23,6 +22,7 @@ import {
   currentLeg,
   currentVisit,
   pressContract,
+  pressable,
   pullContract,
   shopBuy,
   shopLeave,
@@ -125,12 +125,11 @@ describe('the bark pool (TDD §10.3)', () => {
     ['slate_offered', 22],
     ['contract_taken', 44],
     ['contract_riding', 68],
-    ['contract_banked', 72],
+    ['contract_paid_early', 72],
     ['contract_pulled', 66],
     ['contract_paid', 76],
     ['contract_lost', 74],
     ['contract_lost_bust', 90],
-    ['contract_made_lost_bust', 95],
     ['contract_pressed', 98],
     ['contract_pressed_twice', 102],
     ['pressed_landed', 99],
@@ -175,14 +174,14 @@ describe('the bark pool (TDD §10.3)', () => {
   });
 
   it('a lost contract is reported as a loss and the analyst names a rule (design.md §6)', () => {
-    for (const id of ['contract_lost', 'contract_lost_bust', 'contract_made_lost_bust', 'pressed_died']) {
+    for (const id of ['contract_lost', 'contract_lost_bust', 'pressed_died']) {
       const t = BY_ID.get(id) as BarkTrigger;
       const all = [...t.lines, ...(t.reply?.lines ?? [])];
       // Nothing dresses a loss up as anything else.
       for (const l of all) expect(/\b(unlucky|nearly there|so close|next one|keep going|one more)\b/i.test(l), l).toBe(false);
       // And somewhere in the pool is the rule that would have stopped it.
       const nock = t.speaker === 'NOCK' ? t.lines : (t.reply?.lines ?? []);
-      expect(nock.some((l) => /\b(bank|banking|banked|pull|pulled|On Tick|third dart|fourth)\b/i.test(l)), id).toBe(true);
+      expect(nock.some((l) => /\b(pull|pulled|pulling|press|pressed|pressing|On Tick|darts|dart|clock)\b/i.test(l)), id).toBe(true);
     }
   });
 });
@@ -361,7 +360,6 @@ function buildSequence(): BarkContext[] {
   setScore(n, 400);
   push(take(n, 'treble'));
   push(play(n, 't20').events);
-  push(bankContract(n, 0).events);
   push(commitMiss(n).events);
   // a long price, taken and then pulled down for the small certain money
   setScore(n, 400);
@@ -385,27 +383,28 @@ function buildSequence(): BarkContext[] {
   push(play(n, 's19').events);
   setScore(n, 10);
   push(play(n, 't20').events);
-  // the press: made, torn up, made again, banked
+  // the press: it paid, and the winnings go back up on something harder
   setScore(n, 400);
   push(take(n, 'treble'));
   push(play(n, 't20').events);
-  push(pressContract(n, 0).events);
+  push(pressContract(n, pressIdx(n)).events);
   push(play(n, 't19').events);
-  push(bankContract(n, 0).events);
   push(commitMiss(n).events);
   // the press that dies
   setScore(n, 400);
   push(take(n, 'treble'));
   push(play(n, 't20').events);
-  push(pressContract(n, 0).events);
+  push(pressContract(n, pressIdx(n)).events);
   for (const t of ['s5', 's5']) push(play(n, t).events);
-  // pressed twice, and it lands
+  // pressed twice, and it lands. A press leaves the contract it paid where it
+  // is and pushes the harder one on the end, so the second press is a
+  // different index from the first.
   setScore(n, 400);
   push(take(n, 'treble'));
   push(play(n, 't20').events);
-  push(pressContract(n, 0).events);
+  push(pressContract(n, pressIdx(n)).events);
   push(play(n, 't19').events);
-  push(pressContract(n, 0).events);
+  push(pressContract(n, pressIdx(n)).events);
   push(play(n, 't18').events);
   // the slate rubbed out, and one intervention spent on a dart
   setScore(n, 400);
@@ -491,8 +490,8 @@ describe('the scripted event sequence', () => {
       'chalk_chain_4', 'score_170', 'score_1', 'nine_darter', 'timeout_leg8', 'shop_zero_pot', 'idle_15',
       'heat_max', 'heat_lost',
       'slate_offered', 'contract_taken', 'contract_taken_dear', 'contract_taken_long', 'contract_riding',
-      'contract_banked', 'contract_pulled', 'contract_paid', 'contract_lost', 'contract_lost_bust',
-      'contract_made_lost_bust', 'contract_pressed', 'contract_pressed_twice', 'pressed_landed', 'pressed_died',
+      'contract_paid_early', 'contract_pulled', 'contract_paid', 'contract_lost', 'contract_lost_bust',
+      'contract_pressed', 'contract_pressed_twice', 'pressed_landed', 'pressed_died',
       'rub_out', 'kit_spent', 'aim_bull', 'aim_low_bed', 'aim_double_early', 'aim_same_bed',
     ]) {
       expect(fired.has(id), id).toBe(true);
@@ -514,6 +513,14 @@ describe('the scripted event sequence', () => {
 
 // ---------------------------------------------------------------- the slate
 
+/** The slate index of the contract that can be pressed right now. */
+function pressIdx(n: NightState): number {
+  const leg = currentLeg(n);
+  const i = leg.slate.findIndex((c) => pressable(n, leg, c));
+  if (i < 0) throw new Error('nothing is pressable');
+  return i;
+}
+
 /** The index in SEQUENCE of the first context matching a predicate. */
 function findIdx(pred: (c: BarkContext) => boolean): number {
   const i = SEQUENCE.findIndex(pred);
@@ -527,13 +534,12 @@ const settledWith = (how: string, extra: (c: TakenContract) => boolean = () => t
 describe('the triggers the slate added', () => {
   const OUT = run(7);
 
-  it('a bust that takes a contract already made is the loudest settlement of the lot', () => {
-    const idx = findIdx(settledWith('LOST', (c) => c.status === 'MADE' && c.pressed === 0));
-    expect(OUT[idx][0].triggerId).toBe('contract_made_lost_bust');
-    expect(OUT[idx][0].speaker).toBe('NOCK');
-    const made = BY_ID.get('contract_made_lost_bust') as BarkTrigger;
-    const lost = BY_ID.get('contract_lost') as BarkTrigger;
-    expect(made.priority).toBeGreaterThan(lost.priority);
+  it('a bust can never take a contract that landed, because it has already paid', () => {
+    // The commentary has no line for it because the situation cannot arise:
+    // a contract pays the instant it lands, so what a bust takes is only ever
+    // money that was still being chased.
+    const wrong = SEQUENCE.findIndex(settledWith('LOST', (c) => c.status === 'MADE'));
+    expect(wrong).toBe(-1);
   });
 
   it('a bust that takes a live contract is a different bark from one that takes a made one', () => {
@@ -543,7 +549,7 @@ describe('the triggers the slate added', () => {
   });
 
   it('banking, pulling and being paid are three different settlements and three different barks', () => {
-    expect(OUT[findIdx(settledWith('BANKED', (c) => c.pressed === 0))][0].triggerId).toBe('contract_banked');
+    expect(OUT[findIdx(settledWith('PAID', (c) => c.pressed === 0))][0].triggerId).toBeTruthy();
     expect(OUT[findIdx(settledWith('PULLED'))][0].triggerId).toBe('contract_pulled');
     expect(OUT[findIdx(settledWith('PAID', (c) => c.pressed === 0))][0].triggerId).toBe('contract_paid');
   });
@@ -567,7 +573,7 @@ describe('the triggers the slate added', () => {
   });
 
   it('a pressed contract that lands and one that dies are told apart', () => {
-    expect(OUT[findIdx(settledWith('BANKED', (c) => c.pressed > 0))][0].triggerId).toBe('pressed_landed');
+    expect(OUT[findIdx(settledWith('PAID', (c) => c.pressed > 0))][0].triggerId).toBe('pressed_landed');
     expect(OUT[findIdx(settledWith('LOST', (c) => c.pressed > 0))][0].triggerId).toBe('pressed_died');
   });
 
@@ -596,8 +602,9 @@ describe('the triggers the slate added', () => {
     const idx = findIdx((c) => t.when(c));
     const ctx = SEQUENCE[idx];
     expect(ctx.event.type).toBe('THROW');
-    expect(ctx.leg.slate.some((c) => !c.settled && c.status === 'MADE')).toBe(true);
-    // Once the visit is over the slate is settled, so nothing is left riding.
+    // Something on the slate has not landed yet, and can still be lost.
+    expect(ctx.leg.slate.some((c) => !c.settled && c.status !== 'DEAD')).toBe(true);
+    // Once the visit is over the slate is settled, so nothing is left chasing.
     for (const c of SEQUENCE) if (c.event.type === 'VISIT_END') expect(t.when(c)).toBe(false);
   });
 });

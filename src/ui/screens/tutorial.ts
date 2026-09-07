@@ -14,7 +14,7 @@
 import { P } from '../../art/palette';
 import { parseTarget, sameTarget, targetNotation } from '../../core/board';
 import { contractDef } from '../../core/slate';
-import { addChalk, beginLeg, createNight, currentLeg, currentVisit, hasChalk, shopLeave } from '../../core/state';
+import { addChalk, beginLeg, commitMiss, createNight, currentLeg, currentVisit, hasChalk, shopLeave } from '../../core/state';
 import type { EngineEvent, LegState, NightState, ShopSlot, Target } from '../../core/types';
 import type { App } from '../app';
 import type { Renderer } from '../draw';
@@ -82,6 +82,11 @@ class Tutorial {
   time = 0;
   /** Seconds the screen has been idle with no prompt. The dead-end guard. */
   private idle = 0;
+  /** Where the sights were when the current stage began, for the aim lessons. */
+  private aimAtEntry: Target | null = null;
+  /** The target a scripted stage called, so wandering sights can be put back. */
+  private scripted: Target | null = null;
+  private wandered = 0;
   private w = 320;
   private h = 180;
 
@@ -122,15 +127,45 @@ class Tutorial {
   private script(target: Target, lands: Target = target): void {
     const g = this.game;
     if (!g) return;
+    this.scripted = { ...target };
+    this.wandered = 0;
     g.aim = { ...target };
     g.forceLanding = { ...lands };
     g.refreshPreview();
     g.hooks.allowedTargets = [target];
   }
 
+  /**
+   * No dart at all. The slate lessons happen before the first throw of a
+   * visit, and a stray dart ends that window for good — so while one is
+   * running, nothing on the board is a legal target.
+   */
+  private noThrow(): void {
+    const g = this.game;
+    if (!g) return;
+    this.scripted = null;
+    g.forceLanding = null;
+    g.hooks.allowedTargets = [];
+  }
+
+  /**
+   * The slate lessons only work at the top of a visit, because that is the
+   * only time contracts can be taken. If a dart has already gone — however it
+   * got thrown — walk the visit away so the next one starts clean. The
+   * SLATE_OFFERED that follows re-enters this stage with a fresh slate.
+   */
+  private freshVisit(): boolean {
+    const leg = this.leg;
+    if (!leg || leg.status !== 'ACTIVE') return false;
+    if (currentVisit(leg).throws.length === 0) return false;
+    commitMiss(this.night);
+    return true;
+  }
+
   private freeAim(): void {
     const g = this.game;
     if (!g) return;
+    this.scripted = null;
     g.forceLanding = null;
     g.hooks.allowedTargets = null;
   }
@@ -287,6 +322,8 @@ class Tutorial {
   private gameHooks() {
     return {
       ownsFlow: true,
+      // The playtest harness reads this to say where a stuck tutorial stopped.
+      stage: this.stage as string,
       allowedTargets: null as Target[] | null,
       allowedVerbs: null as SlateVerbId[] | null,
       onReady: (screen: GameScreen) => this.onReady(screen),
@@ -307,6 +344,7 @@ class Tutorial {
 
   private go(stage: Stage): void {
     this.stage = stage;
+    if (this.game) (this.game.hooks as { stage?: string }).stage = stage;
     this.enter(stage);
   }
 
@@ -338,12 +376,19 @@ class Tutorial {
         g.locked = false;
         break;
       case 'slate_intro':
+        if (this.freshVisit()) return;
         this.setScore(301);
         this.setOffer(['ton', 'treble', 'clean_hands']);
         break;
       case 'take':
-        this.setOffer(['ton', 'treble', 'clean_hands']);
+        if (this.freshVisit()) return;
+        // One contract on the strip for this step. The three that pull against
+        // each other were shown a moment ago; the lesson that follows is about
+        // what happens to THIS one, so there is nothing else to take by
+        // accident and no way to end up in a step the script cannot finish.
+        this.setOffer(['treble']);
         this.allowVerbs(['TAKE']);
+        this.noThrow();
         g.locked = false;
         break;
       case 'throw_contract':
@@ -351,7 +396,8 @@ class Tutorial {
         g.locked = false;
         break;
       case 'decide':
-        this.allowVerbs(['BANK', 'PRESS']);
+        this.allowVerbs(['PRESS']);
+        this.noThrow();
         g.locked = false;
         break;
       case 'throw_press':
@@ -359,6 +405,7 @@ class Tutorial {
         g.locked = false;
         break;
       case 'bust_intro':
+        if (this.freshVisit()) return;
         this.setScore(40);
         this.setOffer(['ton', 'left_pretty', 'clean_hands']);
         break;
@@ -378,6 +425,11 @@ class Tutorial {
       default:
         break;
     }
+    // Rebuild the strip last. Everything above may have locked the screen,
+    // changed the offer or changed which verbs are allowed, and the buttons
+    // are drawn disabled or not from exactly those three things.
+    g.refresh();
+    this.aimAtEntry = g.aim ? { ...g.aim } : null;
     const p = this.promptFor(stage);
     if (p) this.say(p);
   }
@@ -409,7 +461,7 @@ class Tutorial {
         };
       case 'throw_safe':
         return {
-          text: 'Forty-five percent, for triple the score. That gap is the whole game: the safe dart is nearly certain, and everything better is a gamble. Throw the single first.',
+          text: 'Forty-five percent, for triple the score. That gap is the whole game: the safe dart is near enough certain, and everything better is a risk you choose. Throw the single first.',
           target: () => this.throwRect(),
         };
       case 'after_safe':
@@ -420,7 +472,7 @@ class Tutorial {
           onNext: () => this.go('throw_treble'),
         };
       case 'throw_treble':
-        return { text: 'Sixty if it lands. Throw it.', target: () => this.throwRect() };
+        return { text: 'Sixty if it lands. Throw it.', target: () => this.spotRect(T20) };
       case 'after_treble':
         return {
           text: 'Sixty. That is what you are playing for. Throw one more at the treble.',
@@ -429,7 +481,7 @@ class Tutorial {
           onNext: () => this.go('throw_miss'),
         };
       case 'throw_miss':
-        return { text: 'Same dart, same aim.', target: () => this.throwRect() };
+        return { text: 'Same dart, same aim.', target: () => this.spotRect(T20) };
       case 'after_miss':
         return {
           text: 'Five. Miss a treble and you usually land in the bed beside it, and once in a while nowhere at all. Nobody took that off you. You chose it.',
@@ -446,7 +498,7 @@ class Tutorial {
         };
       case 'take':
         return {
-          text: 'They pull in different directions on purpose. A TON wants the trebles. CLEAN HANDS wants three safe darts. You cannot have both. Take A TREBLE.',
+          text: 'They pull in different directions on purpose: A TON wants the trebles, CLEAN HANDS wants three safe darts, and you cannot have both. Start with the cheap one. Take A TREBLE.',
           target: () => this.slateRect(this.offerIndex('treble')),
         };
       case 'after_take':
@@ -460,12 +512,12 @@ class Tutorial {
         return { text: 'Aim called. Throw it.', target: () => this.throwRect() };
       case 'decide':
         return {
-          text: 'It landed, and now you decide. BANK takes the money and nothing can touch it. PRESS tears it up and rewrites it as TWO TREBLES at double the stake. Press it.',
+          text: 'It landed, and it has already paid: that money is in the Pot and nothing on that board can reach it. Now the choice. PRESS puts double the stake back up on TWO TREBLES, using the darts you have left. Press it.',
           target: () => this.slateRect(0),
         };
       case 'after_press':
         return {
-          text: 'Four on it now, paying seven. You need a second treble before the visit ends, or the lot goes. This is the only decision that matters in this game, and you will make three of them a visit.',
+          text: 'Four on it now. You need a second treble before the visit ends, or that four is gone. The first one is already paid and safe. That is the whole shape of it: win, then choose whether to put it back out.',
           target: () => this.slateRect(0),
           button: 'NEXT',
           onNext: () => this.go('throw_press'),
@@ -553,18 +605,23 @@ class Tutorial {
             this.go('after_bust');
             break;
           default:
+            // A dart the script did not ask for. It still spent the lock, and
+            // nothing else will give it back while the tutorial owns the flow,
+            // so put the stage back exactly as it was.
+            this.enter(this.stage);
             break;
         }
         break;
       }
       case 'CONTRACT_TAKEN':
-        if (this.stage === 'take') this.go('after_take');
+        if (this.stage === 'take' && e.contract.defId === 'treble') this.go('after_take');
         break;
       case 'CONTRACT_PRESSED':
         if (this.stage === 'decide') this.go('after_press');
         break;
       case 'CONTRACT_SETTLED':
-        if (this.stage === 'decide' && e.contract.settled?.how === 'BANKED') this.go('after_press');
+        // The contract paid the moment it landed; the press window opens now.
+        if (this.stage === 'throw_contract' && e.contract.settled?.how === 'PAID') this.go('decide');
         break;
       case 'CHECKOUT':
         this.go('gameshot');
@@ -638,9 +695,14 @@ class Tutorial {
   private finish(play: boolean): void {
     this.app.save.data.stats.tutorialDone = true;
     this.app.save.persist();
+    // Change scene before clearing the night, never after: a screen that is
+    // still current with no night to read from crashes on its next frame.
+    if (play) {
+      this.app.startNight(this.app.chosenSeed, this.app.chosenOche);
+      return;
+    }
     this.app.night = null;
-    if (play) this.app.startNight(this.app.chosenSeed, this.app.chosenOche);
-    else this.app.toTitle();
+    this.app.toTitle();
   }
 
   // ---------------------------------------------------------------- input / draw
@@ -649,10 +711,39 @@ class Tutorial {
     this.time += dt;
     const g = this.game;
     if (!g || this.stage === 'shop') return;
-    // The dead-end guard. If the screen is sitting idle with no prompt on it,
-    // put the current stage's prompt back up. A tutorial must always have a
-    // next thing to do.
-    if (!this.prompt) {
+    // The two aim lessons watch the sights rather than the input, so they
+    // advance whether the player moved them by pointer, by arrow key or by
+    // dragging. Hooking one input device meant the other could not finish the
+    // tutorial at all.
+    if (this.stage === 'aim' && this.aimAtEntry && !sameTarget(g.aim, this.aimAtEntry)) {
+      this.go('risk');
+      return;
+    }
+    if (this.stage === 'risk' && g.aim.region === 'T') {
+      this.go('throw_safe');
+      return;
+    }
+    // A scripted step will not accept a dart at anything but the target it
+    // called. Rather than leave someone who moved the sights to have a look
+    // unable to go on, put them back where the pointer is.
+    if (this.scripted && !sameTarget(g.aim, this.scripted)) {
+      this.wandered += dt;
+      if (this.wandered > 1) {
+        this.wandered = 0;
+        this.script(this.scripted, g.forceLanding ?? this.scripted);
+      }
+    } else {
+      this.wandered = 0;
+    }
+
+    // The dead-end guard. If the screen is sitting there with nothing to do —
+    // no prompt, or a prompt that wants an action from a locked screen — put
+    // the stage back up exactly as it was. A tutorial must always have a next
+    // thing to do, and the previous one did not, which is how it trapped a
+    // player at "40 left".
+    const wantsAction = !!this.prompt && !this.prompt.button;
+    const stalled = !this.prompt || (wantsAction && g.locked && !g.busy && !g.dart);
+    if (stalled) {
       this.idle += dt;
       if (this.idle > 0.6) this.enter(this.stage);
     } else {
@@ -666,20 +757,6 @@ class Tutorial {
       return true;
     }
     if (this.prompt?.button && inRect(p.x, p.y, this.panelRect())) return true;
-    // The aim lesson advances once the player has actually moved the sights.
-    if (this.stage === 'aim' && this.game) {
-      const before = { ...this.game.aim };
-      queueMicrotask(() => {
-        const g = this.game;
-        if (g && this.stage === 'aim' && !sameTarget(g.aim, before)) this.go('risk');
-      });
-    }
-    if (this.stage === 'risk' && this.game) {
-      queueMicrotask(() => {
-        const g = this.game;
-        if (g && this.stage === 'risk' && g.aim.region === 'T') this.go('throw_safe');
-      });
-    }
     return false;
   }
 
@@ -691,6 +768,12 @@ class Tutorial {
     if (this.prompt?.button && (key === 'Enter' || key === ' ')) {
       this.prompt.onNext?.();
       return true;
+    }
+    // Throwing on a scripted step: put the sights back on the called target
+    // first. Someone who moved them to look around should not have to hunt for
+    // it again, and the pointer is on it either way.
+    if ((key === 'Enter' || key === ' ') && this.scripted && this.game && !sameTarget(this.game.aim, this.scripted)) {
+      this.script(this.scripted, this.game.forceLanding ?? this.scripted);
     }
     return false;
   }

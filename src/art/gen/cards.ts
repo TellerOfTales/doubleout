@@ -228,7 +228,7 @@ const CHALK_ART: Record<string, string[]> = {
     '............',
     '............',
   ],
-  narrow_beds: [
+  wide_trebles: [
     '............',
     '....M..M....',
     '....M..M....',

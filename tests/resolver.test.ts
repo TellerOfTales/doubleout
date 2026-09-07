@@ -4,9 +4,9 @@
  * the firedChalk contract.
  */
 import { describe, expect, it } from 'vitest';
-import { CHALK_DEFS } from '../src/content/chalkdefs.ts';
-import { ALL_TARGETS, anticlockwiseAdjacent, clockwiseAdjacent, oppositeBed, targetNotation } from '../src/core/board.ts';
-import { resolveThrow, throwsPerVisitFor } from '../src/core/resolver.ts';
+import { CHALK_DEFS, chalkDef } from '../src/content/chalkdefs.ts';
+import { ALL_TARGETS, anticlockwiseAdjacent, clockwiseAdjacent, oppositeBed, parseTarget, targetNotation } from '../src/core/board.ts';
+import { resolveThrow, spreadFor, throwsPerVisitFor } from '../src/core/resolver.ts';
 import { nextFloat } from '../src/core/rng.ts';
 import { BED_ORDER, type Bed, type Target } from '../src/core/types.ts';
 import { baseOf, deflectingRng, mkChalk, nonDeflectingRng, resolve, value } from './helpers.ts';
@@ -359,29 +359,27 @@ describe('magnetised (BOARD, base value < 10 → S20)', () => {
   });
 });
 
-describe('narrow_beds (BOARD, S ↔ T)', () => {
-  it('S20 → T20 = 60', () => {
-    const r = resolve('s20', 501, ['narrow_beds']);
-    expect(r.hits[0].target).toEqual({ region: 'T', bed: 20 });
-    expect(r.totalValue).toBe(60);
-    expect(r.firedChalk).toEqual(['narrow_beds']);
+describe('wide_trebles (AIM: a wider treble ring)', () => {
+  it('lifts the chance of a called treble and nothing else', () => {
+    const plain = spreadFor(parseTarget('T20'), 0, [], []);
+    const wide = spreadFor(parseTarget('T20'), 0, [], [{ def: chalkDef('wide_trebles'), order: 1 }]);
+    expect(wide[0].p).toBeGreaterThan(plain[0].p);
+    const single = spreadFor(parseTarget('S20'), 0, [], [{ def: chalkDef('wide_trebles'), order: 1 }]);
+    expect(single[0].p).toBeCloseTo(spreadFor(parseTarget('S20'), 0, [], [])[0].p, 10);
   });
-  it('T20 → S20 = 20', () => expect(value('t20', ['narrow_beds'])).toBe(20));
-  it('doubles and bulls untouched, not fired', () => {
-    for (const id of ['d20', 'd1', 'ob', 'ib']) {
-      const r = resolve(id, 501, ['narrow_beds']);
-      expect(r.totalValue).toBe(baseOf(id));
-      expect(r.firedChalk).toEqual([]);
+
+  it('cannot lift a treble past the cap: the risk dial survives the build', () => {
+    const wide = [{ def: chalkDef('wide_trebles'), order: 1 }];
+    for (const steady of [0, 10, 26, 100]) {
+      const p = spreadFor(parseTarget('T20'), steady, ['steady'], wide)[0].p;
+      expect(p, `steadiness ${steady}`).toBeLessThan(0.6);
     }
   });
-  it('swaps every single and treble', () => {
-    for (const t of ALL_TARGETS) {
-      const r = resolve(t, 501, ['narrow_beds']);
-      const want = t.region === 'S' ? 'T' : t.region === 'T' ? 'S' : t.region;
-      expect(r.hits[0].target.region).toBe(want);
-    }
+
+  it('scores nothing on its own: it changes where the dart lands, not what it is worth', () => {
+    expect(value('t20', ['wide_trebles'])).toBe(60);
+    expect(value('s20', ['wide_trebles'])).toBe(20);
   });
-  it('hot_twenty sees the swapped target (S20 → T20 → 80)', () => expect(value('s20', ['narrow_beds', 'hot_twenty'])).toBe(80));
 });
 
 describe('wide_doubles (RULE-evaluated BOARD chalk)', () => {
@@ -659,16 +657,6 @@ describe('acquisition order within a stage (TDD §5.5)', () => {
     expect(value('t20', ['cold_hands', 'heavy_tips'], { throwIndex: 0 })).toBe(5);
     expect(value('t20', ['heavy_tips', 'cold_hands'], { throwIndex: 0 })).toBe(0);
   });
-  it('BOARD: magnetised then narrow_beds on S3 = 60; narrow_beds then magnetised = 20', () => {
-    const a = resolve('s3', 501, ['magnetised', 'narrow_beds']);
-    expect(a.hits[0].target).toEqual({ region: 'T', bed: 20 });
-    expect(a.totalValue).toBe(60);
-    expect(a.firedChalk).toEqual(['magnetised', 'narrow_beds']);
-    const b = resolve('s3', 501, ['narrow_beds', 'magnetised']);
-    expect(b.hits[0].target).toEqual({ region: 'S', bed: 20 });
-    expect(b.totalValue).toBe(20);
-    expect(b.firedChalk).toEqual(['narrow_beds', 'magnetised']);
-  });
   it('BOARD: mirrored then magnetised on S3 = 20 (S20 is not under 10); magnetised then mirrored = 3', () => {
     const a = resolve('s3', 501, ['mirrored', 'magnetised']);
     expect(a.totalValue).toBe(20);
@@ -785,9 +773,9 @@ describe('§7 ordering hazards', () => {
     expect(c.outcome).toBe('CHECKOUT');
   });
   it('countsAsDouble is decided on the final hit after BOARD chalk', () => {
-    // mirrored D20 → D3: still a double; narrow_beds turns S16 into T16: wide_doubles still applies to the 16 bed
+    // mirrored D20 → D3: still a double; wide_doubles still applies to the 16 bed
     expect(resolve('d20', 6, ['mirrored']).hits[0].countsAsDouble).toBe(true);
-    expect(resolve('s16', 48, ['narrow_beds', 'wide_doubles']).outcome).toBe('CHECKOUT');
+    expect(resolve('s16', 16, ['wide_doubles']).outcome).toBe('CHECKOUT');
     // mirrored S20 → S3: no longer in a wide bed
     expect(resolve('s20', 3, ['mirrored', 'wide_doubles']).outcome).toBe('BUST');
   });
@@ -874,7 +862,7 @@ describe('firedChalk', () => {
     ['oiled', 's20', 501],
     ['even_keel', 's19', 501],
     ['bullish', 't20', 501],
-    ['narrow_beds', 'd20', 501],
+    ['wide_trebles', 'd20', 501],
     ['mirrored', 'ib', 501],
     ['magnetised', 't20', 501],
     ['split_tips', 'ob', 501],
@@ -940,7 +928,7 @@ describe('pipeline invariants', () => {
   });
   it('the aimed target is never mutated by BOARD chalk, and the intent still reads T20', () => {
     const aimed: Target = { region: 'T', bed: 20 };
-    const r = resolveThrow(aimed, { chalk: mkChalk(['mirrored', 'narrow_beds', 'split_tips']), rng: null, scoreBefore: 501, scoreAtVisitStart: 501, visitThrowIndex: 0, forgivenessUsed: false }).result;
+    const r = resolveThrow(aimed, { chalk: mkChalk(['mirrored', 'wide_trebles', 'split_tips']), rng: null, scoreBefore: 501, scoreAtVisitStart: 501, visitThrowIndex: 0, forgivenessUsed: false }).result;
     expect(aimed).toEqual({ region: 'T', bed: 20 });
     expect(r.intent.target).toEqual({ region: 'T', bed: 20 });
     expect(r.aimed).toEqual({ region: 'T', bed: 20 });

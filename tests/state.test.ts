@@ -18,6 +18,7 @@ import {
   HEAT_CAP,
   LEGS,
   LEG_COUNT,
+  ANOTHER_GO_CAP,
   SERVICE_COST,
   SHOP_REFRESH_COST,
   SLATE_SIZE,
@@ -205,13 +206,14 @@ describe('legs and visit limits (TDD §4)', () => {
    * good scoring run with visits to spare for the slate, and the Decider has
    * to be the tightest of the lot.
    */
-  it('every visit limit leaves room for the slate, and the Decider is the tightest', () => {
+  it('every visit limit leaves room for the slate once the publican is paid, and the Decider is the tightest', () => {
     for (const leg of LEGS) {
-      // more visits than a perfect run needs, and no more than three times what
-      // an ordinary hundred-a-visit run needs
+      // A leg is playable in more visits than a perfect run needs, counting the
+      // ones the publican will sell, and never in more than three times what an
+      // ordinary hundred-a-visit run needs.
       const perfect = Math.ceil(leg.start / 180);
       const ordinary = Math.ceil(leg.start / 100);
-      expect(leg.visitLimit, leg.name).toBeGreaterThan(perfect);
+      expect(leg.visitLimit + ANOTHER_GO_CAP, leg.name).toBeGreaterThan(perfect);
       expect(leg.visitLimit, leg.name).toBeLessThanOrEqual(3 * ordinary);
       expect(Number.isInteger(leg.visitLimit)).toBe(true);
     }
@@ -452,7 +454,9 @@ describe('heat: the crowd warms up, a bust or a walk wipes it', () => {
 
   it('heat builds one per visit and stops at HEAT_CAP', () => {
     const n = startNight(1);
-    for (let i = 0; i < HEAT_CAP + 3; i++) throwAll(n, ['S1', 'S1', 'S1']);
+    // The first leg has room for exactly this many visits, which is the point:
+    // the crowd caps out at the same moment the clock starts to matter.
+    for (let i = 0; i < HEAT_CAP + 1; i++) throwAll(n, ['S1', 'S1', 'S1']);
     expect(currentLeg(n).heat).toBe(HEAT_CAP);
   });
 
@@ -729,7 +733,9 @@ describe('the shop (TDD §4.1)', () => {
   it('SHOP_OPEN offers two kit slots, a chalk and a service, priced from the tables', () => {
     const n = inShop();
     const shop = n.shop as NonNullable<NightState['shop']>;
-    expect(shop.slots.map((s) => s.kind)).toEqual(['KIT', 'KIT', 'CHALK', 'SERVICE']);
+    // ANOTHER GO is not rolled: the publican always has one more visit to sell.
+    expect(shop.slots.map((s) => s.kind)).toEqual(['KIT', 'KIT', 'CHALK', 'SERVICE', 'SERVICE']);
+    expect(shop.slots[4]).toMatchObject({ kind: 'SERVICE', service: 'ANOTHER_GO' });
     expect(shop.refreshed).toBe(false);
     expect(shop.afterLeg).toBe(0);
     for (const slot of shop.slots) {
@@ -741,7 +747,7 @@ describe('the shop (TDD §4.1)', () => {
   });
 
   it('the service costs are 2 / 3 / 4 and a refresh is 1', () => {
-    expect(SERVICE_COST).toEqual({ STEADY: 2, CREDIT: 3, RUB_OUT: 4 });
+    expect(SERVICE_COST).toEqual({ STEADY: 2, CREDIT: 3, RUB_OUT: 4, ANOTHER_GO: 5 });
     expect(SHOP_REFRESH_COST).toBe(1);
   });
 
@@ -1021,17 +1027,17 @@ describe('achievements (TDD §9.4 unlock conditions)', () => {
     expect(n.achievements).not.toContain('sharp');
   });
 
-  it('thin: a 501 leg won in six visits or fewer', () => {
+  it('thin: a 501 leg won in four visits or fewer', () => {
     const n = nightAtLeg(2);
-    for (let v = 0; v < 5; v++) throwAll(n, ['T20', 'T20', 'T20']);
+    for (let v = 0; v < 3; v++) throwAll(n, ['T20', 'T20', 'T20']);
     setScore(n, 40);
     throwAt(n, 'D20');
     expect(n.achievements).toContain('thin');
   });
 
-  it('thin is not awarded on the seventh visit', () => {
+  it('thin is not awarded on the fifth visit', () => {
     const n = nightAtLeg(2);
-    for (let v = 0; v < 6; v++) commitMiss(n);
+    for (let v = 0; v < 4; v++) commitMiss(n);
     setScore(n, 40);
     throwAt(n, 'D20');
     expect(n.achievements).not.toContain('thin');

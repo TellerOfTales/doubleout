@@ -15,18 +15,17 @@ import { INTERVENTIONS, interventionDef } from '../../content/interventions';
 import { OCHE_BY_ID } from '../../content/oches';
 import { baseValue, sameTarget, targetNotation } from '../../core/board';
 import { computeCheckoutHints, routeNotation, type CheckoutHints } from '../../core/checkout';
-import { HEAT_CAP, LEGS, streakMultiplier } from '../../content/legs';
+import { HEAT_CAP, LEGS, PULL_RETURN, streakMultiplier } from '../../content/legs';
 import { buildBarkContext } from '../../core/commentary';
 import { contractDef } from '../../core/slate';
 import { hitChance, resolveThrow, spreadFor, type Landing } from '../../core/resolver';
 import {
-  bankContract,
   commitMiss,
   commitThrow,
   currentLeg,
   currentPrice,
   currentVisit,
-  interestOn,
+  pressable,
   kitCount,
   legName,
   pressContract,
@@ -67,6 +66,8 @@ export interface GameHooks {
   onKey?(key: string, screen: GameScreen): boolean;
   /** Suppress the normal end-of-leg flow (tutorial handles it). */
   ownsFlow?: boolean;
+  /** The tutorial's current step, so a stuck one can say where it stopped. */
+  stage?: string;
   /** Targets the tutorial will accept right now. Null means anywhere. */
   allowedTargets?: Target[] | null;
   /** Slate verbs the tutorial will accept right now. Null means all. */
@@ -161,7 +162,8 @@ export class GameScreen implements Scene {
 
   lastResult: ThrowResult | null = null;
   pendingEvents: EngineEvent[] = [];
-  private busy = false;
+  /** True while a throw is playing out. Read by the tutorial's stall guard. */
+  busy = false;
   private legBanner: { text: string; sub: string; t: number } | null = null;
   private checkoutPanelT = 0;
   private scoreBump = new Pulse();
@@ -442,40 +444,39 @@ export class GameScreen implements Scene {
           price,
           status: 'LIVE',
           unaffordable: poor,
-          prices: { leftLabel: 'STAKE ', left: def.stake, rightLabel: 'PAYS ', right: price },
+          prices: { leftLabel: '', left: def.stake, rightLabel: 'PAYS ', right: price },
           verbs: layoutVerbs(rect, [{ id: 'TAKE', label: 'TAKE', disabled: poor || this.locked || !this.verbAllowed('TAKE') }]),
         });
         continue;
       }
       if (it.done) {
         const c = it.done;
+        const index = leg.slate.indexOf(c);
+        // A contract that has paid is safe, and the only thing left to do with
+        // it is put the winnings back up on something harder.
+        const canPress = pressable(this.night, leg, c) && this.night.pot >= c.stake * 2;
         cards.push({
           defId: c.defId,
           rect,
           mode: 'SETTLED',
-          index: leg.slate.indexOf(c),
+          index,
           stake: c.stake,
           price: c.price,
           status: c.status,
           unaffordable: false,
           settled: c.settled,
-          verbs: [],
+          verbs: canPress
+            ? layoutVerbs(rect, [{ id: 'PRESS', label: `PRESS ${c.stake * 2}`, disabled: this.locked || !this.verbAllowed('PRESS') }])
+            : [],
         });
         continue;
       }
       const c = it.taken as (typeof riding)[number];
       const index = leg.slate.indexOf(c);
-      const def = contractDef(c.defId);
-      const made = c.status === 'MADE';
       const dead = c.status === 'DEAD';
-      const canPress = made && !!def.pressTo && this.night.pot >= c.stake;
       const verbs = showOffer
         ? []
-        : layoutVerbs(rect, [
-            ...(made ? [{ id: 'BANK' as SlateVerbId, label: 'BANK', disabled: this.locked || !this.verbAllowed('BANK') }] : []),
-            ...(canPress ? [{ id: 'PRESS' as SlateVerbId, label: 'PRESS', disabled: this.locked || !this.verbAllowed('PRESS') }] : []),
-            ...(!made && !dead ? [{ id: 'PULL' as SlateVerbId, label: 'PULL', disabled: this.locked || !this.verbAllowed('PULL') }] : []),
-          ]);
+        : layoutVerbs(rect, [...(!dead ? [{ id: 'PULL' as SlateVerbId, label: 'PULL', disabled: this.locked || !this.verbAllowed('PULL') }] : [])]);
       cards.push({
         defId: c.defId,
         rect,
@@ -485,11 +486,8 @@ export class GameScreen implements Scene {
         price: c.price,
         status: c.status,
         unaffordable: false,
-        // Made: what banking pays now against what it pays if it is left up.
-        // Live: what pulling out pays now against what landing it would pay.
-        prices: made
-          ? { leftLabel: 'BANK ', left: c.stake + c.price, rightLabel: 'RIDE ', right: this.carryWorth(c) }
-          : { leftLabel: 'PULL ', left: this.pullWorth(c), rightLabel: 'PAYS ', right: c.stake + c.price },
+        // What getting out now pays, against what landing it would pay.
+        prices: { leftLabel: 'OUT ', left: this.pullWorth(c), rightLabel: '', right: c.stake + c.price },
         verbs,
       });
     }
@@ -502,35 +500,25 @@ export class GameScreen implements Scene {
   }
 
   private pullWorth(c: LegState['slate'][number]): number {
-    return c.stake + interestOn(this.night, this.leg, c);
-  }
-
-  /** What a landed contract pays if it is left to settle instead of banked. */
-  private carryWorth(c: LegState['slate'][number]): number {
-    return c.stake + c.price + interestOn(this.night, this.leg, c);
+    return Math.floor(c.stake * PULL_RETURN);
   }
 
   // ---------------------------------------------------------------- the slate
 
   onSlateVerb(card: SlateCardView, verb: SlateVerbId): void {
     if (this.locked || this.busy) return;
+    if (!this.verbAllowed(verb)) {
+      this.app.sfx('error');
+      return;
+    }
     const l = this.layout;
     const mid = { x: card.rect.x + card.rect.w / 2, y: card.rect.y - 4 };
-    let out: { ok: boolean; reason?: string; events: EngineEvent[] };
-    switch (verb) {
-      case 'TAKE':
-        out = takeContract(this.night, card.defId);
-        break;
-      case 'BANK':
-        out = bankContract(this.night, card.index);
-        break;
-      case 'PRESS':
-        out = pressContract(this.night, card.index);
-        break;
-      case 'PULL':
-        out = pullContract(this.night, card.index);
-        break;
-    }
+    const out: { ok: boolean; reason?: string; events: EngineEvent[] } =
+      verb === 'TAKE'
+        ? takeContract(this.night, card.defId)
+        : verb === 'PRESS'
+          ? pressContract(this.night, card.index)
+          : pullContract(this.night, card.index);
     if (!out.ok) {
       this.app.sfx('error');
       this.readout = (out.reason ?? 'NOT NOW').toUpperCase();
@@ -547,7 +535,7 @@ export class GameScreen implements Scene {
     } else if (verb === 'PRESS') {
       this.app.sfx('one_eighty', { volume: 0.5 });
       this.shake.hit(2, 0.2);
-      const now = this.leg.slate[card.index];
+      const now = this.leg.slate[this.leg.slate.length - 1];
       const nd = contractDef(now.defId);
       this.float('PRESSED', mid.x, mid.y, P.EMBER, 1, 1.3);
       this.readout = `PRESSED INTO ${nd.name}. ${now.stake} ON IT NOW, PAYING ${now.price}.`;
@@ -556,9 +544,9 @@ export class GameScreen implements Scene {
       const settled = this.leg.ledger[this.leg.ledger.length - 1];
       const pot = settled?.settled?.pot ?? 0;
       this.app.sfx('pot');
-      this.float(`+${pot}`, mid.x, mid.y, P.BRASS_LIT, 1, 1.2);
-      this.readout = verb === 'BANK' ? `${def.name} BANKED. ${pot} IN THE POT, AND NOTHING CAN TAKE IT.` : `PULLED OUT FOR ${pot}. NOT GREEDY.`;
-      this.readoutColor = P.BRASS_LIT;
+      this.float(`+${pot}`, mid.x, mid.y, P.MIST, 1, 1.2);
+      this.readout = `PULLED OUT OF ${def.name} FOR ${pot}. HALF BACK IS BETTER THAN NONE.`;
+      this.readoutColor = P.MIST;
     }
     for (const e of out.events) this.bark(e);
     this.refresh();
@@ -1249,9 +1237,12 @@ export class GameScreen implements Scene {
     else if (key === 'ArrowDown') this.setAim(stepRing(this.aim, 1));
     else if (key === 'Enter' || key === ' ') this.throwDart();
     else if (key >= '1' && key <= '4') {
-      // Number keys work the slate: take, bank, press or pull the nth contract.
+      // Number keys work the slate: take, press or pull the nth contract. Only
+      // a verb the pointer would accept, so the keyboard cannot reach past a
+      // disabled button the way it once could.
       const card = this.slate.cards[Number(key) - 1];
-      if (card && card.verbs.length) this.onSlateVerb(card, card.verbs[0].id);
+      const verb = card?.verbs.find((v) => !v.disabled);
+      if (card && verb) this.onSlateVerb(card, verb.id);
       else this.app.sfx('error');
     } else if (key === 'w' || key === 'W' || key === '0') {
       this.throwAtWall();
@@ -1357,14 +1348,20 @@ export class GameScreen implements Scene {
       this.drawScore(r);
       for (const slot of this.emptySlots) drawEmptySlot(r, slot);
       this.slate.draw(r);
-      this.drawKitStrip(r);
       this.drawChalkStrip(r);
-      this.drawAimBar(r);
-      this.drawButtons(r);
-      this.drawReadout(r);
       this.drawDart(r);
       this.drawParticles(r);
       this.drawFloaters(r);
+    });
+    // The vignette darkens the edges of the scene, and everything that has to
+    // be READ lives at those edges, so the strips go on top of it rather than
+    // under. Drawn inside the shake so they still move with the room.
+    if (r.sprites.has('vignette') && l.orientation === 'landscape') r.sprite('vignette', 0, 0);
+    r.offset(this.shake.x, this.shake.y, () => {
+      this.drawKitStrip(r);
+      this.drawAimBar(r);
+      this.drawButtons(r);
+      this.drawReadout(r);
     });
     this.bar.draw(r, l.commentary);
     if (this.flash.active && this.app.save.data.settings.flashes) r.dither(0, 0, l.w, l.h, P.EMBER, this.flash.value * 10);
@@ -1373,7 +1370,6 @@ export class GameScreen implements Scene {
     if (this.bigText) this.drawBigText(r);
     if (this.legBanner) this.drawLegBanner(r);
     if (this.chalkTip) this.drawChalkTip(r);
-    if (r.sprites.has('vignette') && l.orientation === 'landscape') r.sprite('vignette', 0, 0);
     if (this.overlay === 'checkout') this.drawCheckoutOverlay(r);
     if (this.overlay === 'pause') this.drawPauseOverlay(r);
     this.hooks.draw?.(r, this);
@@ -1598,7 +1594,7 @@ export class GameScreen implements Scene {
     // Walking away is a real tactic when the slate is against you, so it is a
     // plain button rather than a panic switch.
     r.nineSlice('button', m.x, m.y, m.w, m.h, 0);
-    r.text('WALK AWAY', m.x + Math.floor(m.w / 2), m.y + Math.floor((m.h - 7) / 2), { color: ready ? P.MIST : P.PEWTER, align: 'center', shadow: P.INK });
+    r.text('WALK', m.x + Math.floor(m.w / 2), m.y + Math.floor((m.h - 7) / 2), { color: ready ? P.MIST : P.PEWTER, align: 'center', shadow: P.INK });
   }
 
   private drawReadout(r: Renderer): void {

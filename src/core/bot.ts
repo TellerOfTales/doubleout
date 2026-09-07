@@ -22,7 +22,7 @@
  */
 import { chalkDef } from '../content/chalkdefs';
 import { KIT_CAP, interventionDef } from '../content/interventions';
-import { HEAT_CAP, LEG_COUNT, PULL_PER_DART, SERVICE_COST, SHOP_REFRESH_COST } from '../content/legs';
+import { ANOTHER_GO_CAP, anotherGoCost, HEAT_CAP, LEGS, LEG_COUNT, PULL_RETURN, SERVICE_COST, SHOP_REFRESH_COST } from '../content/legs';
 import { ALL_TARGETS } from './board';
 import { computeCheckoutHints } from './checkout';
 import { STEADY_INTERVENTION, resolveThrow, spreadFor, throwsPerVisitFor } from './resolver';
@@ -30,7 +30,6 @@ import { CONTRACTS, contractDef, pressStake, pullValue } from './slate';
 import type { ContractDef, VisitProgress } from './slate';
 import {
   addChalk,
-  bankContract,
   beginLeg,
   commitMiss,
   commitThrow,
@@ -41,6 +40,7 @@ import {
   hasChalk,
   kitCount,
   pressContract,
+  pressable,
   pullContract,
   shopBuy,
   shopLeave,
@@ -66,10 +66,15 @@ import type { Chalk, LegState, NightState, OcheId, TakenContract, Target } from 
  * The last three name the acceptance-test policies of §7: they aim like
  * `optimal` and differ only in what they do with the money on the table.
  */
-export type Policy = 'naive' | 'greedy' | 'checkout' | 'optimal' | 'always_bank' | 'never_bank' | 'no_slate';
+export type Policy = 'naive' | 'greedy' | 'checkout' | 'optimal' | 'always_press' | 'never_press' | 'no_slate';
 
 /** What the bot does with the contracts once the darts are in the air. */
-export type SlatePolicy = 'PLAN' | 'ALWAYS_BANK' | 'NEVER_BANK' | 'NO_SLATE';
+/**
+ * Fixed slate behaviours, for the press-your-luck invariant in
+ * docs/decisions/design.md §7.3. Banking is automatic now — a contract pays
+ * the moment it lands — so the greed lives entirely in the press.
+ */
+export type SlatePolicy = 'PLAN' | 'ALWAYS_PRESS' | 'NEVER_PRESS' | 'NO_SLATE';
 
 /** The planner's answer: aim here (perhaps spending a one-shot), or walk. */
 export type Action = { target: Target; use?: string } | { wall: true };
@@ -89,7 +94,7 @@ export interface RatedAction {
  * the slate is wallpaper. Pot only matters because it buys chalk, so it is
  * worth much less on the last leg, where there is no shop left to spend it in.
  */
-const POT_IN_POINTS = 16;
+const POT_IN_POINTS = 10;
 const POT_IN_POINTS_LAST_LEG = 2;
 
 /** Winning the leg, in points. Larger than any leg, so a finish is never traded away. */
@@ -140,6 +145,25 @@ interface Widths {
 const FULL_WIDTHS: Widths = { root: 20, second: 10, third: 5 };
 const SLATE_WIDTHS: Widths = { root: 8, second: 5, third: 3 };
 
+/**
+ * What one more visit in the next leg is worth, in the same Pot units the shop
+ * uses. Scaled by how tight that leg already is, because a spare visit in the
+ * First Round buys nothing and a spare visit in the Decider buys the night.
+ */
+const VISIT_WORTH = 9;
+
+/**
+ * Extra expected Pot a press has to clear before it is worth taking.
+ *
+ * The stake is not the whole cost. A press also commits the darts that are
+ * left to a harder contract, which distorts the aim away from the leg, and
+ * that cost does not appear anywhere in the arithmetic below. Measured, a
+ * planner that pressed on any positive expectation did WORSE over a night
+ * than one that never pressed at all; this is the margin that buys the
+ * difference back.
+ */
+const PRESS_MARGIN = 2;
+
 /** Sentinel score far above anything reachable: hypotheticals never bust or check out. */
 const FAR = 100000;
 
@@ -180,6 +204,8 @@ export interface NightOutcome {
   contractsPressed: number;
   potStaked: number;
   potWon: number;
+  /** Visits where a bust or a dart off the board took the whole slate. */
+  slatesWiped: number;
   /** Interventions held at the end, for reading a build back. */
   kitHeld: string[];
 }
@@ -371,6 +397,8 @@ interface Ctx {
   ev: Float64Array[];
   /** Highest score that can still be checked out with three darts. */
   ceiling: number;
+  /** Share of the stake a pull returns: half, or all of it on On Tick. */
+  pullShare: number;
   /** Darts needed to finish, per throw index and score. 0 = no route in three. */
   minDarts: Int32Array[];
   /** Targets that check the leg out, per throw index and score. */
@@ -393,7 +421,6 @@ interface Ctx {
   forgiving: boolean;
   overshoot: boolean;
   chalkDust: boolean;
-  pullPer: number;
 }
 
 const ROUTE_CACHE = new Map<string, Pick<Ctx, 'minDarts' | 'finishers' | 'ceiling' | 'maxDart'>>();
@@ -451,6 +478,7 @@ function legCtx(n: NightState, leg: LegState): Ctx {
     spread,
     order: order.order,
     ev: order.ev,
+    pullShare: hasChalk(n, 'on_tick') ? 1 : PULL_RETURN,
     ceiling: routes.ceiling,
     minDarts: routes.minDarts,
     finishers: routes.finishers,
@@ -471,7 +499,6 @@ function legCtx(n: NightState, leg: LegState): Ctx {
     forgiving: hasChalk(n, 'forgiving_oche'),
     overshoot: hasChalk(n, 'overshoot'),
     chalkDust: hasChalk(n, 'chalk_dust'),
-    pullPer: hasChalk(n, 'short_price') ? PULL_PER_DART * 3 : PULL_PER_DART,
   };
   return ctxCache;
 }
@@ -1231,40 +1258,41 @@ function ridingValue(ctx: Ctx, leg: LegState, c: TakenContract): number {
  * the darts left can bust and take the lot. One action per call; the caller
  * keeps asking until there is nothing worth doing.
  */
-export function planPress(n: NightState, leg: LegState): { index: number; act: 'PULL' | 'BANK' | 'PRESS' } | null {
+export function planPress(n: NightState, leg: LegState): { index: number; act: 'PULL' | 'PRESS' } | null {
   if (leg.status !== 'ACTIVE') return null;
   const visit = currentVisit(leg);
   if (!visit || visit.throws.length === 0 || visit.busted) return null;
   const ctx = legCtx(n, leg);
-  let best: { index: number; act: 'PULL' | 'BANK' | 'PRESS' } | null = null;
+  let best: { index: number; act: 'PULL' | 'PRESS' } | null = null;
   let bestGain = 0.01;
   for (let i = 0; i < leg.slate.length; i++) {
     const c = leg.slate[i];
-    if (c.settled || c.status === 'DEAD') continue;
     const def = contractDef(c.defId);
-    const made = ridingValue(ctx, leg, c);
-    const leave = made * (c.stake + c.price);
-    const survived = visit.throws.length - c.takenAt;
-    const pull = pullValue(c.stake, survived * ctx.pullPer);
-    if (pull - leave > bestGain) {
-      bestGain = pull - leave;
-      best = { index: i, act: 'PULL' };
+    if (!c.settled) {
+      // A live contract: get out for half the stake, or ride it to the end.
+      if (c.status === 'DEAD') continue;
+      const leave = ridingValue(ctx, leg, c) * (c.stake + c.price);
+      const pull = pullValue(c.stake, ctx.pullShare);
+      if (pull - leave > bestGain) {
+        bestGain = pull - leave;
+        best = { index: i, act: 'PULL' };
+      }
+      continue;
     }
-    if (c.status !== 'MADE') continue;
-    const bank = c.stake + c.price;
-    if (bank - leave > bestGain) {
-      bestGain = bank - leave;
-      best = { index: i, act: 'BANK' };
-    }
-    if (!def.pressTo) continue;
-    const extra = pressStake(c.stake) - c.stake;
-    if (n.pot < extra) continue;
-    const harder = contractDef(def.pressTo);
+    // A contract that has already paid. The only thing left to do with it is
+    // put the winnings back up on something harder.
+    if (!pressable(n, leg, c)) continue;
+    // Not on the dart that could win the leg. Anywhere else the darts are
+    // fair game; here they belong to the double.
+    if (ctx.minDarts[Math.min(3, visit.throws.length)][leg.score] === 1) continue;
+    const stake = pressStake(c.stake);
+    if (n.pot < stake) continue;
+    const harder = contractDef(def.pressTo as string);
     const price = currentPrice(n, harder.id);
-    const pressed: TakenContract = { ...c, defId: harder.id, stake: pressStake(c.stake), price };
-    const press = ridingValue(ctx, leg, pressed) * (pressed.stake + price) - extra;
-    if (press - Math.max(bank, leave) > bestGain) {
-      bestGain = press - Math.max(bank, leave);
+    const fresh: TakenContract = { ...c, defId: harder.id, stake, price, takenAt: visit.throws.length, madeAt: null, status: 'LIVE', settled: null };
+    const press = ridingValue(ctx, leg, fresh) * (stake + price) - stake - PRESS_MARGIN;
+    if (press > bestGain) {
+      bestGain = press;
       best = { index: i, act: 'PRESS' };
     }
   }
@@ -1305,7 +1333,7 @@ const MEASURED_CHALK = new Set([
   'last_orders',
   'bullish',
   'magnetised',
-  'narrow_beds',
+  'wide_trebles',
   'mirrored',
   'wired',
   'split_tips',
@@ -1463,6 +1491,14 @@ function bestPurchase(n: NightState): Purchase | null {
           // The publican's advance pays back double what it costs. There is no
           // decision here at all, which is worth saying out loud.
           consider({ slot: i, opts: {}, worth: SERVICE_COST.CREDIT * 2, cost: slot.cost });
+        } else if (slot.service === 'ANOTHER_GO') {
+          // A visit is worth roughly what a visit scores, and it is worth far
+          // more on the tight legs at the end of the night than on the two
+          // short games at the start.
+          if (n.extraVisits >= ANOTHER_GO_CAP) return;
+          const next = LEGS[Math.min(LEG_COUNT - 1, n.legIndex + 1)];
+          const pressure = next.start / Math.max(1, next.visitLimit + n.extraVisits) / 100;
+          consider({ slot: i, opts: {}, worth: VISIT_WORTH * pressure, cost: anotherGoCost(n.extraVisits) });
         } else {
           // Rubbing out a paid contract puts its price back up, which is only
           // worth anything once the house has shortened it more than once.
@@ -1502,10 +1538,10 @@ export function botShop(n: NightState): void {
 function slatePolicyOf(policy: Policy, opts: PlayOptions): SlatePolicy {
   if (opts.slate) return opts.slate;
   switch (policy) {
-    case 'always_bank':
-      return 'ALWAYS_BANK';
-    case 'never_bank':
-      return 'NEVER_BANK';
+    case 'always_press':
+      return 'ALWAYS_PRESS';
+    case 'never_press':
+      return 'NEVER_PRESS';
     case 'no_slate':
     case 'naive':
     case 'greedy':
@@ -1539,20 +1575,27 @@ function runSlate(n: NightState, leg: LegState, policy: SlatePolicy): void {
   for (const id of ids) takeContract(n, id);
 }
 
-/** Settle what the last dart did to the money on the table. */
+/** Do whatever this policy does with the money on the table between darts. */
 function runPress(n: NightState, leg: LegState, policy: SlatePolicy): void {
-  if (policy === 'NO_SLATE' || policy === 'NEVER_BANK') return;
-  if (policy === 'ALWAYS_BANK') {
-    for (let i = 0; i < leg.slate.length; i++) {
-      const c = leg.slate[i];
-      if (!c.settled && c.status === 'MADE') bankContract(n, i);
+  if (policy === 'NO_SLATE' || policy === 'NEVER_PRESS') return;
+  if (policy === 'ALWAYS_PRESS') {
+    // Greed with no judgement: press everything that can be pressed, every time.
+    for (let guard = 0; guard < 8; guard++) {
+      let did = false;
+      for (let i = 0; i < leg.slate.length; i++) {
+        if (pressable(n, leg, leg.slate[i]) && pressContract(n, i).ok) {
+          did = true;
+          break;
+        }
+      }
+      if (!did) return;
     }
     return;
   }
   for (let guard = 0; guard < 8; guard++) {
     const act = planPress(n, leg);
     if (!act) return;
-    const out = act.act === 'BANK' ? bankContract(n, act.index) : act.act === 'PULL' ? pullContract(n, act.index) : pressContract(n, act.index);
+    const out = act.act === 'PULL' ? pullContract(n, act.index) : pressContract(n, act.index);
     if (!out.ok) return;
   }
 }
@@ -1616,6 +1659,7 @@ export function playNight(seed: number, policy: Policy = 'optimal', opts: PlayOp
     contractsTaken: n.stats.contractsTaken,
     contractsPaid: n.stats.contractsPaid,
     contractsPressed: n.stats.contractsPressed,
+    slatesWiped: n.stats.slatesWiped,
     potStaked: n.stats.potStaked,
     potWon: n.stats.potWon,
     kitHeld: n.kit.slice(),

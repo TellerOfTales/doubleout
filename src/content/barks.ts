@@ -16,7 +16,7 @@
  * Since the rebuild (docs/decisions/design.md §5) the drama is on the slate,
  * not in a hand of dealt cards. The player aims wherever they like, every dart,
  * so where they aimed is now expressive and worth remarking on; and the money
- * is taken, pressed, banked, pulled or lost in front of the room. Two rules
+ * is taken, paid, pressed, pulled or lost in front of the room. Two rules
  * from §6 bind the writing here: a loss is reported as a loss, in the same
  * voice as any other loss, and every loss names a rule that can be used next
  * time. Barrel may be reckless. Nock names the actual mistake.
@@ -33,6 +33,7 @@
  *
  * Character set: ASCII printable plus '…' (the 5x7 font has no em-dash).
  */
+import { throwsPerVisitFor } from '../core/resolver';
 import type { BarkContext, BarkTrigger, ContractOutcome, TakenContract, Target, ThrowResult, VisitState } from '../core/types';
 
 const LAST_LEG = 7;
@@ -160,6 +161,13 @@ function bustTookIt(ctx: BarkContext): boolean {
 /** Contracts still on the slate and still losable. Empty once the visit is over. */
 function riding(ctx: BarkContext): TakenContract[] {
   return ctx.leg.slate.filter((c) => !c.settled);
+}
+
+/** Darts left in the visit that just acted, so a press can still be talked about. */
+function dartsLeft(ctx: BarkContext): number {
+  const v = settlingVisit(ctx);
+  if (!v) return 0;
+  return Math.max(0, throwsPerVisitFor(ctx.night.chalk) - v.throws.length);
 }
 
 // ---------------------------------------------------------------- free aim
@@ -1521,9 +1529,9 @@ const AIM_BARKS: BarkTrigger[] = [
 // ---------------------------------------------------------------- the slate
 //
 // Where the tension lives now. A contract is taken before the visit; after
-// every dart it can be pulled down, banked, or pressed into something harder.
+// a live one can be pulled out of, and one that has paid can be pressed.
 // Nothing left riding survives a bust. Barrel wants it left up there, Nock
-// wants it banked, and per design.md §6 every loss is reported as a loss and
+// wants it taken safe, and per design.md §6 every loss is reported as a loss and
 // names the rule that would have stopped it.
 
 const SLATE_BARKS: BarkTrigger[] = [
@@ -1566,7 +1574,7 @@ const SLATE_BARKS: BarkTrigger[] = [
       lines: [
         '{contract}, at a price of {price}. The Pot is {pot}. Both numbers matter from here.',
         'Taken. The Pot goes down first and comes back later, or does not. That is the shape.',
-        '{contract} for {price}. It pays at the end of the visit, or the moment it is banked.',
+        '{contract} for {price}. It pays the instant it lands, and not one dart before.',
       ],
     },
   },
@@ -1623,39 +1631,39 @@ const SLATE_BARKS: BarkTrigger[] = [
     speaker: 'NOCK',
     priority: 68,
     cooldown: 8,
-    when: (ctx) => ctx.event.type === 'THROW' && riding(ctx).some((c) => c.status === 'MADE'),
+    when: (ctx) => ctx.event.type === 'THROW' && riding(ctx).some((c) => c.status !== 'DEAD'),
     lines: [
-      'That has landed, and it is still up there. Made is not paid. Banking is what pays.',
-      'Made, not banked. The difference between the two is one bust wide.',
-      'It is good on the slate and not in the Pot. A bust from here takes it with the score.',
-      'Up there, made, and losable until somebody takes it down. Those are the terms as printed.',
+      'Still chasing that one. Nothing on the slate is money until it lands.',
+      'That contract is alive and it is not paid. A bust from here takes it with the score.',
+      'Up there, live, and losable until it lands or he pulls out of it. Terms as printed.',
+      'Two darts and a contract that has not come in. This is the part people remember.',
     ],
     reply: {
       speaker: 'BARREL',
       lines: [
-        'Bank it. Or do not. I am holding a pen and a pint, not the darts.',
-        'It is made. Take it, press it, or leave it up. Three doors, and they all shut shortly.',
-        'Made. Now the hard part, which is deciding to stop.',
+        'Chase it or pull out of it. I am holding a pen and a pint, not the darts.',
+        'Half of it comes back if he walks away now. Half is a word doing a lot of work.',
+        'Come on then. One more and it is home.',
       ],
     },
   },
   {
-    id: 'contract_banked',
+    id: 'contract_paid_early',
     speaker: 'NOCK',
     priority: 72,
     cooldown: 8,
-    when: (ctx) => settledAs(ctx) === 'BANKED',
+    when: (ctx) => settledAs(ctx) === 'PAID' && (contractOf(ctx)?.pressed ?? 0) === 0 && dartsLeft(ctx) > 0,
     lines: [
-      'Banked. {payout} into the Pot, and nothing that happens on that board can reach it.',
-      '{contract}, banked. Not the largest number available. The only certain one.',
+      'Paid the moment it landed. {payout} into the Pot, and that board cannot reach it now.',
+      '{contract}, home with darts to spare. He can put it back up or he can leave it alone.',
       'Off the slate at {payout}. A bust later in this visit is now merely a bust.',
-      'Banked. Unfashionable. Correct.',
+      'In the Pot already. The only question left is whether it goes back out.',
     ],
     reply: {
       speaker: 'BARREL',
       lines: [
-        'Banked. Sensible. I hate it. Well done.',
-        'He has taken the money. The room wanted the other thing. The room is not paying.',
+        'Paid. Sensible. I hate it. Well done.',
+        'He has the money. The room wants him to put it straight back. The room is not paying.',
         'In the Pot and out of reach. Boring. Lovely. Boring and lovely.',
       ],
     },
@@ -1691,16 +1699,16 @@ const SLATE_BARKS: BarkTrigger[] = [
       return settledAs(ctx) === 'PAID' && !!c && c.pressed === 0;
     },
     lines: [
-      '{contract} lands. Left riding all the way to the last dart. {payout} into the Pot.',
-      'That is {contract} home. He never banked it and, as it turns out, never needed to.',
-      '{contract}, paid at the end of the visit. Held all the way. My nerves were not.',
-      'Paid. It sat up on that slate for three darts and none of them broke it.',
+      '{contract} lands on the last dart of the visit. {payout} into the Pot.',
+      'That is {contract} home with nothing left to throw. Cutting it fine is still cutting it.',
+      '{contract}, paid on the last one. Held all the way. My nerves were not.',
+      'Paid. It sat up on that slate the whole visit and the last dart brought it in.',
     ],
     reply: {
       speaker: 'NOCK',
       lines: [
-        '{payout} back on {contract}. Riding it to the end paid this time. It does not always.',
-        'Paid at the end. Held, unbanked, and nothing broke it. Only one of those was a decision.',
+        '{payout} on {contract}. Chasing it to the last dart paid here. It does not always.',
+        'Paid on the last dart. There was no third option by then, which is its own kind of peace.',
         'The Pot is {pot}, and that one is settled. Settled money cannot be lost.',
       ],
     },
@@ -1751,31 +1759,6 @@ const SLATE_BARKS: BarkTrigger[] = [
         'A bust settles every live contract as a loss. Nothing riding survives it. Nothing.',
         'The score is restored and the slate is not. That gap is the reason to pull early.',
         'This is what banking is for, and pulling, and the third dart nobody has to throw.',
-      ],
-    },
-  },
-  {
-    id: 'contract_made_lost_bust',
-    speaker: 'NOCK',
-    priority: 95,
-    cooldown: 8,
-    when: (ctx) => {
-      const c = contractOf(ctx);
-      return bustTookIt(ctx) && !!c && c.pressed === 0 && c.status === 'MADE';
-    },
-    lines: [
-      'It was made. It was up there, made, and the bust took it anyway. Banking is for that.',
-      'Made and lost in the same visit. The bank was open on every dart until this one.',
-      'That contract had landed. A bust does not care what has landed, only what was banked.',
-      'Gone, and it was already good. On Tick is the chalk that stops exactly this.',
-      '{payout} returned on a contract that was made. That is the cruellest zero on the slate.',
-    ],
-    reply: {
-      speaker: 'BARREL',
-      lines: [
-        'It was in. It was in, and now it is not. I have gone quiet. Listen to that.',
-        'Made, then bust, then gone. Three things to one contract out of one dart.',
-        'I watched it land. I watched it leave. Nobody moved and it left anyway.',
       ],
     },
   },
@@ -1837,7 +1820,7 @@ const SLATE_BARKS: BarkTrigger[] = [
     when: (ctx) => {
       const c = contractOf(ctx);
       const how = settledAs(ctx);
-      return !!c && c.pressed > 0 && (how === 'PAID' || how === 'BANKED');
+      return !!c && c.pressed > 0 && how === 'PAID';
     },
     lines: [
       'The press has landed. {contract}, made, {payout} into the Pot. I have no notes left.',
@@ -1868,7 +1851,7 @@ const SLATE_BARKS: BarkTrigger[] = [
       'The press dies. Everything it was worth before he pressed it was real. It is not now.',
       'Lost on the press. The contract underneath it would have paid. That is the whole lesson.',
       'Gone. A press is a choice made from a winning position. That is why it costs this much.',
-      'Gone. It could have been banked at any point before the press. That was the other door.',
+      'Gone. Do not press without the darts left to finish what you are pressing into.',
       'Nothing back. {from} was the money and {contract} was the idea. The idea did not land.',
     ],
     reply: {
@@ -1888,7 +1871,7 @@ const SLATE_BARKS: BarkTrigger[] = [
     when: (ctx) => {
       const c = contractOf(ctx);
       const how = settledAs(ctx);
-      return !!c && c.defId === 'shanghai' && (how === 'PAID' || how === 'BANKED');
+      return !!c && c.defId === 'shanghai' && how === 'PAID';
     },
     lines: [
       'Shanghai. Single, double and treble of one number, on a contract, for {payout}.',
