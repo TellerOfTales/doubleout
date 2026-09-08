@@ -7,19 +7,27 @@ and everything interesting lives in that gap. Beside the score is the slate, whe
 are chalked up at printed prices. Eight legs make a night. A night can be won, and when it is,
 the game stops.
 
-**The visit.** Three darts. Before the first one, three contracts go up on the slate: take any
-of them and you stake Pot against a printed price. They pull in different directions on
-purpose — A TON wants the trebles, NO SCRAPS wants nothing under fifteen, THE QUIET wants a
-visit under twenty-five, IN A BED wants all three darts in one number — so where to aim stops
-answering itself. Then you point at the board and throw, and the fan of dots round the sights
-is every place that dart could actually finish.
+**The visit.** Three darts. Three contracts go up on the slate: take any of them and you stake
+Pot against a printed price. They pull in different directions on purpose — A TON wants the
+trebles, 15 UP wants nothing under fifteen, QUIET wants a visit under twenty-five, IN A BED
+wants all three darts in one number — so where to aim stops answering itself. The offer stays
+open until two darts are left, at a price that lengthens as the darts go, so what happens on
+the board can still be wagered on.
 
-**The press.** A contract pays the instant it lands, straight into the Pot, where nothing can
-reach it. Then you decide what to do with the money. **PRESS** puts double the stake back up on
-something harder, using whatever darts are left. **PULL** gets you out of one that has not
-landed, for half the stake back. A **BUST**, or a dart that finishes off the board, takes
-everything still being chased — which is why the third dart at the trebles is a decision and
-not a formality.
+**The throw.** Point at the board — a magnifier pops out in the far corner so your thumb is
+never covering the thing you are aiming at — and then watch the column beside the board. A
+marker sweeps it, the middle is the dart you called, and the tap that throws is the tap that
+times it. Stop high and the dart goes long; stop low and it drops short; the wall is at the
+very top. The green band is as wide as the dart is likely, which is why a called single fills
+the column and a treble is a sliver.
+
+**The money.** A contract pays the instant it lands, straight into the Pot. **SETTLE** takes
+the money on one still going, for a share that grows with every dart it survives. **PRESS**
+puts double the stake back up on something harder, using whatever darts are left. **PUT IT UP**
+moves a payout you have already won onto the **WIRE**, where it doubles for every visit it
+survives — but something has to land every visit to feed it, and a **BUST**, or a dart that
+finishes off the board, takes the wire and everything still being chased with it. Which is why
+the third dart at the trebles is a decision and not a formality.
 
 **The build.** Chalk bends the rules for the rest of the night, in a four-stage resolution
 pipeline that can be chained until the arithmetic stops making sense. The kit holds one-shot

@@ -92,6 +92,21 @@ describe('the core is headless (TDD §14.1)', () => {
   });
 });
 
+describe('the house rules on words (TDD §2)', () => {
+  it('no gambling terminology anywhere in the build', () => {
+    // The TDD bans the word outright. A pub slate, a wire and a press are
+    // darts; a casino is not what this is.
+    const banned = /\b(bet|bets|betting|bettor|casino|jackpot|wager|wagers|wagered|wagering|odds-?on favourite)\b/i;
+    for (const f of walk('src')) {
+      const src = readFileSync(f, 'utf8');
+      // Strip block and line comments: what ships is the strings, not the prose.
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      const hit = code.split('\n').findIndex((l) => banned.test(l));
+      expect(hit, `${f}:${hit + 1} — ${code.split('\n')[hit]}`).toBe(-1);
+    }
+  });
+});
+
 describe('no network (TDD §17.6, C6)', () => {
   it('fetch(, XMLHttpRequest and WebSocket appear nowhere under src/', () => {
     const offenders: string[] = [];

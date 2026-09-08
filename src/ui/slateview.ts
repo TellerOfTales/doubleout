@@ -15,7 +15,7 @@ import type { TakenContract } from '../core/types';
 import type { Rect } from './layout';
 import { Pulse } from './tween';
 
-export type SlateVerbId = 'TAKE' | 'PULL' | 'PRESS';
+export type SlateVerbId = 'TAKE' | 'PULL' | 'PRESS' | 'RIDE' | 'DOWN';
 
 export interface SlateVerb {
   id: SlateVerbId;
@@ -36,8 +36,8 @@ export interface SlateCardView {
   /** Contract def id. */
   defId: string;
   rect: Rect;
-  /** Offered (take it) or riding (pull, bank or press it). */
-  mode: 'OFFER' | 'RIDING' | 'SETTLED';
+  /** Offered, riding, settled this visit, or the wire itself. */
+  mode: 'OFFER' | 'RIDING' | 'SETTLED' | 'WIRE';
   /** For a riding contract, its index on the leg's slate. */
   index: number;
   stake: number;
@@ -111,15 +111,84 @@ export class SlateView {
     return null;
   }
 
+  /** Set by the game screen each rebuild, when there is money on the wire. */
+  wire: WireView | null = null;
+
   draw(r: Renderer): void {
     const f = this.flash();
-    for (let i = 0; i < this.cards.length; i++) drawContract(r, this.cards[i], this.hover === i, this.time, f);
+    for (let i = 0; i < this.cards.length; i++) drawContract(r, this.cards[i], this.hover === i, this.time, f, this.wire ?? undefined);
   }
 }
 
 const STATUS_COLOUR: Record<string, number> = { LIVE: P.MIST, MADE: P.BAIZE_LIT, DEAD: P.EMBER };
 
-export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, time: number, flash: { color: number; v: number } | null = null): void {
+/** How much is on the wire, what it is worth, and what one more visit would make it. */
+export interface WireView {
+  amount: number;
+  run: number;
+  worth: number;
+  next: number;
+  /** True while the called dart could put it in the wall or bust the visit. */
+  hot: boolean;
+}
+
+/**
+ * THE WIRE, on the strip. It takes the first slot, ahead of every contract,
+ * because it is the only thing on the row that is money rather than a promise.
+ */
+export function drawWire(r: Renderer, c: SlateCardView, w: WireView, time: number): void {
+  const { x, y, h } = c.rect;
+  const cw = c.rect.w;
+  const mult = w.worth / Math.max(1, w.amount);
+  const top = w.run >= 3 ? P.EMBER : P.BRASS_LIT;
+  const pulse = Math.sin(time * (3 + w.run)) > 0;
+  r.panel(x, y, cw, h, P.INK, w.hot ? P.EMBER : pulse ? top : P.BRASS);
+  const mid = x + Math.floor(cw / 2);
+  r.text('WIRE', mid, y + 3, { font: 5, color: P.BRASS_LIT, align: 'center' });
+  r.line(x + 2, y + 11, x + cw - 3, y + 11, P.STONE);
+  // The figure, as big as the slot can carry it. This is the number the whole
+  // mechanic exists to put in front of the player.
+  const worth = String(w.worth);
+  const big = measureText(9, worth) + 6 <= cw;
+  r.text(worth, mid, y + 14, { font: big ? 9 : 5, color: w.hot ? P.EMBER : P.BRASS_LIT, align: 'center', shadow: P.INK });
+  r.text(`×${mult}`, mid, y + (big ? 27 : 22), { font: 5, color: top, align: 'center' });
+  drawChips(r, x + 3, y + (big ? 33 : 28), w.amount, cw - 6);
+  // What one more fed visit would make it: the whole reason to leave it up.
+  const next = `${w.next} NEXT`;
+  const line = measureText(5, next) <= cw - 6 ? next : String(w.next);
+  r.text(line, mid, y + h - 21, { font: 5, color: P.PEWTER, align: 'center' });
+  for (const v of c.verbs) drawVerb(r, v);
+}
+
+/** A stack of chips: the only physical token for money in the build. */
+function drawChips(r: Renderer, x: number, y: number, amount: number, maxW: number): void {
+  const per = 4;
+  const stacks = Math.max(1, Math.ceil(amount / per));
+  const room = Math.max(1, Math.floor(maxW / 5));
+  const shown = Math.min(stacks, room);
+  for (let i = 0; i < shown; i++) {
+    const inThis = Math.min(per, amount - i * per);
+    for (let j = 0; j < inThis; j++) {
+      const cy = y + 6 - j * 2;
+      r.rect(x + i * 5, cy, 4, 1, P.BRASS_LIT);
+      r.rect(x + i * 5, cy + 1, 4, 1, P.BRASS);
+    }
+  }
+  if (stacks > room) r.text('+', x + room * 5, y + 2, { font: 5, color: P.BRASS });
+}
+
+function drawVerb(r: Renderer, v: SlateVerb): void {
+  const key = v.id === 'PRESS' ? P.EMBER : v.id === 'DOWN' ? P.BRASS_LIT : v.id === 'RIDE' ? P.CLARET_LIT : v.id === 'TAKE' ? P.BRASS_LIT : P.MIST;
+  r.rect(v.rect.x, v.rect.y, v.rect.w, v.rect.h, v.disabled ? P.DEEP : P.SHADE);
+  r.rectOutline(v.rect.x, v.rect.y, v.rect.w, v.rect.h, v.disabled ? P.SHADE : key);
+  r.text(v.label, v.rect.x + Math.floor(v.rect.w / 2), v.rect.y + 2, { font: 5, color: v.disabled ? P.STONE : key, align: 'center' });
+}
+
+export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, time: number, flash: { color: number; v: number } | null = null, wire?: WireView): void {
+  if (c.mode === 'WIRE') {
+    if (wire) drawWire(r, c, wire, time);
+    return;
+  }
   const def = CONTRACT_BY_ID[c.defId];
   if (!def) return;
   const { x, y, w, h } = c.rect;
@@ -174,8 +243,16 @@ export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, ti
   if (c.prices) {
     const py = y + h - (c.verbs.length ? 24 : 10);
     r.line(x + 2, py - 2, x + w - 3, py - 2, P.STONE);
-    r.text(`${c.prices.leftLabel}${c.prices.left}`, x + 3, py, { font: 5, color: dim ? P.STONE : P.MIST });
-    r.text(`${c.prices.rightLabel}${c.prices.right}`, x + w - 3, py, { font: 5, color: dim ? P.STONE : P.BRASS_LIT, align: 'right' });
+    // The labels are the first thing to go when the card narrows: two numbers
+    // that touch read as one wrong number, and "2PAYS 9" is not a price.
+    let left = `${c.prices.leftLabel}${c.prices.left}`;
+    let right = `${c.prices.rightLabel}${c.prices.right}`;
+    if (measureText(5, left) + measureText(5, right) + 5 > w - 6) {
+      left = String(c.prices.left);
+      right = String(c.prices.right);
+    }
+    r.text(left, x + 3, py, { font: 5, color: dim ? P.STONE : P.MIST });
+    r.text(right, x + w - 3, py, { font: 5, color: dim ? P.STONE : P.BRASS_LIT, align: 'right' });
   }
 
   // A contract that has landed but is still riding gets a tick that pulses,
@@ -183,12 +260,7 @@ export function drawContract(r: Renderer, c: SlateCardView, hovered: boolean, ti
   if (made && c.mode === 'RIDING' && Math.sin(time * 5) > 0) r.text('\u2713', x + w - 8, y + 3, { font: 5, color: P.BAIZE_LIT });
   if (dead) for (let i = 0; i < w - 4; i += 2) r.pixel(x + 2 + i, y + Math.floor(h / 2), P.CLARET_LIT);
 
-  for (const v of c.verbs) {
-    const key = v.id === 'PRESS' ? P.EMBER : v.id === 'TAKE' ? P.BRASS_LIT : P.MIST;
-    r.rect(v.rect.x, v.rect.y, v.rect.w, v.rect.h, v.disabled ? P.DEEP : P.SHADE);
-    r.rectOutline(v.rect.x, v.rect.y, v.rect.w, v.rect.h, v.disabled ? P.SHADE : key);
-    r.text(v.label, v.rect.x + Math.floor(v.rect.w / 2), v.rect.y + 2, { font: 5, color: v.disabled ? P.STONE : key, align: 'center' });
-  }
+  for (const v of c.verbs) drawVerb(r, v);
   void STATUS_COLOUR;
 }
 

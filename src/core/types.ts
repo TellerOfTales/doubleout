@@ -71,6 +71,31 @@ export interface TakenContract {
   settled: { pot: number; how: ContractOutcome } | null;
 }
 
+/**
+ * THE WIRE — money already won, put back up.
+ *
+ * A contract that lands pays into the Pot, safely, the instant it lands. The
+ * wire is what a player does with that money afterwards if they cannot leave
+ * it alone: it comes back out of the Pot and goes up on the wire, where it
+ * doubles for every visit it survives — and a visit only counts if something
+ * lands on it. A barren visit takes the lot, and so does a bust or a dart off
+ * the board.
+ *
+ * It is not the interest on banked money that measurement killed
+ * (DECISIONS #72). That paid for surviving, which is free. This pays for
+ * FEEDING, which is not.
+ */
+export interface WireState {
+  /** Pot on the wire. Zero means there is no wire. */
+  amount: number;
+  /** Visits it has survived and been fed on. The multiplier reads off this. */
+  run: number;
+  /** Has anything landed this visit? Reset at the end of every visit. */
+  fed: boolean;
+  /** The visit it was put up on, which is free: it cannot go barren the day it opens. */
+  since: number;
+}
+
 // ---------- Chalk ----------
 
 export type ChalkStage = 'DEAL' | 'BOARD' | 'VALUE' | 'RULE';
@@ -183,6 +208,8 @@ export interface LegState {
   heat: number;
   /** True once this leg has seen a bust: the clean sheet is off. */
   dirty: boolean;
+  /** Money put back up, and what it is riding on. */
+  wire: WireState;
   /** Pot awarded for this leg once checked out. */
   reward?: PotBreakdown;
 }
@@ -251,6 +278,10 @@ export interface NightStats {
    * often the room went quiet.
    */
   slatesWiped: number;
+  /** The biggest the wire ever got, and how it went. */
+  bestWire: number;
+  wiresTaken: number;
+  wiresLost: number;
   bigFinishes: number;
   cleanLegs: number;
   maxChalkHeld: number;
@@ -324,6 +355,11 @@ export type EngineEvent =
    * later in a batch with everything else.
    */
   | { type: 'CONTRACT_DEAD'; contract: TakenContract }
+  | { type: 'WIRE_UP'; amount: number; run: number; by: string }
+  | { type: 'WIRE_FED'; amount: number; by: string }
+  | { type: 'WIRE_CARRIED'; amount: number; run: number; worth: number }
+  | { type: 'WIRE_DOWN'; amount: number; run: number; paid: number; reason: 'PLAYER' | 'FULL' | 'LEG' }
+  | { type: 'WIRE_LOST'; amount: number; run: number; worth: number; reason: 'BARREN' | 'BUST' | 'WALL' }
   | { type: 'KIT_SPENT'; defId: string }
   | { type: 'THROW'; result: ThrowResult }
   | { type: 'VISIT_END'; visit: VisitState; total: number; busted: boolean; missed: boolean; heat: number }

@@ -333,3 +333,186 @@ affordable. The 46% that falls out sits above the TDD's 18-28% band and stays
 there. An expectimax planner is not a person, and a band written for the old
 dealt-card model is worth less than a loop where the interesting system is the
 winning one.
+
+---
+
+## 8. The throw itself, and the money on the wire
+
+The fourth playtest, on the free-aim build: *"this is better tbh but aiming is
+hard because the thumb covers the point and the target is extremely small for
+thumb aiming. the gambling nature now feels entirely gone."*
+
+Two complaints, and they are not the same kind of thing. The first is a
+tractable input problem. The second is a design failure that no amount of
+polish would have fixed, because reading the code against what it claimed
+showed the wager had stopped being a wager.
+
+### 8.1 What the diagnosis found
+
+Traced dart by dart, a visit went like this. Three contracts go up. The player
+takes some, before any information exists. Then three darts, during which the
+only verb on the screen returns one Pot. Money arrives on its own when a
+contract lands, and leaves on its own when the visit ends. The Pot — the number
+the entire system moves — was the only figure on screen with no animation of
+any kind, while the remaining score had a tweened counter, a per-tick sound and
+a bump. A payout of one and a payout of thirty-eight got the identical chime
+and the identical crowd. A contract dying was silent, and was reported four
+seconds later in a batch. Three flourishes for staking, winning and losing were
+constructed, ticked every frame, and read by no draw code at all.
+
+So: one decision a visit, made blind, then three darts of watching. That is not
+a gambling loop. It is a purchase followed by a screensaver.
+
+### 8.2 The meter: putting the throw back in the thumb
+
+A dart was a target and a dice roll. It is now a target and a throw. A marker
+sweeps a column beside the board; the middle of the column is the dart you
+called; the tap that releases the dart is the tap that times it. High is long,
+low is short, and the wall sits at the very top, because that is how a dart
+leaves a board.
+
+Adding a skill to the player's thumb is only safe if it does not move the game
+underneath it, and the thing that makes this work is where the band edges are
+cut. The obvious construction — make each band as wide as its own probability —
+is wrong, because it prices the column for somebody tapping at random and
+nobody taps at random. An ordinary hand clusters near the middle, so the bands
+nearest the one you called collect far more darts than they are worth. Measured
+under that construction, a dart called at a double found *some* double 65% of
+the time instead of 59%, a treble found some treble 58% instead of 52%, and a
+bot ignoring the slate went from winning three nights in ten to four.
+
+Cutting the bands at the **quantiles of the hand's own stop distribution**
+instead makes an ordinary hand land exactly the distribution the whole game is
+balanced on — every outcome, not just the one you called. Measured over three
+hundred thousand darts against a printed table of 97 / 60 / 50 / 45 / 30:
+
+| target | printed | ordinary hand | quick thumb | poor thumb | band |
+|--------|---------|---------------|-------------|------------|------|
+| S20 | 97 | 99.2 | 99.9 | 97.8 | 87% of the column |
+| OB  | 60 | 60.1 | 88.9 | 42.9 | 44% |
+| D20 | 50 | 50.1 | 78.3 | 34.7 | 33% |
+| T20 | 45 | 45.0 | 70.7 | 31.1 | 28% |
+| BULL| 30 | 30.0 | 42.9 | 20.4 | 15% |
+
+Nothing in the economy had to move. A called single takes most of the column
+and cannot really be missed by anybody, which is what *the safe end has to be
+genuinely safe* means; a treble is about sixty milliseconds of open window. The
+gap between the safe dart and the paying dart is still thirty-nine points at
+the top of the skill range, so the decision the whole game rests on is still a
+decision — and a steadier thumb is now worth something, which it never was.
+
+The stop is a player input like the target: recorded in the script, replayed
+byte for byte, and consuming the same single RNG float the old aim roll took,
+in the same place. Anyone who cannot time a tap turns the meter off and gets
+the printed odds exactly.
+
+### 8.3 The scope: a thumb is wider than a double
+
+The double band is four pixels of a ninety-six pixel board. The answer is a
+window on the board at the sights, magnified from the larger board art so a
+brass wire stays a wire rather than becoming a three-pixel bar, parked in
+whichever corner of the board is furthest from the aim, with the number called
+out underneath it. Two properties are worth testing and both are: it is always
+on the board, and it is never under the thumb.
+
+### 8.4 The slate, made live
+
+Three changes, in the order they matter.
+
+**The offer stays open.** It used to close the instant the first dart left the
+hand, which is what put every money decision of the visit before any of the
+darts. It now closes with two darts to go, at a price that lengthens with the
+darts already gone — the house prices on time remaining, and reading whether
+the visit has gone well enough to make a standing price generous is the
+player's edge. It closes early enough that nobody can wait until they are
+already on a double they were throwing anyway and take the money for it.
+
+**PULL became SETTLE.** Half your stake back is not a decision anybody makes
+twice. A contract still going is now worth a share of what it would pay, and
+that share grows with every dart it survives — so the number on the card moves,
+and taking the money is a real alternative to riding it out. The share is
+deliberately under the fair price, so settling everything is never free money;
+riding everything is not free either, because a dart in the wall takes the lot.
+
+**A press keeps the cold price.** Lengthening a press with the late premium
+made pressing everything the best policy in the game — measured 22.9% against a
+planner on 20.8%, the exact failure §7.3 exists to prevent. The premium is what
+the house pays for taking a wager late *by choice*; a press is late by
+definition.
+
+### 8.5 The wire: the moment of collecting
+
+Even with all of that, one thing was still missing: nowhere in a night did the
+player *take* money. It arrived. So:
+
+A contract that lands pays into the Pot at once, safely, as before — nothing is
+taken from anybody. What the wire adds is a verb on that safe money. **PUT IT
+UP** moves a payout back out of the Pot and on to the wire, where it doubles
+for every visit it survives. **DOWN** takes it, whenever you like, and counts
+it into the Pot chip by chip.
+
+The price of the doubling is what stops it being the free carry measurement
+already killed once (DECISIONS #72 — that one paid interest for *surviving*,
+which costs nothing). This one pays for being **fed**: something has to land
+every visit or the whole wire goes, and so does a bust, and so does a dart off
+the board. The visit it opens on is free, so putting money up is never
+instantly punished.
+
+Doubling rather than counting, because a counting ladder makes the first rung
+break even and every rung after it bad, so nothing would ever be carried twice.
+A carry gets through a visit a little better than half the time, which at ×2 a
+rung is about even money — which is what a choice is. Measured over a hundred
+and fifty identical nights: planner 27.3%, always-carry 24.0%, never-carry
+22.7%. The wire is a coin the player chooses to flip, and choosing well beats
+both fixed policies.
+
+It also couples the two halves of the game for the first time. The slate wants
+you at the trebles; a wire wants you nowhere near the wall. Carrying money
+makes you play safe, which is exactly the tension a wager is supposed to
+create.
+
+### 8.6 The number that was wrong all along
+
+The planner values Pot against score at one exchange rate, and that rate was
+ten points to the Pot. Measured over a hundred and fifty identical nights, a
+planner at ten won 19.3% of them and a bot that ignored the slate outright won
+25.3%. **The slate was not a decision. It was a tax.** No amount of chips,
+count-ups and gold flashes would have made working it feel worth doing, because
+it was not worth doing.
+
+The instinct is to raise the prices. Measured, that makes it worse: every
+printed price up by half took the planner to 21.3%, because a dearer contract
+tempts it into distorting its aim further for money that never buys back the
+legs it costs. The fault was the exchange rate, not the prices.
+
+| Pot in points | planner | presses everything | slate-blind |
+|---------------|---------|--------------------|-------------|
+| 4  | 24.7% | 31.3% | 28.0% |
+| 5  | 28.0% | 30.7% | 28.0% |
+| **6** | **27.3%** | **21.3%** | 28.0% |
+| 7  | 27.3% | 24.0% | 28.0% |
+| 8  | 22.0% | 20.7% | 28.0% |
+| 10 | 19.3% | 16.7% | 25.3% |
+
+At six, on the acceptance seeds: planner 33.3%, presses-everything 27.1%,
+presses-nothing 18.8%, slate-blind 22.9%. Judgement beats every fixed policy,
+and **working the slate finally beats ignoring it** — which §7.5 had to admit
+was not true before.
+
+### 8.7 What was quietly broken, and is not now
+
+Read against what it claimed, the build was lying in seven places. CLEAN
+("three on the board, no bust") was paid by a visit that busted on the third
+dart, because the slate was re-read before the visit was marked busted. 15 UP
+advertised a press it could never receive — a contract judged at the end of a
+visit reaches MADE only with no darts left, and a press needs darts. Short
+Price described a per-dart carry deleted two commits earlier and did nothing at
+all. Chalked Up rolled next visit's offer into state and nothing ever drew it.
+A contract's death was silent. The three money flourishes were never rendered.
+The wall chance — the thing that wipes the slate — was hidden whenever a bust
+or finish chance existed.
+
+All seven are fixed, and the ones that can be are pinned by tests. The lesson
+is the one this document keeps learning: the difference between a system that
+works and one that only appears to is a measurement, and the measurement has to
+be of the thing itself rather than of how it was meant to behave.

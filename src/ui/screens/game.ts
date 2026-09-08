@@ -15,7 +15,7 @@ import { INTERVENTIONS, interventionDef } from '../../content/interventions';
 import { OCHE_BY_ID } from '../../content/oches';
 import { baseValue, sameTarget, targetNotation } from '../../core/board';
 import { computeCheckoutHints, routeNotation, type CheckoutHints } from '../../core/checkout';
-import { HEAT_CAP, LEGS, streakMultiplier } from '../../content/legs';
+import { HEAT_CAP, LEGS, streakMultiplier, wireMultiplier } from '../../content/legs';
 import { buildBarkContext } from '../../core/commentary';
 import { contractDef } from '../../core/slate';
 import { hitChance, meterFor, resolveThrow, spreadFor, type Landing } from '../../core/resolver';
@@ -32,13 +32,18 @@ import {
   offerPrice,
   pressContract,
   pullContract,
+  rideContract,
+  rideable,
   settleWorth,
   slateSize,
   steadinessOf,
   takeContract,
   throwsPerVisit,
+  takeWireDown,
   useRubOut,
   visitProgress,
+  wireNext,
+  wireWorth,
   visitTotal,
 } from '../../core/state';
 import type { EngineEvent, LegState, NightState, Target, ThrowResult } from '../../core/types';
@@ -192,6 +197,7 @@ export class GameScreen implements Scene {
    */
   private potCount: Counter;
   private potBump = new Pulse();
+  private wireBump = new Pulse();
   /** +1 while the Pot is climbing, -1 while it is falling, 0 at rest. */
   private potWay = 0;
 
@@ -242,7 +248,9 @@ export class GameScreen implements Scene {
     this.score.snap(leg.score);
     this.board.clearDarts();
     this.aim = this.openingAim();
-    this.readout = this.app.input.isTouch ? 'TAP THE BOARD TO AIM. TAP AGAIN TO THROW.' : 'CLICK THE BOARD TO AIM. ARROWS MOVE IT, ENTER THROWS.';
+    // One line, and the narrowest readout in the build is twenty-eight
+    // characters wide.
+    this.readout = this.app.input.isTouch ? 'TAP TO AIM. THROW ON GREEN.' : 'CLICK TO AIM. ENTER ON GREEN.';
     this.readoutColor = P.MIST;
     this.legBanner = this.hooks.ownsFlow ? null : { text: `LEG ${leg.index + 1} · ${legName(leg.index).toUpperCase()}`, sub: `${LEGS[leg.index].start} UP · ${leg.visitLimit} VISITS`, t: 0 };
     this.app.sfx('card_flip');
@@ -461,20 +469,43 @@ export class GameScreen implements Scene {
     // that have paid and can still be pressed — that press is the most
     // valuable button on the screen and must never be crowded off it.
     const slots = slateSize(this.night);
-    type Item = { taken?: (typeof riding)[number]; offer?: string; done?: (typeof riding)[number] };
+    type Item = { taken?: (typeof riding)[number]; offer?: string; done?: (typeof riding)[number]; wire?: boolean };
     const paid = leg.slate.filter((c) => c.settled);
-    const items: Item[] = riding.map((c) => ({ taken: c }));
-    for (const c of paid) if (pressable(this.night, leg, c)) items.push({ done: c });
+    const items: Item[] = [];
+    // The wire first: it is the only thing on the row that is money already
+    // won rather than a promise, and it is the only thing that can be lost by
+    // doing nothing.
+    if (leg.wire.amount > 0) items.push({ wire: true });
+    for (const c of riding) items.push({ taken: c });
+    for (const c of paid) if (pressable(this.night, leg, c) || rideable(this.night, leg, c)) items.push({ done: c });
     if (showOffer) for (const id of leg.offer) items.push({ offer: id });
     // Whatever is left of the row becomes the visit's ledger: what the
     // contracts already settled this visit did, rather than a blank.
-    for (const c of paid) if (!pressable(this.night, leg, c)) items.push({ done: c });
-    const rects = slateSlots(l, Math.max(slots, Math.min(slots + 1, items.length)));
+    for (const c of paid) if (!pressable(this.night, leg, c) && !rideable(this.night, leg, c)) items.push({ done: c });
+    // The row grows by one for a settled contract that still has a decision on
+    // it — but not when the wire is up, because the wire is already occupying
+    // one of the slate's places.
+    const cap = leg.wire.amount > 0 ? slots : Math.min(slots + 1, items.length);
+    const rects = slateSlots(l, Math.max(slots, cap));
     for (let i = 0; i < rects.length; i++) {
       const rect = rects[i];
       const it = items[i];
       if (!it) {
         this.emptySlots.push(rect);
+        continue;
+      }
+      if (it.wire) {
+        cards.push({
+          defId: '',
+          rect,
+          mode: 'WIRE',
+          index: -1,
+          stake: leg.wire.amount,
+          price: wireWorth(leg),
+          status: 'LIVE',
+          unaffordable: false,
+          verbs: layoutVerbs(rect, [{ id: 'DOWN', label: 'DOWN', disabled: this.locked || !this.verbAllowed('DOWN') }]),
+        });
         continue;
       }
       if (it.offer) {
@@ -504,6 +535,12 @@ export class GameScreen implements Scene {
         // A contract that has paid is safe, and the only thing left to do with
         // it is put the winnings back up on something harder.
         const canPress = pressable(this.night, leg, c) && this.night.pot >= c.stake * 2;
+        const canRide = rideable(this.night, leg, c);
+        const verbs: { id: SlateVerbId; label: string; disabled: boolean }[] = [];
+        if (canPress) verbs.push({ id: 'PRESS', label: `PRESS ${c.stake * 2}`, disabled: this.locked || !this.verbAllowed('PRESS') });
+        // Putting the winnings back up. The money is already yours and already
+        // safe; this is the one verb in the game that risks that.
+        if (canRide) verbs.push({ id: 'RIDE', label: 'PUT IT UP', disabled: this.locked || !this.verbAllowed('RIDE') });
         cards.push({
           defId: c.defId,
           rect,
@@ -514,9 +551,7 @@ export class GameScreen implements Scene {
           status: c.status,
           unaffordable: false,
           settled: c.settled,
-          verbs: canPress
-            ? layoutVerbs(rect, [{ id: 'PRESS', label: `PRESS ${c.stake * 2}`, disabled: this.locked || !this.verbAllowed('PRESS') }])
-            : [],
+          verbs: layoutVerbs(rect, verbs),
         });
         continue;
       }
@@ -544,6 +579,16 @@ export class GameScreen implements Scene {
       });
     }
     this.slate.cards = cards;
+    this.slate.wire =
+      leg.wire.amount > 0
+        ? {
+            amount: leg.wire.amount,
+            run: leg.wire.run,
+            worth: wireWorth(leg),
+            next: wireNext(leg),
+            hot: !!this.preview && (this.preview.wall > 0 || this.preview.bust > 0),
+          }
+        : null;
   }
 
   /**
@@ -582,11 +627,21 @@ export class GameScreen implements Scene {
         ? takeContract(this.night, card.defId)
         : verb === 'PRESS'
           ? pressContract(this.night, card.index)
-          : pullContract(this.night, card.index);
+          : verb === 'RIDE'
+            ? rideContract(this.night, card.index)
+            : verb === 'DOWN'
+              ? takeWireDown(this.night)
+              : pullContract(this.night, card.index);
     if (!out.ok) {
       this.app.sfx('error');
       this.readout = (out.reason ?? 'NOT NOW').toUpperCase();
       this.readoutColor = P.EMBER;
+      return;
+    }
+    if (verb === 'DOWN' || verb === 'RIDE') {
+      for (const e of out.events) this.co.run(this.playEvent(e, this.lastResult as ThrowResult));
+      this.refresh();
+      this.hooks.onEvent?.(out.events[0] ?? { type: 'LEG_START', legIndex: this.leg.index }, this);
       return;
     }
     const def = contractDef(card.defId);
@@ -727,7 +782,7 @@ export class GameScreen implements Scene {
   atRisk(): number {
     const leg = this.night?.legs?.[this.night.legIndex];
     if (!leg || leg.status !== 'ACTIVE') return 0;
-    let n = 0;
+    let n = wireWorth(leg);
     for (const c of leg.slate) {
       if (c.settled || c.status === 'DEAD') continue;
       n += c.stake + c.price;
@@ -1001,6 +1056,73 @@ export class GameScreen implements Scene {
         this.bark(e, result);
         this.refresh();
         yield s.how === 'LOST' || s.how === 'PAID' ? 0.5 : 0.15;
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'WIRE_UP': {
+        this.slate.taken.fire(0.6);
+        this.app.sfx('card_flip');
+        this.app.sfx('pot', { volume: 0.22, pitch: 0.85 });
+        this.float(`${e.amount} UP`, l.slate.x + l.slate.w / 2, l.slate.y - 2, P.CLARET_LIT, 1, 1.3);
+        this.readout = `${e.amount} ON THE WIRE. FEED IT TO DOUBLE IT.`;
+        this.readoutColor = P.BRASS_LIT;
+        this.refresh();
+        yield 0.3;
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'WIRE_FED': {
+        this.wireBump.fire(0.5);
+        this.app.sfx('tick', { volume: 0.3, pitch: 1.6 });
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'WIRE_CARRIED': {
+        // The ratchet. This is the beat the whole mechanic exists for.
+        this.wireBump.fire(0.8);
+        this.app.sfx('unlock', { volume: 0.5, pitch: 1 + e.run * 0.12 });
+        this.app.audio.crowdRoar(0.25 + e.run * 0.14);
+        this.crowdJump.fire(0.5);
+        this.goldFlash.fire(0.2 + e.run * 0.1);
+        this.float(`×${wireMultiplier(e.run)}`, l.slate.x + l.slate.w / 2, l.slate.y - 2, P.BRASS_LIT, 2, 1.6);
+        this.readout = `${e.amount} STAYS UP. IT IS WORTH ${e.worth} NOW.`;
+        this.readoutColor = P.BRASS_LIT;
+        this.refresh();
+        yield 0.55;
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'WIRE_DOWN': {
+        // The collect. Chips into the till, for as long as there are chips.
+        const big = Math.min(1, e.paid / 24);
+        this.slate.paid.fire(0.9);
+        this.app.sfx('pot', { volume: 0.4 + big * 0.4, pitch: 1.1 + big * 0.5 });
+        this.app.audio.crowdRoar(0.35 + big * 0.6);
+        this.goldFlash.fire(0.3 + big * 0.5);
+        if (e.paid >= 12) this.shake.hit(1 + big * 3, 0.3);
+        this.float(`TAKEN DOWN +${e.paid}`, l.slate.x + l.slate.w / 2, l.slate.y - 2, P.BRASS_LIT, 2, 1.8);
+        this.readout = e.reason === 'FULL' ? `THE WIRE IS FULL. ${e.paid} INTO THE POT.` : `TAKEN DOWN. ${e.paid} INTO THE POT.`;
+        this.readoutColor = P.BRASS_LIT;
+        this.refresh();
+        yield 0.4 + Math.min(0.8, e.paid * 0.03);
+        this.hooks.onEvent?.(e, this);
+        break;
+      }
+      case 'WIRE_LOST': {
+        this.slate.lost.fire(0.9);
+        this.app.sfx('lose_sting', { volume: 0.75 });
+        this.shake.hit(2, 0.3);
+        this.app.audio.setCrowdTension(0.1);
+        this.float(`THE WIRE GOES −${e.worth}`, l.slate.x + l.slate.w / 2, l.slate.y - 2, P.CLARET_LIT, 2, 1.8);
+        this.readout =
+          e.reason === 'BARREN'
+            ? `NOTHING LANDED. THE WIRE GOES.`
+            : e.reason === 'WALL'
+              ? `OFF THE BOARD. THE WIRE GOES TOO.`
+              : `BUST. THE WIRE GOES WITH IT.`;
+        this.readoutColor = P.EMBER;
+        this.refresh();
+        yield 0.7;
         this.hooks.onEvent?.(e, this);
         break;
       }
@@ -1389,6 +1511,16 @@ export class GameScreen implements Scene {
       const verb = card?.verbs.find((v) => !v.disabled);
       if (card && verb) this.onSlateVerb(card, verb.id);
       else this.app.sfx('error');
+    } else if (key === 'r' || key === 'R') {
+      // Put winnings up on the wire. The digits reach a card's first verb
+      // only, and a contract that has paid can offer two.
+      const card = this.slate.cards.find((c) => c.verbs.some((v) => v.id === 'RIDE' && !v.disabled));
+      if (card) this.onSlateVerb(card, 'RIDE');
+      else this.app.sfx('error');
+    } else if (key === 'd' || key === 'D') {
+      const card = this.slate.cards.find((c) => c.verbs.some((v) => v.id === 'DOWN' && !v.disabled));
+      if (card) this.onSlateVerb(card, 'DOWN');
+      else this.app.sfx('error');
     } else if (key === 'w' || key === 'W' || key === '0') {
       this.throwAtWall();
     } else if (key === 'k' || key === 'K') {
@@ -1431,6 +1563,7 @@ export class GameScreen implements Scene {
     }
     this.potCount.update(dt);
     this.potBump.update(dt);
+    this.wireBump.update(dt);
     if (this.night && this.potCount.target !== this.night.pot) {
       this.potWay = this.night.pot > this.potCount.target ? 1 : -1;
       this.potCount.set(this.night.pot, 0.5);
@@ -1675,7 +1808,9 @@ export class GameScreen implements Scene {
       const risk = this.atRisk();
       if (risk > 0) {
         const hot = Math.sin(this.time * 5) > 0;
-        r.text(`ON THE SLATE ${risk}`, vl.x + 58, vl.y, { color: hot ? P.EMBER : P.CLARET_LIT });
+        const label = `${risk} AT RISK`;
+        const start = vl.x + measureText(5, `VISIT ${v.index + 1}/${leg.visitLimit}`) + 8;
+        if (start + measureText(5, label) < vl.x + vl.w - 40) r.text(label, start, vl.y, { color: hot ? P.EMBER : P.CLARET_LIT });
       }
       const darts = parts.join(' ');
       r.text(darts, vl.x + vl.w, vl.y, { color: P.MIST, align: 'right' });
@@ -1774,9 +1909,16 @@ export class GameScreen implements Scene {
     // wall chance is the most expensive number on the screen and gets said
     // whatever else is going on. It used to be third in a queue of one.
     const risk = this.atRisk();
-    if (this.armed) r.text(interventionDef(this.armed).name, b.x + b.w - 1, b.y + 10, { color: P.SKY_LIT, align: 'right' });
-    else if (risk > 0 && p.wall > 0) r.text(`WALL ${p.wall}% · ${risk}`, b.x + b.w - 1, b.y + 10, { color: P.EMBER, align: 'right' });
-    else if (risk > 0) r.text(`${risk} ON THE SLATE`, b.x + b.w - 1, b.y + 10, { color: P.BRASS, align: 'right' });
+    const room = b.w - 2 - measureText(5, `SCORES ${p.value}`) - 4;
+    const second = this.armed
+      ? { text: interventionDef(this.armed).name, color: P.SKY_LIT }
+      : risk > 0 && p.wall > 0
+        ? { text: `WALL ${p.wall}% · ${risk}`, color: P.EMBER }
+        : risk > 0
+          ? { text: `${risk} AT RISK`, color: P.BRASS }
+          : null;
+    if (second && measureText(5, second.text) <= room) r.text(second.text, b.x + b.w - 1, b.y + 10, { color: second.color, align: 'right' });
+    else if (second && risk > 0) r.text(`${risk}`, b.x + b.w - 1, b.y + 10, { color: second.color, align: 'right' });
   }
 
   /** Chalked Up, on the strip: the contracts already chalked for next visit. */

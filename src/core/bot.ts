@@ -22,7 +22,7 @@
  */
 import { chalkDef } from '../content/chalkdefs';
 import { KIT_CAP, interventionDef } from '../content/interventions';
-import { ANOTHER_GO_CAP, anotherGoCost, HEAT_CAP, LEGS, LEG_COUNT, PULL_RETURN, SERVICE_COST, SHOP_REFRESH_COST } from '../content/legs';
+import { ANOTHER_GO_CAP, anotherGoCost, HEAT_CAP, LEGS, LEG_COUNT, PULL_RETURN, SERVICE_COST, SHOP_REFRESH_COST, wireMultiplier } from '../content/legs';
 import { ALL_TARGETS } from './board';
 import { computeCheckoutHints } from './checkout';
 import { STEADY_INTERVENTION, realSpread, resolveThrow, throwsPerVisitFor } from './resolver';
@@ -42,7 +42,12 @@ import {
   pressContract,
   pressable,
   pullContract,
+  rideContract,
+  rideable,
   settleWorth,
+  takeWireDown,
+  wireNext,
+  wireWorth,
   shopBuy,
   shopLeave,
   shopRefresh,
@@ -67,7 +72,7 @@ import type { Chalk, LegState, NightState, OcheId, TakenContract, Target } from 
  * The last three name the acceptance-test policies of §7: they aim like
  * `optimal` and differ only in what they do with the money on the table.
  */
-export type Policy = 'naive' | 'greedy' | 'checkout' | 'optimal' | 'always_press' | 'never_press' | 'no_slate';
+export type Policy = 'naive' | 'greedy' | 'checkout' | 'optimal' | 'always_press' | 'never_press' | 'no_slate' | 'always_ride' | 'never_ride';
 
 /** What the bot does with the contracts once the darts are in the air. */
 /**
@@ -75,7 +80,7 @@ export type Policy = 'naive' | 'greedy' | 'checkout' | 'optimal' | 'always_press
  * docs/decisions/design.md §7.3. Banking is automatic now — a contract pays
  * the moment it lands — so the greed lives entirely in the press.
  */
-export type SlatePolicy = 'PLAN' | 'ALWAYS_PRESS' | 'NEVER_PRESS' | 'NO_SLATE';
+export type SlatePolicy = 'PLAN' | 'ALWAYS_PRESS' | 'NEVER_PRESS' | 'NO_SLATE' | 'ALWAYS_RIDE' | 'NEVER_RIDE';
 
 /** The planner's answer: aim here (perhaps spending a one-shot), or walk. */
 export type Action = { target: Target; use?: string } | { wall: true };
@@ -94,8 +99,25 @@ export interface RatedAction {
  * high and the bot throws legs away chasing a three-Pot contract, too low and
  * the slate is wallpaper. Pot only matters because it buys chalk, so it is
  * worth much less on the last leg, where there is no shop left to spend it in.
+ *
+ * It was ten, and ten was wrong. Measured over a hundred and fifty identical
+ * nights, a planner at ten won 19.3% of them and a bot that ignored the slate
+ * outright won 25.3% — the slate was not a decision, it was a tax, and no
+ * amount of chips and count-ups would have made working it feel worth doing.
+ * The fault was in the exchange rate, not the prices: raising every printed
+ * price by half made it WORSE (21.3%), because a dearer contract tempts the
+ * planner into distorting its aim further for money that never buys back the
+ * legs it costs. At six the planner wins 27.3% and still stakes eighty Pot a
+ * night, so it is working the slate rather than avoiding it. The sweep:
+ *
+ *   4 → planner 24.7%, presses-everything 31.3%   (greed beats judgement)
+ *   5 → planner 28.0%, presses-everything 30.7%   (greed beats judgement)
+ *   6 → planner 27.3%, presses-everything 21.3%   ← chosen
+ *   7 → planner 27.3%, presses-everything 24.0%
+ *   8 → planner 22.0%, presses-everything 20.7%
+ *  10 → planner 19.3%, presses-everything 16.7%   (was)
  */
-const POT_IN_POINTS = 10;
+const POT_IN_POINTS = 6;
 const POT_IN_POINTS_LAST_LEG = 2;
 
 /** Winning the leg, in points. Larger than any leg, so a finish is never traded away. */
@@ -1545,6 +1567,10 @@ function slatePolicyOf(policy: Policy, opts: PlayOptions): SlatePolicy {
       return 'ALWAYS_PRESS';
     case 'never_press':
       return 'NEVER_PRESS';
+    case 'always_ride':
+      return 'ALWAYS_RIDE';
+    case 'never_ride':
+      return 'NEVER_RIDE';
     case 'no_slate':
     case 'naive':
     case 'greedy':
@@ -1578,9 +1604,74 @@ function runSlate(n: NightState, leg: LegState, policy: SlatePolicy): void {
   for (const id of ids) takeContract(n, id);
 }
 
+/**
+ * THE WIRE, decided.
+ *
+ * Winnings put back up double for every visit they survive, and a visit only
+ * counts if something lands on it. So the question at every decision point is
+ * one multiplication: what it is worth now, against twice that times the
+ * chance of getting it through another visit — something has to land, the
+ * visit must not bust, and no dart may leave the board.
+ *
+ * The chance of a feed is read off the slate that is actually up: the best
+ * hit chance among the contracts the planner would take. That is the honest
+ * estimate, and it is why the planner will put money up on a visit with a
+ * cheap treble on the slate and take it down on one with nothing but a
+ * hundred and forty.
+ */
+const WIRE_SAFE = 0.86;
+
+function feedOdds(n: NightState, leg: LegState): number {
+  const ctx = legCtx(n, leg);
+  let best = 0.25;
+  for (const c of leg.slate) {
+    if (c.settled || c.status === 'DEAD') continue;
+    best = Math.max(best, ridingValue(ctx, leg, c));
+  }
+  for (const id of leg.offer) {
+    const def = contractDef(id);
+    if (def.stake > n.pot) continue;
+    const hypothetical: TakenContract = { defId: id, stake: def.stake, price: currentPrice(n, id), takenAt: 0, madeAt: null, pressed: 0, status: 'LIVE', settled: null };
+    best = Math.max(best, ridingValue(ctx, leg, hypothetical) * 0.9);
+  }
+  return Math.min(0.95, best);
+}
+
+/** True if the wire is worth more carried than collected. */
+function worthCarrying(n: NightState, leg: LegState): boolean {
+  if (leg.wire.amount <= 0) return false;
+  const now = wireWorth(leg);
+  const on = wireNext(leg) * feedOdds(n, leg) * WIRE_SAFE;
+  return on > now;
+}
+
+function runWire(n: NightState, leg: LegState, policy: SlatePolicy): void {
+  if (policy === 'NO_SLATE') return;
+  if (policy === 'ALWAYS_RIDE') {
+    for (let i = 0; i < leg.slate.length; i++) if (rideable(n, leg, leg.slate[i])) rideContract(n, i);
+    return;
+  }
+  if (policy === 'NEVER_RIDE') {
+    takeWireDown(n);
+    return;
+  }
+  // Put winnings up while carrying is worth more than collecting, and take
+  // the lot down the moment it stops being.
+  for (let i = 0; i < leg.slate.length; i++) {
+    if (!rideable(n, leg, leg.slate[i])) continue;
+    const pot = (leg.slate[i].settled as { pot: number }).pot;
+    const now = leg.wire.amount + pot;
+    const on = now * wireMultiplier(leg.wire.run + 1) * feedOdds(n, leg) * WIRE_SAFE;
+    if (on > now + wireWorth(leg) - leg.wire.amount) rideContract(n, i);
+  }
+  if (leg.wire.amount > 0 && !worthCarrying(n, leg)) takeWireDown(n);
+}
+
 /** Do whatever this policy does with the money on the table between darts. */
 function runPress(n: NightState, leg: LegState, policy: SlatePolicy): void {
+  runWire(n, leg, policy);
   if (policy === 'NO_SLATE' || policy === 'NEVER_PRESS') return;
+  if (policy === 'ALWAYS_RIDE' || policy === 'NEVER_RIDE') return;
   if (policy === 'ALWAYS_PRESS') {
     // Greed with no judgement: press everything that can be pressed, every time.
     for (let guard = 0; guard < 8; guard++) {

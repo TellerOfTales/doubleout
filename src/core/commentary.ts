@@ -126,6 +126,7 @@ const EMPTY_LEG: LegState = {
   index: 0,
   visitLimit: 12,
   score: 501,
+  wire: { amount: 0, run: 0, fed: false, since: 0 },
   visits: [],
   bustsThisLeg: 0,
   forgivenessUsed: false,

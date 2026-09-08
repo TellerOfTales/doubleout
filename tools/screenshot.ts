@@ -3,7 +3,7 @@
  * Chromium, drives the game with real pointer events (flicks included) and
  * writes screenshots to assets/screens/. Usage:
  *   node --experimental-strip-types tools/screenshot.ts [scenario ...]
- * Scenarios: title, game, aim, slate, paid, chalk, checkout, bust, oneeighty,
+ * Scenarios: title, game, aim, slate, paid, wire, chalk, checkout, bust, oneeighty,
  * shop, results, settings, tutorial, portrait, all (default).
  */
 import { mkdirSync, existsSync, readdirSync } from 'node:fs';
@@ -301,6 +301,59 @@ async function main(): Promise<void> {
     const kept = (await d.evalApp('app.night.pot')) as number;
     if (kept < potAfter) throw new Error(`a bust took money that had already been paid: ${potAfter} → ${kept}`);
     await d.shot('02_bust_after_paying');
+  });
+
+  // THE WIRE: winnings put back up, doubling for every visit they survive.
+  await run('wire', land, async (d) => {
+    await d.evalApp("app.startNight(4242, 'local')");
+    await settled(d, 'the leg never became interactive');
+    await d.evalApp("(function(){const n=app.night; n.pot=40; n.legs[0].offer=['treble','ton','clean_hands']; app.scenes.current.refresh(); return window.__do.state.takeContract(n,'treble').ok;})()");
+    await d.evalApp('app.scenes.current.refresh()');
+    await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('T20')");
+    await throwAt(d, 'T20');
+    await d.shot('01_paid');
+    // Put the winnings back up.
+    const ride = (await d.evalApp(
+      "(function(){const c=app.scenes.current.slate.cards.find(x=>x.verbs.some(v=>v.id==='RIDE'&&!v.disabled)); if(!c) return null; const v=c.verbs.find(x=>x.id==='RIDE'); return {x: v.rect.x+Math.floor(v.rect.w/2), y: v.rect.y+5};})()",
+    )) as { x: number; y: number } | null;
+    if (!ride) throw new Error('a contract that paid should offer PUT IT UP');
+    await d.click(ride.x, ride.y);
+    await d.wait(500);
+    const up = (await d.evalApp('app.night.legs[0].wire.amount')) as number;
+    if (up <= 0) throw new Error('putting winnings up did not open the wire');
+    await d.shot('02_up');
+    // See the visit out, land something on the next one, and watch it double.
+    await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('S1')");
+    await throwAt(d, 'S1');
+    await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('S1')");
+    await throwAt(d, 'S1');
+    await settled(d, 'the visit never ended');
+    const carried = (await d.evalApp('app.night.legs[0].wire.run')) as number;
+    if (carried !== 0) throw new Error(`the visit that opens the wire is free, run should be 0 (was ${carried})`);
+    await d.evalApp("(function(){const n=app.night; n.legs[0].offer=['treble','ton','clean_hands']; app.scenes.current.refresh(); return window.__do.state.takeContract(n,'treble').ok;})()");
+    await d.evalApp('app.scenes.current.refresh()');
+    await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('T20')");
+    await throwAt(d, 'T20');
+    await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('S1')");
+    await throwAt(d, 'S1');
+    await d.evalApp("app.scenes.current.forceLanding = window.__do.board.parseTarget('S1')");
+    await throwAt(d, 'S1');
+    await settled(d, 'the second visit never ended');
+    const run = (await d.evalApp('app.night.legs[0].wire.run')) as number;
+    if (run !== 1) throw new Error(`a fed visit should carry the wire, run should be 1 (was ${run})`);
+    await d.shot('03_carried');
+    // Take it down, and see it counted into the Pot at twice what went up.
+    const potBefore = (await d.evalApp('app.night.pot')) as number;
+    const worth = (await d.evalApp('app.night.legs[0].wire.amount * 2')) as number;
+    const down = (await d.evalApp(
+      "(function(){const c=app.scenes.current.slate.cards.find(x=>x.mode==='WIRE'); if(!c) return null; const v=c.verbs.find(x=>x.id==='DOWN'); return {x: v.rect.x+Math.floor(v.rect.w/2), y: v.rect.y+5};})()",
+    )) as { x: number; y: number } | null;
+    if (!down) throw new Error('the wire card should offer TAKE IT');
+    await d.click(down.x, down.y);
+    await d.wait(900);
+    const potAfter = (await d.evalApp('app.night.pot')) as number;
+    if (potAfter !== potBefore + worth) throw new Error(`taking the wire down should pay ${worth}: ${potBefore} → ${potAfter}`);
+    await d.shot('04_taken_down');
   });
 
   await run('chalk', land, async (d) => {

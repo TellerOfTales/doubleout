@@ -28,6 +28,8 @@ import {
   LEGS,
   LEG_COUNT,
   PULL_RETURN,
+  WIRE_RUNS,
+  wireMultiplier,
   SERVICE_COST,
   SHOP_REFRESH_COST,
   SLATE_SIZE,
@@ -92,6 +94,9 @@ export function createNight(seed: number, oche: OcheId = 'local', opts: { trueAi
       potWon: 0,
       bestPayout: 0,
       slatesWiped: 0,
+      bestWire: 0,
+      wiresTaken: 0,
+      wiresLost: 0,
       bigFinishes: 0,
       cleanLegs: 0,
       maxChalkHeld: 0,
@@ -165,6 +170,7 @@ export function beginLeg(n: NightState): EngineEvent[] {
     ledger: [],
     heat: 0,
     dirty: false,
+    wire: { amount: 0, run: 0, fed: false, since: 0 },
   };
   n.extraVisits = 0;
   n.legs.push(leg);
@@ -424,6 +430,117 @@ export function pressContract(n: NightState, index: number): SlateOutcome {
   return { ok: true, events };
 }
 
+// ---------------------------------------------------------------- the wire
+
+/** What the wire is worth if it comes down right now. */
+export function wireWorth(leg: LegState): number {
+  return leg.wire.amount * wireMultiplier(leg.wire.run);
+}
+
+/** What it would be worth if it survived one more visit. */
+export function wireNext(leg: LegState): number {
+  return leg.wire.amount * wireMultiplier(leg.wire.run + 1);
+}
+
+/**
+ * Put a contract's winnings back up.
+ *
+ * The money is already yours and already safe in the Pot: this takes it out
+ * again. It is the only verb in the game that risks money the player has
+ * actually won, which is why it is the only one that can double.
+ *
+ * It is offered on a contract that has paid this visit and not been pressed,
+ * because a press has already spent those winnings on something else.
+ */
+export function rideContract(n: NightState, index: number): SlateOutcome {
+  if (n.status !== 'ACTIVE' || n.phase !== 'LEG') return { ok: false, reason: 'not in a leg', events: [] };
+  const leg = currentLeg(n);
+  if (leg.status !== 'ACTIVE') return { ok: false, reason: 'leg is over', events: [] };
+  const c = leg.slate[index];
+  if (!rideable(n, leg, c)) return { ok: false, reason: 'nothing to put up', events: [] };
+  const pot = (c.settled as { pot: number }).pot;
+  if (n.pot < pot) return { ok: false, reason: 'not enough pot', events: [] };
+  c.spent = true;
+  n.pot -= pot;
+  const w = leg.wire;
+  if (w.amount === 0) w.since = currentVisit(leg).index;
+  w.amount += pot;
+  w.fed = true;
+  n.stats.bestWire = Math.max(n.stats.bestWire, wireWorth(leg));
+  const events: EngineEvent[] = [{ type: 'WIRE_UP', amount: w.amount, run: w.run, by: c.defId }];
+  return { ok: true, events };
+}
+
+/** Can this contract's winnings go up on the wire? */
+export function rideable(n: NightState, leg: LegState, c: TakenContract | undefined): boolean {
+  if (!c || !c.settled || c.spent) return false;
+  if (c.settled.how !== 'PAID' && c.settled.how !== 'PULLED') return false;
+  if (c.settled.pot <= 0 || n.pot < c.settled.pot) return false;
+  return currentVisit(leg).throws.length < throwsPerVisit(n) || leg.wire.amount > 0;
+}
+
+/** Take the wire down: whatever is on it, times what it has survived. */
+export function takeWireDown(n: NightState, reason: 'PLAYER' | 'FULL' | 'LEG' = 'PLAYER'): SlateOutcome {
+  if (n.status !== 'ACTIVE') return { ok: false, reason: 'night is over', events: [] };
+  const leg = n.legs[n.legIndex];
+  if (!leg) return { ok: false, reason: 'not in a leg', events: [] };
+  const w = leg.wire;
+  if (w.amount <= 0) return { ok: false, reason: 'nothing on the wire', events: [] };
+  const paid = wireWorth(leg);
+  const events: EngineEvent[] = [{ type: 'WIRE_DOWN', amount: w.amount, run: w.run, paid, reason }];
+  n.pot += paid;
+  if (paid > w.amount) {
+    n.stats.potEarned += paid - w.amount;
+    n.stats.potWon += paid - w.amount;
+    n.stats.bestPayout = Math.max(n.stats.bestPayout, paid - w.amount);
+  }
+  n.stats.bestWire = Math.max(n.stats.bestWire, paid);
+  n.stats.wiresTaken++;
+  w.amount = 0;
+  w.run = 0;
+  w.fed = false;
+  w.since = 0;
+  return { ok: true, events };
+}
+
+/** Everything on the wire, gone. */
+function wireLost(n: NightState, leg: LegState, reason: 'BARREN' | 'BUST' | 'WALL', events: EngineEvent[]): void {
+  const w = leg.wire;
+  if (w.amount <= 0) return;
+  events.push({ type: 'WIRE_LOST', amount: w.amount, run: w.run, worth: wireWorth(leg), reason });
+  n.stats.wiresLost++;
+  w.amount = 0;
+  w.run = 0;
+  w.fed = false;
+  w.since = 0;
+}
+
+/**
+ * The end of a visit, for the wire. The visit it went up on is free; after
+ * that it has to have been fed — something has to have landed — or it goes.
+ */
+function carryWire(n: NightState, leg: LegState, visit: LegState['visits'][number], events: EngineEvent[]): void {
+  const w = leg.wire;
+  if (w.amount <= 0) return;
+  if (visit.index === w.since) {
+    w.fed = false;
+    return;
+  }
+  if (!w.fed) {
+    wireLost(n, leg, 'BARREN', events);
+    return;
+  }
+  w.fed = false;
+  if (w.run >= WIRE_RUNS) {
+    // The top of the ladder. It comes down on its own rather than sitting
+    // there at a multiplier that can no longer grow.
+    events.push(...takeWireDown(n, 'FULL').events);
+    return;
+  }
+  w.run++;
+  events.push({ type: 'WIRE_CARRIED', amount: w.amount, run: w.run, worth: wireWorth(leg) });
+}
+
 function settle(n: NightState, leg: LegState, c: TakenContract, how: ContractOutcome, pot: number, events: EngineEvent[]): void {
   c.settled = { pot, how };
   n.pot += pot;
@@ -436,6 +553,12 @@ function settle(n: NightState, leg: LegState, c: TakenContract, how: ContractOut
   if (how === 'PAID') {
     n.stats.contractsPaid++;
     n.paid[c.defId] = (n.paid[c.defId] ?? 0) + 1;
+  }
+  // Anything that pays feeds the wire. A visit that wins nothing at all is a
+  // barren one, and a barren visit takes the wire with it.
+  if (pot > c.stake && leg.wire.amount > 0 && !leg.wire.fed) {
+    leg.wire.fed = true;
+    events.push({ type: 'WIRE_FED', amount: leg.wire.amount, by: c.defId });
   }
   leg.ledger.push(c);
   events.push({ type: 'CONTRACT_SETTLED', contract: c });
@@ -496,6 +619,9 @@ function wallWipesSlate(n: NightState, leg: LegState, events: EngineEvent[]): vo
     settle(n, leg, c, 'LOST', 0, events);
   }
   if (took) n.stats.slatesWiped++;
+  // And the wire with it. A dart off the board is the seven-out: it takes
+  // everything that is still out there, promises and winnings alike.
+  wireLost(n, leg, 'WALL', events);
 }
 
 /**
@@ -636,6 +762,8 @@ export function commitThrow(n: NightState, target: Target, opts: ThrowOptions = 
       if (checkoutFrom >= 100) n.stats.bigFinishes++;
       if (leg.bustsThisLeg === 0) n.stats.cleanLegs++;
     }
+    // Winning the leg must never cost the player the wire.
+    events.push(...takeWireDown(n, 'LEG').events);
     events.push({ type: 'CHECKOUT', legIndex: leg.index, reward });
     if (checkoutFrom >= 100) achieve(n, 'sharp', events);
     // Four visits for a 501. The limits came down, so six was no longer an achievement.
@@ -656,6 +784,7 @@ export function commitThrow(n: NightState, target: Target, opts: ThrowOptions = 
 
   if (result.outcome === 'BUST') {
     visit.busted = true;
+    wireLost(n, leg, 'BUST', events);
     leg.bustsThisLeg++;
     n.stats.busts++;
     n.consecutiveBusts++;
@@ -717,6 +846,9 @@ function dirtyLeg(n: NightState, leg: LegState, events: EngineEvent[]): void {
 
 function endVisit(n: NightState, leg: LegState, visit: LegState['visits'][number], events: EngineEvent[], missed: boolean): void {
   settleSlate(n, leg, visit.busted, events);
+  // The wire doubles or dies here, after the slate has settled — a contract
+  // that lands on the last dart still feeds it.
+  carryWire(n, leg, visit, events);
   const total = visitTotal(visit);
   if (!visit.busted) {
     n.stats.bestVisit = Math.max(n.stats.bestVisit, total);
@@ -904,7 +1036,12 @@ export function serialiseNight(n: NightState): string {
 }
 
 export function deserialiseNight(json: string): NightState {
-  return JSON.parse(json) as NightState;
+  const n = JSON.parse(json) as NightState;
+  // A night saved before the wire existed has legs with no wire on them.
+  for (const leg of n.legs) if (!leg.wire) leg.wire = { amount: 0, run: 0, fed: false, since: 0 };
+  const stats = n.stats as unknown as Record<string, number>;
+  for (const k of ['bestWire', 'wiresTaken', 'wiresLost']) if (typeof stats[k] !== 'number') stats[k] = 0;
+  return n;
 }
 
 export { shuffle };

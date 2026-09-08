@@ -95,6 +95,25 @@ export const SLATE_SIZE = 3;
  */
 export const PULL_RETURN = 0.5;
 
+/**
+ * THE WIRE's ladder. Money put back up is worth this many times itself after
+ * that many visits carried.
+ *
+ * Doubling, not counting. A linear ladder makes the first rung break-even and
+ * every rung after it bad, so nothing would ever be carried twice. Doubling
+ * holds every rung at about even money against the measured chance of getting
+ * a wire through one more visit — something has to land on it, the visit must
+ * not bust, and no dart may leave the board, which together come to a little
+ * over a half. That is the point: carrying is a coin the player chooses to
+ * flip, not a sum they can do.
+ */
+export const WIRE_MULT = [1, 2, 4, 8, 16] as const;
+export const WIRE_RUNS = WIRE_MULT.length - 1;
+
+export function wireMultiplier(run: number): number {
+  return WIRE_MULT[Math.min(WIRE_RUNS, Math.max(0, Math.floor(run)))];
+}
+
 /** Consecutive bust-free visits needed to double the leg's Pot. */
 export const HEAT_CAP = 4;
 

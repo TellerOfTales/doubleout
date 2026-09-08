@@ -12,6 +12,7 @@ import { measureText } from '../src/art/sprites.ts';
 import { CONTRACTS } from '../src/core/slate.ts';
 import { INTERVENTIONS } from '../src/content/interventions.ts';
 import { gameLayout, slateSlots } from '../src/ui/layout.ts';
+import { WIRE_MULT } from '../src/content/legs.ts';
 
 /** The renderer's own greedy wrap, on words. */
 function lineCount(text: string, max: number): number {
@@ -66,6 +67,21 @@ describe('the slate strip', () => {
     // beyond that a name stops being a name.
     const wide = slateSlots(gameLayout(320, 180), 4)[0].w;
     for (const c of CONTRACTS) expect(measureText(5, c.name.slice(0, -2)), c.name).toBeLessThanOrEqual(wide - 6);
+  });
+});
+
+describe('the wire card', () => {
+  it('everything printed on it fits the narrowest card there is', () => {
+    // The wire takes one of the slate's own slots, so the tightest it ever
+    // gets is a four-up card on a portrait phone.
+    const w = slateSlots(gameLayout(180, 320), 4)[0].w - 6;
+    expect(measureText(5, 'WIRE')).toBeLessThanOrEqual(w);
+    expect(measureText(5, 'DOWN')).toBeLessThanOrEqual(w);
+    // The biggest figure the wire can hold: a full slate of the dearest
+    // contracts, four visits of doubling.
+    expect(measureText(9, '999')).toBeLessThanOrEqual(w);
+    for (const mult of WIRE_MULT) expect(measureText(5, `×${mult}`)).toBeLessThanOrEqual(w);
+    expect(measureText(5, '999 NEXT')).toBeLessThanOrEqual(slateSlots(gameLayout(320, 180), 3)[0].w - 6);
   });
 });
 

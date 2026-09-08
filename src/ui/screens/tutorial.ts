@@ -45,6 +45,7 @@ type Stage =
   | 'decide'
   | 'after_press'
   | 'throw_press'
+  | 'wire'
   | 'bust_intro'
   | 'throw_bust'
   | 'after_bust'
@@ -417,6 +418,9 @@ class Tutorial {
         this.script(T20, T20);
         g.locked = false;
         break;
+      case 'wire':
+        this.noThrow();
+        break;
       case 'bust_intro':
         if (this.freshVisit()) return;
         this.setScore(40);
@@ -532,7 +536,7 @@ class Tutorial {
         return { text: 'Aim called. Throw it.', target: () => this.throwRect() };
       case 'settle':
         return {
-          text: 'Two things to know before it lands. The offer stays open until two darts are left, at a longer price — so what happens on the board can still be wagered on. And a contract still going can be SETTLED for a share of what it would pay, which grows with every dart it survives.',
+          text: 'Two things to know before it lands. The offer stays open until two darts are left, at a longer price — so what lands on the board can still change what is worth taking. And a contract still going can be SETTLED for a share of what it would pay, which grows with every dart it survives.',
           target: () => this.slateRect(),
           button: 'NEXT',
           onNext: () => this.go('decide'),
@@ -551,6 +555,13 @@ class Tutorial {
         };
       case 'throw_press':
         return { text: 'One more treble. Throw it.', target: () => this.throwRect() };
+      case 'wire':
+        return {
+          text: 'Paid money is safe in the Pot — unless you put it back up. PUT IT UP moves a payout on to the WIRE, where it doubles for every visit it survives. Land nothing next visit, or bust, or put a dart off the board, and the whole wire goes. TAKE IT DOWN whenever you like.',
+          target: () => this.slateRect(),
+          button: 'NEXT',
+          onNext: () => this.go('bust_intro'),
+        };
       case 'bust_intro':
         return {
           text: `Forty left, and something you need to see. Go over, or land on one, and it is a BUST: the score goes back and every contract still riding on the slate goes with it. Money already paid, or settled, is safe. Money still riding is not.`,
@@ -626,7 +637,7 @@ class Tutorial {
             this.go('settle');
             break;
           case 'throw_press':
-            this.go('bust_intro');
+            this.go('wire');
             break;
           case 'throw_bust':
             this.go('after_bust');

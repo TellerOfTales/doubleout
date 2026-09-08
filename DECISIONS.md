@@ -449,3 +449,79 @@ these are the decisions it produced.
     there is no code path that leaves the player with nothing to do. Scripted darts
     force their own landing (`ThrowOptions.forceLanding`), which is how the lesson
     about risk can show a miss on cue instead of waiting for the RNG to supply one.
+
+82. **The throw is timed, and the band edges are quantiles rather than widths.**
+    A marker sweeps a column beside the board; the tap that throws the dart is the
+    tap that times it; high is long and low is short. The construction that makes
+    this safe is not obvious: spacing each band by its own probability prices the
+    column for somebody tapping at random, and nobody taps at random. An ordinary
+    hand clusters near the middle, so under that spacing a dart called at a double
+    found SOME double 65% of the time instead of 59% and the whole game got
+    quietly easier. Cutting each band at the quantile of the hand's own stop
+    distribution instead makes an ordinary hand land EXACTLY the balanced
+    distribution — 45.0% on a treble against a printed 45, and the same for every
+    miss behind it — while a quicker thumb gets 70.7% and a poorer one 31.1%. The
+    stop is a recorded player input and consumes the same single RNG float the aim
+    roll always took, so nothing about determinism changed. `settings.meter` off
+    gives the printed odds exactly, for anyone who cannot time a tap.
+
+83. **The scope, because a thumb is wider than a double.** Four pixels of a
+    ninety-six pixel board is not something a thumb can be asked to hit, and the
+    playtest said so. A magnified window on the board at the sights, taken from the
+    128-pixel art so a brass wire stays a wire, parked in whichever corner of the
+    board is furthest from the aim, with the number chalked underneath it. Two
+    tests: it is always on the board, and it is never under the thumb.
+
+84. **The offer stays open, and PULL became SETTLE.** The offer used to close the
+    instant the first dart left the hand, which put every money decision of a visit
+    before any of the darts — one blind purchase, then three darts of watching. It
+    now closes with two darts to go, at a price that lengthens with the darts
+    already gone, so what happens on the board can still be wagered on; and it
+    closes early enough that nobody can wait until they are on a double they were
+    throwing anyway. PULL returned half a stake, which is not a decision anybody
+    makes twice; SETTLE returns a share of the whole prize that grows with every
+    dart the contract survives, so the numbers on the card move and taking the
+    money is a real alternative to riding it out.
+
+85. **A press pays the cold price.** Giving the press the late premium as well made
+    pressing everything the best policy in the game — measured 22.9% against a
+    planner on 20.8%, the exact failure decision #72 exists to prevent. The premium
+    is what the house pays for taking a wager late BY CHOICE, and a press is late by
+    definition.
+
+86. **The wire: money already won, put back up.** Nowhere in a night did the player
+    ever TAKE money — it arrived. A contract still pays into the Pot at once, so
+    nothing is taken from anyone; the wire is a verb on that safe money. PUT IT UP
+    moves a payout back out of the Pot, where it doubles for every visit it
+    survives; DOWN takes it whenever you like and counts it in chip by chip. It is
+    not the free carry #72 killed: that one paid interest for SURVIVING. This pays
+    for being FED — something must land every visit — and a bust, a barren visit or
+    a dart off the board takes the lot. Doubling rather than counting, because a
+    counting ladder makes the first rung break even and every rung after it bad.
+    Measured over 150 identical nights: planner 27.3%, always-carry 24.0%,
+    never-carry 22.7%. It also couples the two halves of the game for the first
+    time — the slate wants you at the trebles and a wire wants you nowhere near the
+    wall.
+
+87. **One Pot is worth six points, not ten.** The single most load-bearing number in
+    the planner, and it was wrong from the start. At ten, a planner won 19.3% of
+    nights and a bot that ignored the slate entirely won 25.3%: the slate was not a
+    decision, it was a tax, and no amount of chips and count-ups would have made
+    working it feel worth doing. Raising every printed price by half made it WORSE
+    (21.3%), because a dearer contract tempts the planner into distorting its aim
+    further for money that never buys back the legs it costs — the fault was the
+    exchange rate, not the prices. At six: planner 33.3%, presses-everything 27.1%,
+    presses-nothing 18.8%, slate-blind 22.9%. Judgement beats every fixed policy,
+    and working the slate finally beats ignoring it.
+
+88. **Seven things the build was claiming and not doing.** CLEAN ("three on the
+    board, no bust") was paid by a visit that busted on the third dart, because the
+    slate was re-read before the visit was marked busted. 15 UP advertised a press
+    it could never receive. Short Price described a per-dart carry deleted two
+    commits earlier and did nothing at all. Chalked Up rolled next visit's offer
+    into state and nothing drew it. A contract's death was silent and reported four
+    seconds later in a batch. The three money flourishes were constructed, ticked
+    every frame and read by no draw code. The wall chance — the thing that wipes the
+    slate — was hidden whenever a bust or finish chance existed. All fixed, and
+    `tests/copyfit.test.ts` now measures every printed string against the real rects
+    in both orientations so the copy cannot outgrow the furniture again either.

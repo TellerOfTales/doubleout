@@ -123,6 +123,16 @@ export function gameLayout(w: number, h: number): GameLayout {
  * Contract slots across the slate. They shrink to fit as Wide Grip adds a
  * fourth, so the extra contract never pushes the row off the panel.
  */
+/**
+ * Contract slots across the slate. They shrink to fit as Wide Grip adds a
+ * fourth, so the extra contract never pushes the row off the panel.
+ *
+ * The wire takes one of these slots rather than a sliver of every one of them.
+ * Squeezing a fifth column in to make room for it cost every contract a fifth
+ * of its writing space, which on a portrait phone is the difference between a
+ * condition on three lines and a condition cut off with an ellipsis. Money
+ * already won occupying a place on the slate is also simply what is happening.
+ */
 export function slateSlots(l: GameLayout, n: number): Rect[] {
   if (n <= 0) return [];
   const gap = n >= 4 ? 3 : 4;
